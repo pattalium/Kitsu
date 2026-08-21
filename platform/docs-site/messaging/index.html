@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content="Send and receive direct and channel MeshCore messages with Kitsu." /><link rel="icon" type="image/png" href="/assets/kitsu-app-icon.png?v=4f850b55" /><link rel="stylesheet" href="/styles.css?v=c0dcc352" /><title>Messaging · Kitsu Manual</title></head>
+<body>
+<header class="docs-header"><a class="brand" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="43" height="43" /><span>Kitsu Manual<small>K32 companion documentation</small></span></a><nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://flash.k32.run">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><a class="button" href="https://app.k32.run">Open Kitsu</a></nav></header>
+<main class="docs-shell"><details class="mobile-manual"><summary><span>Manual</span><b>Messaging</b></summary><nav aria-label="Mobile manual pages"><a href="/">Manual home</a><a href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><a href="/android/">Android app</a><a aria-current="page" href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></nav></details>
+<aside class="sidebar" aria-label="Manual pages"><strong>Start here</strong><a href="/">Manual home</a><a href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><strong>Use Kitsu</strong><a href="/android/">Android app</a><a aria-current="page" href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><strong>Keep it working</strong><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></aside>
+<article class="article">
+<div class="breadcrumbs"><a href="/">Manual</a><span>/</span><span>Messaging</span></div><p class="eyebrow">MESHCORE MESSAGES</p><h1>Talk to a peer or a channel.</h1><p class="lede">Kitsu supports direct messages to a complete MeshCore public key and channel messages on configured channel slots 0 through 3. Message text is limited to 128 UTF-8 bytes.</p>
+
+<h2>Before sending</h2>
+<ul><li>MeshCore must be enabled with a valid radio profile.</li><li>The destination peer or channel must be present in Kitsu's current data.</li><li>A direct recipient uses the complete public-key reference; shortened display IDs are not valid destinations.</li><li>A channel must be configured on the device before it can be selected.</li><li>Transmission remains subject to the regional duty-cycle and explicit transmit policy.</li></ul>
+
+<h2>Send a direct message</h2>
+<ol class="step-list"><li><strong>Open Messages in Android.</strong><p>The app refreshes the inbox, peers, and available channels.</p></li><li><strong>Choose Direct and select a peer.</strong><p>Known peers are shown by their reported name and full authenticated identifier.</p></li><li><strong>Write up to 128 UTF-8 bytes.</strong><p>Emoji and non-ASCII characters may use more than one byte, so the character count can be below 128.</p></li><li><strong>Tap Send once.</strong><p>The app assigns an idempotency identifier so a retry cannot create a second accepted action with the same request.</p></li></ol>
+
+<h2>Send a channel message</h2>
+<ol class="step-list"><li><strong>Open the recipient selector.</strong><p>Choose Channel instead of Direct.</p></li><li><strong>Select one of the configured slots.</strong><p>Slots are numbered 0 through 3 and may also have a configured display name.</p></li><li><strong>Compose and send.</strong><p>Anyone with the matching MeshCore channel configuration may receive the message.</p></li></ol>
+
+<h2>Delivery states</h2>
+<table><thead><tr><th>State</th><th>Meaning</th></tr></thead><tbody><tr><td>Pending</td><td>The request is accepted locally and waiting for its radio opportunity.</td></tr><tr><td>Applied</td><td>The authenticated action reached the firmware's message path and was admitted.</td></tr><tr><td>Sent</td><td>The radio dispatcher transmitted the packet.</td></tr><tr><td>Rejected</td><td>Validation, policy, expiry, queue, or radio conditions prevented transmission.</td></tr><tr><td>Unknown</td><td>The app does not have a newer signed result yet; refresh before retrying.</td></tr></tbody></table>
+
+<h2>Read messages on Kitsu</h2>
+<p>Open <strong>INBOX</strong> from the device menu. A short press moves to the next older message. Hold PRG to return Home. The Android app provides the longer scrollable history and delivery details.</p>
+
+<div class="callout warning"><strong>Mesh messages are not private chat by default.</strong>Radio participants with the relevant keys or channel configuration may receive them. Do not send passwords, private keys, Wi-Fi credentials, or information that must remain confidential.</div>
+
+<h2>If sending fails</h2><ul><li>Refresh peers and channels.</li><li>Confirm the intended channel is configured.</li><li>Check that MeshCore and transmit policy are enabled.</li><li>Use a shorter message if the text contains multi-byte characters.</li><li>Wait for the current radio duty-cycle window.</li><li>Review <a href="/troubleshooting/">Troubleshooting</a> if the state remains Unknown or Rejected.</li></ul>
+
+<nav class="next-links" aria-label="Page navigation" data-page="5 of 9"><a href="/android/"><span>Previous</span><b>Android app</b></a><a href="/connectivity/"><span>Next</span><b>Wi-Fi and remote access</b></a></nav>
+</article></main>
+<footer class="docs-footer"><span>K32 Kitsu Manual</span><nav><a href="https://k32.run">Product</a><a href="https://github.com/pattalium/Kitsu">GitHub</a><a href="https://k32.run/contact/">Contact</a></nav></footer>
+</body></html>

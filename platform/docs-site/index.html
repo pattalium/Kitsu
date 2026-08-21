@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="The complete K32 Kitsu user manual: setup, controls, Android, Wi-Fi, messages, updates, and troubleshooting." />
+    <link rel="icon" type="image/png" href="/assets/kitsu-app-icon.png?v=4f850b55" />
+    <link rel="stylesheet" href="/styles.css?v=c0dcc352" />
+    <title>Kitsu Manual</title>
+  </head>
+  <body>
+    <header class="docs-header">
+      <a class="brand" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="43" height="43" /><span>Kitsu Manual<small>K32 companion documentation</small></span></a>
+      <nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://flash.k32.run">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><a class="button" href="https://app.k32.run">Open Kitsu</a></nav>
+    </header>
+    <main class="docs-shell">
+      <details class="mobile-manual"><summary><span>Manual</span><b>Manual home</b></summary><nav aria-label="Mobile manual pages"><a aria-current="page" href="/">Manual home</a><a href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></nav></details>
+<aside class="sidebar" aria-label="Manual pages">
+        <strong>Start here</strong>
+        <a aria-current="page" href="/">Manual home</a>
+        <a href="/getting-started/">Getting started</a>
+        <a href="/device/">Device controls</a>
+        <strong>Use Kitsu</strong>
+        <a href="/android/">Android app</a>
+        <a href="/messaging/">Messaging</a>
+        <a href="/connectivity/">Wi-Fi and remote access</a>
+        <strong>Keep it working</strong>
+        <a href="/updates/">Firmware updates</a>
+        <a href="/troubleshooting/">Troubleshooting</a>
+        <a href="/security/">Security and privacy</a>
+      </aside>
+      <article class="article">
+        <p class="eyebrow">KITSU USER MANUAL</p>
+        <h1>Everything you need to use Kitsu.</h1>
+        <p class="lede">Kitsu is a portrait companion running on a Heltec WiFi LoRa 32 V3. This manual covers the first firmware install, Android pairing, one-button device controls, care, messages, Wi-Fi, remote access, updates, and recovery.</p>
+
+        <div class="button-row"><a href="/getting-started/">Start setup</a><a class="secondary" href="https://k32.run/#download">Download Android</a></div>
+
+        <div class="quick-grid">
+          <a class="quick-card" href="/getting-started/"><span>First use</span><h3>Set up Kitsu</h3><p>Install firmware and Android, compare the pairing code, and grant the phone.</p><b>Open setup guide →</b></a>
+          <a class="quick-card" href="/device/"><span>On the Heltec</span><h3>Learn the one-button controls</h3><p>Short press, hold, menus, games, inbox, sleep, radio, and phone pairing.</p><b>See every control →</b></a>
+          <a class="quick-card" href="/android/#owner-account"><span>Owner account</span><h3>Understand sign-in before you need it</h3><p>Learn what the account unlocks, where the first credentials come from, and how recovery works.</p><b>Read the account guide →</b></a>
+          <a class="quick-card" href="/messaging/"><span>MeshCore</span><h3>Send and receive messages</h3><p>Use direct peer messages, four channel slots, delivery states, and the device inbox.</p><b>Learn messaging →</b></a>
+        </div>
+
+        <h2>What Kitsu does</h2>
+        <div class="card-grid">
+          <section class="info-card"><span>Companion</span><h3>Care, needs, and memory</h3><p>Pet, feed, play, listen, sleep, build affection, and create memories from nearby radio activity.</p></section>
+          <section class="info-card"><span>Device</span><h3>Portrait OLED interface</h3><p>Home, menu, inbox, games, listening, sleep, info, and phone setup are designed for the 64 × 128 display.</p></section>
+          <section class="info-card"><span>Phone</span><h3>Native Android control</h3><p>Nearby Bluetooth comes first. The app also supports remote state, history, messaging, provisioning, and explicit Disconnect.</p></section>
+          <section class="info-card"><span>Radio</span><h3>MeshCore network client</h3><p>Kitsu can receive ordinary MeshCore traffic and send approved direct or channel messages under the configured radio policy.</p></section>
+        </div>
+
+        <h2>The shortest successful setup</h2>
+        <ol class="step-list">
+          <li><strong>Install the current firmware.</strong><p>Use the browser installer with a supported Heltec board and a USB data cable.</p></li>
+          <li><strong>Install Kitsu for Android.</strong><p>Download and install the signed Android APK from the product page, then allow installation from the browser when Android asks.</p></li>
+          <li><strong>Open PHONE on Kitsu.</strong><p>From Home, hold PRG for the menu, short-press to PHONE, then hold to select it.</p></li>
+          <li><strong>Compare the six-digit number.</strong><p>Accept Android's pairing prompt only when its number matches Kitsu. Hold PRG on Kitsu when instructed.</p></li>
+          <li><strong>Grant the phone.</strong><p>When the app waits for PRG and Kitsu shows PHONE READY, hold PRG a second time.</p></li>
+          <li><strong>Use Kitsu nearby or add Wi-Fi.</strong><p>Bluetooth is enough for normal nearby control. Wi-Fi and gateway enrollment are optional for remote access.</p></li>
+        </ol>
+
+        <div class="callout"><strong>About the PRG button</strong>A short press is less than 750 ms. A hold is 750 ms or longer. PRG is also the board's boot button, so do not hold it while resetting unless you intentionally want firmware-download mode.</div>
+
+        <h2>Choose a topic</h2>
+        <ul>
+          <li><a href="/android/">Android app</a> — permissions, Connect, Disconnect, care controls, messages, and sign-in.</li>
+          <li><a href="/android/#owner-account">Owner account</a> — what it enables, how credentials are issued, first sign-in, and recovery.</li>
+          <li><a href="/connectivity/">Wi-Fi and remote access</a> — network requirements, setup, enrollment, and connection states.</li>
+          <li><a href="/updates/">Firmware updates</a> — supported browsers, safe write scope, backup behavior, and recovery.</li>
+          <li><a href="/troubleshooting/">Troubleshooting</a> — pairing, scanning, Wi-Fi, remote access, messages, display, and recovery.</li>
+          <li><a href="/security/">Security and privacy</a> — what is protected, what the reflashable design means, and what data is kept.</li>
+        </ul>
+
+        <nav class="next-links" aria-label="Page navigation" data-page="1 of 9"><a href="/getting-started/"><span>Next</span><b>Getting started</b></a><a href="/device/"><span>Reference</span><b>Device controls</b></a></nav>
+      </article>
+    </main>
+    <footer class="docs-footer"><span>K32 Kitsu Manual</span><nav><a href="https://k32.run">Product</a><a href="https://github.com/pattalium/Kitsu">GitHub</a><a href="https://k32.run/contact/">Contact</a></nav></footer>
+  </body>
+</html>

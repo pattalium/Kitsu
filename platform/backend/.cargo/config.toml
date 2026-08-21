@@ -1,0 +1,5 @@
+[resolver]
+# AWS SDK crates intentionally release MSRV bumps inside the 1.x family. Keep
+# transitive resolution compatible with package.rust-version and commit the
+# resulting lockfile so production builds cannot silently jump toolchains.
+incompatible-rust-versions = "fallback"

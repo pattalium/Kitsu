@@ -1,0 +1,294 @@
+:root {
+    color-scheme: dark;
+    --kitsu-ink: #211713;
+    --kitsu-muted: #6f5d55;
+    --kitsu-paper: #fffaf4;
+    --kitsu-paper-soft: #f8eee4;
+    --kitsu-line: #dbcabd;
+    --kitsu-orange: #d95f2a;
+    --kitsu-orange-action: #a63c13;
+    --kitsu-orange-action-hover: #7d2b0d;
+    --kitsu-green: #1f6b55;
+}
+
+html.login-pf,
+html.login-pf body {
+    min-height: 100%;
+    margin: 0;
+    background: #120f0d;
+    color: var(--kitsu-paper);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html.login-pf body {
+    background:
+        radial-gradient(circle at 12% 8%, rgba(217, 95, 42, 0.26), transparent 30rem),
+        radial-gradient(circle at 90% 90%, rgba(31, 107, 85, 0.18), transparent 34rem),
+        linear-gradient(145deg, #211713 0%, #120f0d 58%, #171310 100%);
+}
+
+.pf-v5-c-login {
+    min-height: 100dvh;
+    background: transparent;
+}
+
+.pf-v5-c-login__container {
+    display: grid;
+    grid-template-columns: minmax(0, 35rem);
+    grid-template-areas: "header" "main";
+    align-content: center;
+    justify-content: center;
+    gap: 1.25rem;
+    width: 100%;
+    min-height: 100dvh;
+    padding: 2rem;
+}
+
+.pf-v5-c-login__header {
+    grid-area: header;
+    width: 100%;
+    margin: 0;
+}
+
+#kc-header-wrapper.pf-v5-c-brand {
+    width: 100%;
+    color: var(--kitsu-paper);
+    font-size: 1rem;
+}
+
+.kitsu-brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+}
+
+.kitsu-brand__mascot {
+    width: 5.5rem;
+    height: 5.5rem;
+    padding: 0.35rem;
+    border: 1px solid rgba(255, 250, 244, 0.38);
+    border-radius: 1.5rem;
+    background: var(--kitsu-paper);
+    object-fit: contain;
+    box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.32);
+}
+
+.kitsu-brand__name,
+.kitsu-brand__purpose {
+    display: block;
+    text-align: left;
+}
+
+.kitsu-brand__name {
+    color: #ffffff;
+    font-size: clamp(1.5rem, 5vw, 2.1rem);
+    font-weight: 760;
+    letter-spacing: -0.035em;
+}
+
+.kitsu-brand__purpose {
+    margin-top: 0.2rem;
+    color: #f5c7aa;
+    font-size: 0.92rem;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.pf-v5-c-login__main {
+    grid-area: main;
+    width: 100%;
+    max-width: 35rem;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 1.75rem;
+    background: var(--kitsu-paper);
+    color: var(--kitsu-ink);
+    color-scheme: light;
+    box-shadow: 0 1.6rem 5rem rgba(0, 0, 0, 0.42);
+}
+
+.pf-v5-c-login__main-header {
+    display: none;
+}
+
+.pf-v5-c-login__main-body {
+    padding: 2rem;
+    color: var(--kitsu-ink);
+}
+
+.kitsu-auth-intro {
+    margin-bottom: 1.5rem;
+}
+
+.kitsu-auth-intro h1 {
+    margin: 0;
+    color: var(--kitsu-ink);
+    font-size: clamp(1.7rem, 6vw, 2.15rem);
+    font-weight: 780;
+    letter-spacing: -0.035em;
+    line-height: 1.08;
+}
+
+.kitsu-auth-intro p,
+.kitsu-first-login p,
+.kitsu-account-help p {
+    margin: 0.7rem 0 0;
+    color: var(--kitsu-muted);
+    font-size: 0.98rem;
+    line-height: 1.55;
+}
+
+.kitsu-auth-intro .kitsu-local-note {
+    padding: 0.8rem 0.9rem;
+    border-left: 0.25rem solid var(--kitsu-green);
+    border-radius: 0.65rem;
+    background: #e7f2ed;
+    color: #164a3c;
+    font-weight: 650;
+}
+
+#kc-form-login,
+#kc-passwd-update-form {
+    color: var(--kitsu-ink);
+}
+
+#kc-form-login .pf-v5-c-form__label-text,
+#kc-passwd-update-form .pf-v5-c-form__label-text,
+#kc-form-login .pf-v5-c-check__label,
+#kc-passwd-update-form .pf-v5-c-check__label,
+#kc-form-login label,
+#kc-passwd-update-form label {
+    color: var(--kitsu-ink) !important;
+    font-weight: 680;
+}
+
+#kc-form-login input,
+#kc-passwd-update-form input {
+    min-height: 3rem;
+    color: var(--kitsu-ink);
+    font-size: 1rem;
+}
+
+.pf-v5-c-form-control {
+    border-color: #958078;
+    border-radius: 0.7rem;
+    background: #ffffff;
+    color: var(--kitsu-ink);
+}
+
+.pf-v5-c-form-control:focus-within {
+    border-color: var(--kitsu-orange);
+    outline: 0.2rem solid rgba(217, 95, 42, 0.22);
+    outline-offset: 0.1rem;
+}
+
+.pf-v5-c-button.pf-m-control {
+    min-width: 3rem;
+    min-height: 3rem;
+    border-color: #958078;
+    color: var(--kitsu-ink);
+}
+
+.pf-v5-c-button.pf-m-primary,
+#kc-login,
+#kc-submit {
+    min-height: 3.2rem;
+    border-radius: 999px;
+    background: var(--kitsu-orange-action);
+    color: #ffffff;
+    font-size: 1rem;
+    font-weight: 750;
+}
+
+.pf-v5-c-button.pf-m-primary:hover,
+#kc-login:hover,
+#kc-submit:hover {
+    background: var(--kitsu-orange-action-hover);
+}
+
+.pf-v5-c-button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+    outline: 0.2rem solid #1576d4;
+    outline-offset: 0.18rem;
+}
+
+.kitsu-first-login,
+.kitsu-account-help {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--kitsu-line);
+    border-radius: 1rem;
+    background: var(--kitsu-paper-soft);
+}
+
+.kitsu-first-login h2,
+.kitsu-account-help h2 {
+    margin: 0;
+    color: var(--kitsu-ink);
+    font-size: 1rem;
+    font-weight: 760;
+}
+
+.kitsu-account-help a {
+    display: inline-flex;
+    min-height: 2.75rem;
+    margin-top: 0.55rem;
+    align-items: center;
+    color: #81300f;
+    font-weight: 750;
+    text-decoration-thickness: 0.12rem;
+    text-underline-offset: 0.2rem;
+}
+
+.pf-v5-c-alert {
+    color: var(--kitsu-ink);
+}
+
+@media (max-width: 37.5rem) {
+    .pf-v5-c-login__container {
+        align-content: start;
+        gap: 0.9rem;
+        min-height: 100dvh;
+        padding: max(1rem, env(safe-area-inset-top)) 0.85rem max(1rem, env(safe-area-inset-bottom));
+    }
+
+    .kitsu-brand {
+        gap: 0.75rem;
+    }
+
+    .kitsu-brand__mascot {
+        width: 4.35rem;
+        height: 4.35rem;
+        border-radius: 1.15rem;
+    }
+
+    .kitsu-brand__name {
+        font-size: 1.6rem;
+    }
+
+    .kitsu-brand__purpose {
+        font-size: 0.72rem;
+    }
+
+    .pf-v5-c-login__main {
+        border-radius: 1.35rem;
+    }
+
+    .pf-v5-c-login__main-body {
+        padding: 1.35rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
+}

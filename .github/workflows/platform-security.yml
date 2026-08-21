@@ -1,0 +1,43 @@
+name: Kitsu platform dependency security
+
+on:
+  pull_request:
+    paths:
+      - "platform/backend/Cargo.lock"
+      - "platform/backend/Cargo.toml"
+      - "platform/gateway/Cargo.lock"
+      - "platform/gateway/Cargo.toml"
+  push:
+    branches: [main]
+    paths:
+      - "platform/backend/Cargo.lock"
+      - "platform/backend/Cargo.toml"
+      - "platform/gateway/Cargo.lock"
+      - "platform/gateway/Cargo.toml"
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  backend-rustsec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: platform/backend
+
+  gateway-rustsec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: platform/gateway

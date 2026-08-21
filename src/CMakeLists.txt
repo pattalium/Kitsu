@@ -1,0 +1,35 @@
+idf_component_register(
+  SRCS
+    "companion_brain.cpp"
+    "companion_pack.cpp"
+    "encounter_protocol.cpp"
+    "kitsu_ble_action.cpp"
+    "kitsu_ble_gatt.cpp"
+    "kitsu_ble_session.cpp"
+    "kitsu_chat_contract.cpp"
+    "kitsu_companion_protocol.cpp"
+    "kitsu_connectivity_config.cpp"
+    "kitsu_connectivity_runtime.cpp"
+    "kitsu_device_security.cpp"
+    "kitsu_enrollment.cpp"
+    "kitsu_esp32_connectivity.cpp"
+    "kitsu_esp32_gateway_action.cpp"
+    "kitsu_esp32_gateway_tls.cpp"
+    "kitsu_esp32_security.cpp"
+    "kitsu_gateway_action_runtime.cpp"
+    "kitsu_gateway_bootstrap.cpp"
+    "kitsu_gateway_enrollment_flow.cpp"
+    "kitsu_gateway_lan_runtime.cpp"
+    "kitsu_lan_protocol.cpp"
+    "kitsu_mobile_relay.cpp"
+    "kitsu_mesh_config.cpp"
+    "kitsu_mesh_messages.cpp"
+    "kitsu_mesh_transport.cpp"
+    "main.cpp"
+    "mesh_discovery_journal.cpp"
+    "mini_games.cpp"
+  INCLUDE_DIRS "."
+  # PlatformIO mounts Arduino-ESP32 as an IDF component using the package
+  # directory name, not the framework selector name (`arduino`).
+  REQUIRES framework-arduinoespressif32 nvs_flash mbedtls esp_wifi
+)

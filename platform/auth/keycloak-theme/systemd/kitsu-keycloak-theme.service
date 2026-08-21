@@ -1,0 +1,35 @@
+[Unit]
+Description=Reconcile and verify the Kitsu Keycloak login theme
+After=kitsu-keycloak.service
+Requires=kitsu-keycloak.service
+
+[Service]
+Type=oneshot
+User=kitsu-keycloak
+Group=kitsu-keycloak
+LoadCredentialEncrypted=bootstrap-admin-password:/etc/credstore.encrypted/kitsu-keycloak-bootstrap-admin-password
+ExecStartPre=/usr/bin/test -s %d/bootstrap-admin-password
+ExecStart=/usr/bin/node --jitless /opt/kitsu/current/keycloak-theme/reconcile-keycloak-theme.mjs %d/bootstrap-admin-password /opt/kitsu/keycloak/current/themes/kitsu
+RemainAfterExit=yes
+TimeoutStartSec=30s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectProc=invisible
+ProcSubset=pid
+
+[Install]
+WantedBy=multi-user.target

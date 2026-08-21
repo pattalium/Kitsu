@@ -1,0 +1,24 @@
+{
+  "name": "MeshCore-Kitsu-Minimal",
+  "version": "1.17.1",
+  "description": "Pinned minimal MeshCore client transport subset for Kitsu868",
+  "keywords": [
+    "meshcore",
+    "lora",
+    "sx1262"
+  ],
+  "homepage": "https://github.com/meshcore-dev/MeshCore",
+  "license": "MIT",
+  "dependencies": {
+    "rweather/Crypto": "0.4.0"
+  },
+  "build": {
+    "srcFilter": [
+      "+<*.cpp>",
+      "+<helpers/AdvertDataHelpers.cpp>",
+      "+<helpers/StaticPoolPacketManager.cpp>",
+      "+<helpers/radiolib/RadioLibWrappers.cpp>",
+      "+<ed25519/*.c>"
+    ]
+  }
+}

@@ -1,0 +1,3 @@
+-keepattributes Signature,*Annotation*
+-keep class net.openid.appauth.** { *; }
+-dontwarn javax.annotation.**

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content="Install Kitsu firmware and pair the Android app with physical confirmation." /><link rel="icon" type="image/png" href="/assets/kitsu-app-icon.png?v=4f850b55" /><link rel="stylesheet" href="/styles.css?v=c0dcc352" /><title>Getting Started · Kitsu Manual</title></head>
+<body>
+<header class="docs-header"><a class="brand" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="43" height="43" /><span>Kitsu Manual<small>K32 companion documentation</small></span></a><nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://flash.k32.run">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><a class="button" href="https://app.k32.run">Open Kitsu</a></nav></header>
+<main class="docs-shell">
+<details class="mobile-manual"><summary><span>Manual</span><b>Getting started</b></summary><nav aria-label="Mobile manual pages"><a href="/">Manual home</a><a aria-current="page" href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></nav></details>
+<aside class="sidebar" aria-label="Manual pages"><strong>Start here</strong><a href="/">Manual home</a><a aria-current="page" href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><strong>Use Kitsu</strong><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><strong>Keep it working</strong><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></aside>
+<article class="article">
+<div class="breadcrumbs"><a href="/">Manual</a><span>/</span><span>Getting started</span></div><p class="eyebrow">FIRST-TIME SETUP</p><h1>From a Heltec board to your Kitsu.</h1><p class="lede">You need a supported Heltec WiFi LoRa 32 V3, a USB data cable, an Android phone running Android 8 or newer, and about fifteen minutes.</p>
+
+<h2>1. Install the firmware</h2>
+<ol class="step-list">
+<li><strong>Connect the Heltec with a USB data cable.</strong><p>A charge-only cable will power the board but cannot install firmware.</p></li>
+<li><strong>Open the <a href="https://flash.k32.run">Kitsu firmware installer</a> in a Web Serial browser.</strong><p>Use a current Chromium-based desktop browser. Mobile browsers and Firefox do not provide the required serial interface.</p></li>
+<li><strong>Select Install and choose the Heltec serial port.</strong><p>The installer checks the board type, flash size, signed release, and exact image hashes before writing.</p></li>
+<li><strong>Wait for write and read-back verification.</strong><p>Do not unplug the board. A successful install ends with a verified restart into Kitsu.</p></li>
+</ol>
+<div class="callout warning"><strong>Do not choose a full-chip erase.</strong>The Kitsu installer performs targeted writes and preserves the bootloader, companion pack, saved state, and connectivity data. Follow the recovery guide before using any unrelated flashing tool.</div>
+
+<h2>2. Install Android</h2>
+<ol class="step-list">
+<li><strong>Download the current signed Android APK.</strong><p>Use the Android download on the <a href="https://k32.run/#download">Kitsu product page</a>, then allow installation from your browser when Android asks.</p></li>
+<li><strong>Allow installation from your browser.</strong><p>Android may ask you to allow this source. That permission can be turned off again immediately after installation.</p></li>
+<li><strong>Open Kitsu and grant nearby-device access.</strong><p>Android 12 and newer ask for Nearby devices. Android 8–11 may ask for Location because those versions tie Bluetooth scanning to that permission.</p></li>
+</ol>
+
+<h2>3. Put Kitsu in phone-pairing mode</h2>
+<ol class="step-list">
+<li><strong>From Home, hold PRG for at least 750 ms.</strong><p>The main menu opens.</p></li>
+<li><strong>Short-press until PHONE is selected.</strong><p>Each short press moves to the next menu item.</p></li>
+<li><strong>Hold PRG to choose PHONE.</strong><p>Kitsu opens a time-limited pairing window.</p></li>
+<li><strong>Tap Set up Kitsu in Android.</strong><p>Select the nearby Kitsu device shown by the app.</p></li>
+</ol>
+
+<h2>4. Compare the code and grant the phone</h2>
+<ol class="step-list">
+<li><strong>Compare Android's six digits with Kitsu's MATCH CODE screen.</strong><p>If they differ, cancel both sides and start again. Never approve a mismatch.</p></li>
+<li><strong>Accept Android's pairing prompt.</strong><p>When Kitsu asks for confirmation and the codes match, hold PRG.</p></li>
+<li><strong>Wait for the second physical prompt.</strong><p>The app shows that it is waiting for PRG; Kitsu shows PHONE READY.</p></li>
+<li><strong>Hold PRG again to grant this phone.</strong><p>The device creates a controller credential for that installation of the app.</p></li>
+</ol>
+<div class="callout"><strong>There are two PRG holds during phone setup.</strong>The first confirms the Bluetooth numeric comparison. The second grants the authenticated Kitsu controller. Both are intentional.</div>
+
+<h2>5. Confirm nearby control</h2>
+<ul><li>The app should show <strong>Direct Bluetooth</strong> and current companion status.</li><li>Try Pet or Feed and confirm Kitsu reacts.</li><li>Open Messages and refresh the inbox.</li><li>Tap <strong>Disconnect</strong> when finished. This closes Kitsu's connection but does not turn off the phone's Bluetooth radio.</li></ul>
+
+<h2>6. Optional: enable remote access</h2>
+<p>Bluetooth is sufficient for nearby use and does not require an owner account. To reach Kitsu when the phone is away, first read <a href="/android/#owner-account">what the owner account is and how its first credentials are issued</a>, then continue with <a href="/connectivity/">Wi-Fi and remote access</a>. Network credentials are sent only through the authenticated Bluetooth session and are never entered on the public website.</p>
+
+<nav class="next-links" aria-label="Page navigation" data-page="2 of 9"><a href="/"><span>Previous</span><b>Manual home</b></a><a href="/device/"><span>Next</span><b>Device controls</b></a></nav>
+</article></main>
+<footer class="docs-footer"><span>K32 Kitsu Manual</span><nav><a href="https://k32.run">Product</a><a href="https://github.com/pattalium/Kitsu">GitHub</a><a href="https://k32.run/contact/">Contact</a></nav></footer>
+</body></html>

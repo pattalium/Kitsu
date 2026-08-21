@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="K32 Kitsu signed firmware installer for Heltec V3." />
+    <script type="module" src="/src/app.js"></script>
+    <title>K32 · Kitsu Flasher</title>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="https://k32.run" aria-label="K32 home"><span>K32</span> Kitsu</a>
+      <nav><a href="https://docs.k32.run">Docs</a><a href="https://status.k32.run">Status</a></nav>
+    </header>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">WEB SERIAL · HELTEC V3 · ESP32-S3</p>
+        <h1>Install Kitsu safely.</h1>
+        <p>Connect a Heltec over USB and install only a release whose exact manifest and two firmware artifacts pass the Kitsu Ed25519 authority and SHA-256 gates.</p>
+      </section>
+
+      <section class="grid" aria-label="Flashing workflow">
+        <article>
+          <span class="step">01</span>
+          <h2>Verify the browser</h2>
+          <p id="browser-detail">Checking Web Serial support…</p>
+          <div class="actions">
+            <button id="connect" type="button">Connect Heltec</button>
+            <button id="disconnect" class="secondary" type="button" disabled>Disconnect</button>
+          </div>
+        </article>
+        <article>
+          <span class="step">02</span>
+          <h2>Verify the release</h2>
+          <p id="release-detail">Checking the latest signed production release…</p>
+          <button id="refresh" class="secondary" type="button">Check again</button>
+        </article>
+        <article>
+          <span class="step">03</span>
+          <h2>Write and read back</h2>
+          <p>Install unlocks only for an ESP32-S3 with 8 MiB flash and exactly two verified writes: the partition table at <code>0x008000</code> and app at <code>0x010000</code>.</p>
+          <button id="install" type="button" disabled>Install unavailable</button>
+          <progress id="progress" max="100" value="0" aria-label="Install progress" hidden></progress>
+          <small id="progress-detail" aria-live="polite"></small>
+        </article>
+      </section>
+
+      <section class="console" aria-labelledby="console-title">
+        <div><p class="eyebrow">LOCAL SESSION</p><h2 id="console-title">Verification log</h2></div>
+        <pre id="log" aria-live="polite">Ready. No device access has been requested and no bytes have been written.</pre>
+      </section>
+
+      <aside class="notice">
+        <strong>Owner-reflashable by design.</strong>
+        <span>This installer never calls full-chip erase and never writes the bootloader, OTA data, NVS, companion pack, connectivity state, or eFuses. Ordinary serial recovery and restoration of stock MeshCore remain available.</span>
+      </aside>
+    </main>
+    <footer><span>K32 · Kitsu</span><span>Signed stable channel · fail closed</span></footer>
+  </body>
+</html>

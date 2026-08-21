@@ -1,0 +1,82 @@
+[package]
+name = "kitsu-platform-backend"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "kitsu-platform-backend"
+path = "src/main.rs"
+
+[[bin]]
+name = "kitsu-seed-gateway-bootstrap"
+path = "src/bin/seed_gateway_bootstrap.rs"
+
+[[bin]]
+name = "kitsu-platform-migrate"
+path = "src/bin/migrate.rs"
+
+[features]
+default = ["local-kms", "local-ca"]
+aws-kms = ["dep:aws-config", "dep:aws-sdk-kms"]
+aws-private-ca = ["dep:aws-config", "dep:aws-sdk-acmpca"]
+local-kms = []
+local-ca = ["dep:rcgen"]
+test-kms = []
+test-ca = []
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+async-trait = "0.1"
+aws-config = { version = "=1.8.13", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
+aws-sdk-acmpca = { version = "=1.98.0", optional = true }
+aws-sdk-kms = { version = "=1.99.0", optional = true }
+axum = { version = "0.8", features = ["http2", "json", "macros", "ws"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+hex = "0.4"
+hmac = "0.12"
+http = "1"
+ipnet = "2"
+jsonwebtoken = "9"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.17"
+rand = "0.8"
+rcgen = { version = "=0.14.5", features = ["pem", "x509-parser"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_jcs = "0.1"
+sha2 = "0.10"
+# Depend on the PostgreSQL driver directly. The umbrella crate resolves unused
+# database-driver packages into Cargo.lock, which is undesirable for a
+# PostgreSQL-only production SBOM.
+sqlx-core = { version = "=0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "migrate"] }
+sqlx-postgres = { version = "=0.8.6", default-features = false, features = ["chrono", "json", "migrate", "uuid"] }
+subtle = "2"
+thiserror = "2"
+time = "=0.3.55"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower = { version = "0.5", features = ["limit", "timeout", "util"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "cors", "limit", "request-id", "sensitive-headers", "set-header", "timeout", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+zeroize = { version = "1", features = ["derive"] }
+x509-parser = { version = "=0.18.1", features = ["verify"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

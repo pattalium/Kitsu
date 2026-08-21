@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Live public K32 Kitsu service checks." />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/status.js"></script>
+    <title>K32 · Kitsu Status</title>
+  </head>
+  <body>
+    <header><a href="https://k32.run"><b>K32</b> Kitsu status</a><span id="checked">Not checked</span></header>
+    <main>
+      <p class="eyebrow">SERVER-VERIFIED SERVICE CHECKS</p>
+      <h1>Service status.</h1>
+      <section class="summary"><span class="dot pending" id="summary-dot"></span><div><strong id="summary-title">Checking public services…</strong><p id="summary-detail">No service state has been assumed.</p></div></section>
+      <section class="services" aria-label="Kitsu services">
+        <article data-static="loaded"><span class="dot ok"></span><div><h2>Status page</h2><p>This browser received the current status release. This is not an independent uptime check.</p></div><b>Loaded</b></article>
+        <article data-url="/checks/public" data-kind="health"><span class="dot pending"></span><div><h2>Project and Android download</h2><p>Verified through the public-site origin health gate.</p></div><b>Checking</b></article>
+        <article data-url="/checks/app" data-kind="health"><span class="dot pending"></span><div><h2>Companion Web app</h2><p>Verified through the companion origin health gate.</p></div><b>Checking</b></article>
+        <article data-url="/checks/api" data-kind="ready"><span class="dot pending"></span><div><h2>Owner API</h2><p>Readiness includes the backend’s required dependencies.</p></div><b>Checking</b></article>
+        <article data-url="/checks/auth" data-kind="oidc"><span class="dot pending"></span><div><h2>Identity</h2><p>Kitsu realm discovery with an exact issuer check.</p></div><b>Checking</b></article>
+        <article data-url="/checks/flash" data-kind="health"><span class="dot pending"></span><div><h2>Web Serial installer</h2><p>Verified through the installer origin health gate.</p></div><b>Checking</b></article>
+        <article data-url="/checks/docs" data-kind="health"><span class="dot pending"></span><div><h2>Documentation</h2><p>Verified through the documentation origin health gate.</p></div><b>Checking</b></article>
+        <article data-url="/checks/updates" data-kind="updates"><span class="dot pending"></span><div><h2>Signed firmware updates</h2><p>Becomes operational only after the signed, physically accepted release is promoted.</p></div><b>Checking</b></article>
+        <article data-static="private"><span class="dot private"></span><div><h2>Device gateway</h2><p>Private local TLS/mTLS for enrolled companions. It is intentionally outside the public status check.</p></div><b>Private</b></article>
+      </section>
+      <aside><strong>Scope</strong><p>Your browser makes same-origin health requests that the server routes only to fixed Kitsu service endpoints. This page can report partial failures, while the independent external monitor covers a complete public outage.</p></aside>
+    </main>
+    <footer><span>K32 · Kitsu</span><button id="refresh" type="button">Refresh checks</button></footer>
+  </body>
+</html>

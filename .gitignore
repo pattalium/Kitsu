@@ -1,0 +1,42 @@
+# Firmware and native host-test outputs
+.pio/
+*.obj
+*.exe
+*.pdb
+
+# Rust
+platform/backend/target/
+platform/gateway/target/
+__pycache__/
+*.pyc
+
+# Web
+platform/web/node_modules/
+platform/web/dist/
+platform/web/.next/
+platform/flash-site/node_modules/
+platform/flash-site/dist/
+
+# Android / iOS generated products
+platform/mobile/android/.gradle/
+platform/mobile/android/**/build/
+platform/mobile/ios/*.xcodeproj/
+platform/mobile/ios/DerivedData/
+
+# Runtime state and local configuration
+.env
+.env.local
+platform/**/data/
+platform/**/secrets/
+*.pem
+*.key
+*.p12
+
+# Public release verification key (not a private credential)
+!platform/public-site/downloads/update-ed25519-public.pem
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

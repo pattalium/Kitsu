@@ -1,0 +1,20 @@
+{
+  "name": "kitsu-web-serial-flasher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "vite build",
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm run test && npm run build && node tools/audit-dist.mjs"
+  },
+  "dependencies": {
+    "esptool-js": "0.6.1"
+  },
+  "devDependencies": {
+    "vite": "8.2.1"
+  }
+}

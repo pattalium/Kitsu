@@ -1,0 +1,229 @@
+name: Kitsu platform
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kitsu-platform-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned PlatformIO
+        run: python -m pip install platformio==6.1.19
+      - name: Link owner-reflashable Heltec V3 firmware
+        run: pio run -e heltec_wifi_lora_32_V3_reflashable
+      - name: All Python model, source-contract, and layout tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: MeshCore interoperability vectors
+        run: node --test tests/test_meshcore_text_vectors.mjs
+
+  firmware-native-vectors:
+    # The checked-in native-test launchers target the audited VS 2022 toolchain.
+    # Pin the image so a windows-latest toolchain rollover cannot block every vector.
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned PlatformIO
+        run: python -m pip install platformio==6.1.19
+      - name: Install pinned reflashable audit runtime
+        shell: cmd
+        run: |
+          python -m venv ..\esptool411-runtime
+          ..\esptool411-runtime\Scripts\python.exe -m pip install --disable-pip-version-check esptool==4.11.0
+          ..\esptool411-runtime\Scripts\esptool.exe version
+      - name: Link the exact reflashable target on Windows
+        run: pio run -e heltec_wifi_lora_32_V3_reflashable
+      - name: Strict native C++ protocol, security, and runtime tests
+        shell: cmd
+        run: |
+          call tools\test_encounter_protocol.cmd || exit /b 1
+          call tools\test_kitsu_chat_contract.cmd || exit /b 1
+          call tools\test_kitsu_mesh_config.cmd || exit /b 1
+          call tools\test_kitsu_mesh_messages.cmd || exit /b 1
+          call tools\test_mini_games.cmd || exit /b 1
+          call tools\test_portrait_ui_layout.cmd || exit /b 1
+          call tools\test_kitsu_companion_protocol.cmd || exit /b 1
+          call tools\test_kitsu_device_security.cmd || exit /b 1
+          call tools\test_mesh_discovery_journal.cmd || exit /b 1
+          call tools\test_kitsu_ble_session.cmd || exit /b 1
+          call tools\test_kitsu_ble_action.cmd || exit /b 1
+          call tools\test_kitsu_enrollment.cmd || exit /b 1
+          call tools\test_kitsu_gateway_enrollment_flow.cmd || exit /b 1
+          call tools\test_kitsu_connectivity.cmd || exit /b 1
+          call tools\test_kitsu_gateway_bootstrap.cmd || exit /b 1
+          call tools\test_kitsu_lan_protocol.cmd || exit /b 1
+          call tools\test_kitsu_gateway_lan_runtime.cmd || exit /b 1
+          call tools\test_kitsu_gateway_action_runtime.cmd || exit /b 1
+      - name: Owner-reflashable and no-eFuse release audits
+        shell: cmd
+        run: |
+          call tools\test_kitsu_reflashable_profile.cmd || exit /b 1
+          call tools\test_package_kitsu_reflashable.cmd || exit /b 1
+
+  rust-services:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kitsu_ci
+          POSTGRES_PASSWORD: kitsu_ci_only
+          POSTGRES_DB: kitsu_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kitsu_ci -d kitsu_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://kitsu_ci:kitsu_ci_only@127.0.0.1:5432/kitsu_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - name: Gateway format
+        run: cargo fmt --manifest-path platform/gateway/Cargo.toml -- --check
+      - name: Gateway lint
+        run: cargo clippy --manifest-path platform/gateway/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Gateway tests
+        run: cargo test --manifest-path platform/gateway/Cargo.toml --locked
+      - name: Backend format
+        run: cargo fmt --manifest-path platform/backend/Cargo.toml -- --check
+      - name: Backend lint
+        run: cargo clippy --manifest-path platform/backend/Cargo.toml --locked --all-targets --all-features -- -D warnings
+      - name: Backend unit tests
+        run: cargo test --manifest-path platform/backend/Cargo.toml --locked --all-features
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: platform/mobile/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Unit, launcher-resource, and release-policy tests
+        run: gradle --no-daemon testDebugUnitTest testReleaseUnitTest
+      - name: Android lint
+        run: gradle --no-daemon lintDebug lintRelease
+      - name: Assemble testable application artifacts
+        run: gradle --no-daemon assembleDebug assembleAndroidTest
+      - name: Physical QA harness self-tests
+        shell: pwsh
+        run: ./qa/test-acceptance-harness.ps1
+
+  android-instrumentation:
+    # A pinned AGP-managed virtual device executes the instrumentation contract.
+    # This is a CI regression gate; it is never physical release evidence.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: platform/mobile/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Permit the managed emulator to use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: API 35 managed-device instrumentation contract
+        run: >-
+          gradle --no-daemon
+          -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+          kitsuCiApi35DebugAndroidTest
+      - name: Preserve managed-device reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-managed-device-reports
+          path: |
+            platform/mobile/android/app/build/reports/androidTests/managedDevice/
+            platform/mobile/android/app/build/outputs/androidTest-results/managedDevice/
+          if-no-files-found: error
+
+  companion-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: platform/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: platform/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+
+  web-serial-flasher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: platform/flash-site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: platform/flash-site/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm audit --omit=dev --audit-level=high
+
+  public-release-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Public release and policy tests
+        run: node --test platform/public-site/tests/site.test.mjs
+      - name: Cross-surface documentation and encoding tests
+        run: node --test platform/flash-site/tests/surfaces.test.mjs

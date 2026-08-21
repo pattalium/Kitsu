@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content="Use the native Kitsu Android app for care, messages, setup, remote access, and Disconnect." /><link rel="icon" type="image/png" href="/assets/kitsu-app-icon.png?v=4f850b55" /><link rel="stylesheet" href="/styles.css?v=c0dcc352" /><title>Android App · Kitsu Manual</title></head>
+<body>
+<header class="docs-header"><a class="brand" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="43" height="43" /><span>Kitsu Manual<small>K32 companion documentation</small></span></a><nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://flash.k32.run">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><a class="button" href="https://app.k32.run">Open Kitsu</a></nav></header>
+<main class="docs-shell"><details class="mobile-manual"><summary><span>Manual</span><b>Android app</b></summary><nav aria-label="Mobile manual pages"><a href="/">Manual home</a><a href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><a aria-current="page" href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></nav></details>
+<aside class="sidebar" aria-label="Manual pages"><strong>Start here</strong><a href="/">Manual home</a><a href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><strong>Use Kitsu</strong><a aria-current="page" href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><strong>Keep it working</strong><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></aside>
+<article class="article">
+<div class="breadcrumbs"><a href="/">Manual</a><span>/</span><span>Android app</span></div><p class="eyebrow">NATIVE ANDROID APP</p><h1>Care, connect, message, disconnect.</h1><p class="lede">Kitsu for Android is a portrait native app. Its normal Connect flow prefers authenticated Bluetooth when your known companion is nearby and falls back remotely only after a bounded absence check. A signed-in owner can also explicitly end Bluetooth and choose Wi-Fi remote access.</p>
+
+<h2>Install and update</h2>
+<ul><li>Android 8.0 or newer is required.</li><li>The current website APK is a signed Android release.</li><li>Download only from the signed link on the <a href="https://k32.run/#download">Kitsu product page</a>.</li><li>The download page verifies a detached release signature before exposing the APK.</li><li>Install a newer release over the existing app to preserve its Android-keystore controller credential.</li></ul>
+<div class="callout"><strong>Current download.</strong>Install the signed Android APK from the Kitsu product page.</div>
+
+<h2>Permissions</h2>
+<table><thead><tr><th>Android version</th><th>Permission</th><th>Why</th></tr></thead><tbody><tr><td>12 and newer</td><td>Nearby devices</td><td>Scan for, pair with, and connect to the Heltec over Bluetooth.</td></tr><tr><td>8 through 11</td><td>Location permission and enabled Location services</td><td>These Android versions require both for Bluetooth LE scanning. Kitsu does not use your location.</td></tr><tr><td>All supported versions</td><td>Notifications, if offered</td><td>Optional user-visible status and message notifications.</td></tr></tbody></table>
+
+<h2>Connection modes</h2>
+<dl><dt>Direct Bluetooth</dt><dd>The phone is near the enrolled Heltec. Care, state, history, messages, Wi-Fi setup, and enrollment use the authenticated device session.</dd><dt>Remote</dt><dd>The user is signed in and a fresh authenticated device snapshot is available through the enrolled gateway. The app reaches this mode either after the normal nearby scan confirms absence or when the owner explicitly selects Wi-Fi remote access.</dd><dt>Disconnected</dt><dd>The user selected Disconnect. Scanning, GATT, notifications, direct transport, and remote fallback stay suppressed until the user selects Connect again—even after an app relaunch.</dd></dl>
+
+<h2>Navigation</h2>
+<div class="card-grid"><section class="info-card"><span>Home</span><h3>Care and state</h3><p>Needs, affection, energy, connectivity, Pet, Feed, Play, and Listen.</p></section><section class="info-card"><span>History</span><h3>Memories and sightings</h3><p>Companion events and verified nearby radio observations.</p></section><section class="info-card"><span>Messages</span><h3>Inbox and composer</h3><p>Direct peers, channels, message text, send state, and received messages.</p></section><section class="info-card"><span>Network</span><h3>Mesh, Wi-Fi, and remote access</h3><p>Channel configuration, Wi-Fi setup, gateway choice, and enrollment state.</p></section></div>
+
+<h2>Connect and Disconnect</h2>
+<p><strong>Connect</strong> starts the nearby-first connection flow. If a stored companion credential exists but the Android bond is missing, the app stops and asks for repair instead of silently falling back.</p><p><strong>Use Wi-Fi remote access</strong> is an explicit owner choice. It closes the current Bluetooth transport and connects to the authenticated owner service without pretending the nearby device is absent.</p><p><strong>Disconnect</strong> closes the Kitsu session and suppresses automatic reconnection. It does not turn off the phone's system-wide Bluetooth radio, disable the Heltec's MeshCore receiver, erase Wi-Fi, or cancel already accepted radio work.</p>
+
+<section id="owner-account">
+<h2>Owner account: what it does and how to get it</h2>
+<p>An owner account is the private service identity that keeps remote companions and gateways attached to the right person. It is <strong>not</strong> a Bluetooth pairing code, a device administrator mode, proof of hardware ownership, or a requirement for nearby use.</p>
+
+<div class="account-scope">
+  <section><span class="scope-label">No account needed</span><h3>Direct Bluetooth</h3><p>Pair the phone, care for Kitsu, read state and messages, send approved messages, and enter local Wi-Fi details while the phone is nearby. These actions use the controller credential created during physical phone pairing.</p></section>
+  <section><span class="scope-label">Owner account needed</span><h3>Remote access</h3><p>Load the owner's trusted gateway list, enroll Kitsu for remote access, view remote companions, and use authenticated sessions when the phone is away. The account prevents one owner's devices from appearing to another owner.</p></section>
+</div>
+
+<h3>Where the first username and password come from</h3>
+<p>There is no public registration button. During initial owner provisioning, the Kitsu service operator creates the account and produces a private bootstrap handoff containing the username and a temporary password. Until delivery over an authenticated private channel, the operator stores that handoff in a file readable only by the operator's service account; on Unix-like systems the file uses mode <code>0600</code>. The public website and Android app cannot display, recreate, or guess it.</p>
+
+<ol class="step-list">
+  <li><strong>Get the private handoff from the service operator.</strong><p>If someone else provisioned your Kitsu environment, ask that person for the initial owner credential handoff. Do not request or share it in a public issue.</p></li>
+  <li><strong>Tap Sign in under Owner account.</strong><p>Kitsu opens the system browser. The password is entered only on the sign-in page, never into the Android app itself.</p></li>
+  <li><strong>Enter the supplied username and temporary password.</strong><p>The first successful login requires you to replace the temporary password with a private permanent password.</p></li>
+  <li><strong>Return to Kitsu after the browser redirects.</strong><p>The app stores only encrypted session tokens in Android Keystore. You can then load trusted gateways and remote companions.</p></li>
+</ol>
+
+<div class="callout warning"><strong>No handoff means remote access is not provisioned yet.</strong>Do not try unrelated passwords. Nearby Bluetooth continues to work without an account. Ask the service operator to provision the owner or issue a replacement handoff.</div>
+
+<h3>Recovery and support</h3>
+<p>There is no self-service email or public password reset. If the handoff or permanent password is lost, request the operator-run recovery procedure through the <a href="https://k32.run/contact/">Kitsu support route</a>. After manually confirming the request, the operator invalidates the old password, terminates its existing server-side sessions, and issues a new temporary password in a new one-time private handoff. Never include a password, bootstrap handoff, private key, Wi-Fi passphrase, or access token in the form, screenshots, or diagnostic logs.</p>
+
+<h3>Sign out</h3>
+<p>Sign out clears the app's remote session and revokes tokens where supported. It does not unpair Bluetooth, erase the local controller credential, remove Wi-Fi, or reconnect an explicitly disconnected session. Direct Bluetooth remains available without signing in.</p>
+</section>
+
+<h2>Cancel during setup</h2>
+<p>Before the physical enrollment confirmation, <strong>Stop setup</strong> disconnects Bluetooth so the Heltec wipes the staged claim. After Kitsu has accepted the PRG enrollment hold and reports that the handoff is committed, the app no longer claims it can cancel the device-side operation; it can only stop waiting for the result.</p>
+
+<div class="callout"><strong>The app never needs Bluetooth forever.</strong>After remote enrollment, a signed-in owner can select Wi-Fi remote access to close the nearby transport and use the authenticated gateway path. Use Disconnect when you want both app transports to stop. Kitsu can continue locally, receive MeshCore traffic, and keep its configured Wi-Fi association independently.</div>
+
+<nav class="next-links" aria-label="Page navigation" data-page="4 of 9"><a href="/device/"><span>Previous</span><b>Device controls</b></a><a href="/messaging/"><span>Next</span><b>Messaging</b></a></nav>
+</article></main>
+<footer class="docs-footer"><span>K32 Kitsu Manual</span><nav><a href="https://k32.run">Product</a><a href="https://github.com/pattalium/Kitsu">GitHub</a><a href="https://k32.run/contact/">Contact</a></nav></footer>
+</body></html>
