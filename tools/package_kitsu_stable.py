@@ -31,15 +31,15 @@ AUTHORIZATION_SCHEMA = "kitsu.firmware-publication-authorization.v1"
 
 # These values are one intrinsic physical-acceptance identity. A version label
 # is not transferable to another application or partition-table build.
-EXPECTED_FIRMWARE_VERSION = "0.10.2"
+EXPECTED_FIRMWARE_VERSION = "0.11.0"
 EXPECTED_AUTHORIZATION_SHA256 = (
-    "59bc4294966267b59a6738fd783310eeeade6d91e70f962d06b8c5d3a52e3dcf"
+    "0321762cb41b9c65a9ecc8d0afd211cfa50f1bf8f27225c0c5764b7d9c729a7f"
 )
 EXPECTED_EVIDENCE_SHA256 = (
-    "0430ac36d30a65c57b7209c8669fad695345796c3f8d4b37cf30c79c5f281b7f"
+    "56dbbf1b92189e17dd809865c6a4453d2a20df1ffb8a9dce40571fd55a771f4c"
 )
 EXPECTED_APPLICATION_SHA256 = (
-    "37c9f694d0d595115284297e6ed3fbf6de9c076f087b094e54d2b8a3a2cd30d9"
+    "7196bb7b16d169a33b4dffc484ac3ea8af06369530e442c0373c47f78e91f5bd"
 )
 EXPECTED_PARTITIONS_SHA256 = (
     "f9b22e16fcfb701520dd6c7e0791582ececbbd44c317c8d519e3d6b2b9ce8b7a"

@@ -145,8 +145,8 @@ After a clean build, create the candidate bundle with the checked-in wrapper
 
 ```powershell
 tools\package_kitsu_reflashable.cmd `
-  dist\kitsu-0.10.2-owner-reflashable `
-  0.10.2
+  dist\kitsu-0.11.0-owner-reflashable `
+  0.11.0
 ```
 
 The wrapper fixes the project root, the

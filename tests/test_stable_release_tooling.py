@@ -26,16 +26,16 @@ class StableReleaseVersionTests(unittest.TestCase):
                 stable.EXPECTED_PARTITIONS_SHA256,
             ),
             (
-                "0.10.2",
-                "59bc4294966267b59a6738fd783310eeeade6d91e70f962d06b8c5d3a52e3dcf",
-                "0430ac36d30a65c57b7209c8669fad695345796c3f8d4b37cf30c79c5f281b7f",
-                "37c9f694d0d595115284297e6ed3fbf6de9c076f087b094e54d2b8a3a2cd30d9",
+                "0.11.0",
+                "0321762cb41b9c65a9ecc8d0afd211cfa50f1bf8f27225c0c5764b7d9c729a7f",
+                "56dbbf1b92189e17dd809865c6a4453d2a20df1ffb8a9dce40571fd55a771f4c",
+                "7196bb7b16d169a33b4dffc484ac3ea8af06369530e442c0373c47f78e91f5bd",
                 "f9b22e16fcfb701520dd6c7e0791582ececbbd44c317c8d519e3d6b2b9ce8b7a",
             ),
         )
         self.assertEqual(
             stable.require_expected_firmware_version(stable.EXPECTED_FIRMWARE_VERSION),
-            "0.10.2",
+            "0.11.0",
         )
 
     def test_requested_version_controls_pack_names_and_guides(self) -> None:
@@ -67,14 +67,14 @@ class StableReleaseVersionTests(unittest.TestCase):
         self.assertNotIn("0.10.0", combined)
 
     def test_default_audit_enforces_intrinsic_version_with_optional_repeat(self) -> None:
-        manifest: dict[str, object] = {"firmware_version": "0.10.2"}
+        manifest: dict[str, object] = {"firmware_version": "0.11.0"}
 
-        self.assertEqual(auditor.audited_firmware_version(manifest), "0.10.2")
+        self.assertEqual(auditor.audited_firmware_version(manifest), "0.11.0")
         self.assertEqual(
             auditor.audited_firmware_version(
-                manifest, expected_firmware_version="0.10.2"
+                manifest, expected_firmware_version="0.11.0"
             ),
-            "0.10.2",
+            "0.11.0",
         )
         with self.assertRaisesRegex(AssertionError, "wrong firmware version"):
             auditor.audited_firmware_version(
@@ -147,7 +147,7 @@ class StableReleaseVersionTests(unittest.TestCase):
             AssertionError, "expected firmware version is invalid"
         ):
             auditor.audited_firmware_version(
-                {"firmware_version": "0.10.2"},
+                {"firmware_version": "0.11.0"},
                 expected_firmware_version="../0.10.2",
             )
 

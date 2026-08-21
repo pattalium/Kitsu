@@ -402,7 +402,7 @@ def test_legacy_production_entrypoints_withdrawn() -> None:
 def test_runner_pins_reviewed_esptool_runtime() -> None:
     runner = (TOOLS / "package_kitsu_reflashable.cmd").read_text(encoding="utf-8")
     normalized = runner.replace("/", "\\").lower()
-    assert 'if "%firmware_version%"=="" set "firmware_version=0.10.2"' in normalized
+    assert 'if "%firmware_version%"=="" set "firmware_version=0.11.0"' in normalized
     assert "esptool411-runtime\\scripts\\python.exe" in normalized
     assert "esptool411-runtime\\scripts\\esptool.exe" in normalized
     assert "esptool-py310" not in normalized

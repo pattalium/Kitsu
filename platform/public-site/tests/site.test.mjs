@@ -64,7 +64,7 @@ test("keeps device companion packs out of the static website", async () => {
   assert.deepEqual(publicFiles.filter((file) => file.toLowerCase().endsWith(".k868")), []);
 });
 
-test("publishes the detached-signature-verified Android 1.0.4 release", async () => {
+test("publishes the detached-signature-verified Android 1.1.0 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -80,14 +80,14 @@ test("publishes the detached-signature-verified Android 1.0.4 release", async ()
     channel: "stable",
     buildType: "release",
     packageId: "app.kitsu.mobile",
-    version: "1.0.4",
-    versionCode: 5,
+    version: "1.1.0",
+    versionCode: 6,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-k32-android-1.0.4.apk",
-    bytes: 2547645,
-    sha256: "dcf3f6c16a45cc1450b5fddc5102b8e1939c75756c704aed9560c35eedb8f2ae",
+    url: "/downloads/kitsu-k32-android-1.1.0.apk",
+    bytes: 2596946,
+    sha256: "ff1af5daeccd92666b0dd1a84240e88d6ee3d66af25f8c4dfd874ae1d466df43",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-20T12:19:02Z",
+    publishedAt: "2026-08-21T17:17:15Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -109,7 +109,7 @@ test("publishes the detached-signature-verified Android 1.0.4 release", async ()
   assert.deepEqual([...await readFile(apk).then((bytes) => bytes.subarray(0, 4))], [0x50, 0x4b, 0x03, 0x04]);
 
   const downloadEntries = await readdir(path.join(root, "downloads"));
-  assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")), ["kitsu-k32-android-1.0.4.apk"]);
+  assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")), ["kitsu-k32-android-1.1.0.apk"]);
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
 });
 
@@ -124,7 +124,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/latest.json",
     "downloads/latest.json.sig",
     "downloads/update-ed25519-public.pem",
-    "downloads/kitsu-k32-android-1.0.4.apk",
+    "downloads/kitsu-k32-android-1.1.0.apk",
   ];
   await Promise.all(files.map((file) => access(path.join(root, file))));
 });
