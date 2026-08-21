@@ -100,6 +100,7 @@ class BleKitsuTransport(
     private val configuration: BleGattConfiguration,
     private val scanTimeoutMillis: Long = 8_000,
     private val mobileRelayOperations: MobileRelayBleOperations = MobileRelayBleOperations(),
+    private val confirmPresenceByScan: Boolean = true,
 ) : KitsuTransport, ControllerPairingService, MobileRelayDeviceSession {
     override val mode: ConnectionMode = ConnectionMode.DIRECT_BLE
 
@@ -147,6 +148,7 @@ class BleKitsuTransport(
     @Volatile private var pairingInbox: Channel<ByteArray>? = null
     @Volatile private var pairingJob: Job? = null
     @Volatile private var envelopeSession: SecureEnvelopeSession? = null
+    @Volatile private var connectedDeviceAddress: String? = null
     @Volatile private var meshOneShotReady = false
     private var failedProofs = 0
     private var proofBackoffUntilMillis = 0L
@@ -166,6 +168,7 @@ class BleKitsuTransport(
         } ?: return ConnectResult.CompanionAbsent
         val missing = missingPermissions()
         if (missing.isNotEmpty()) return ConnectResult.PermissionRequired(missing)
+        if (isConnectedTo(profile.deviceAddress)) return ConnectResult.Connected
 
         return try {
             connectWithPermission(profile)
@@ -355,10 +358,14 @@ class BleKitsuTransport(
                 it.bondState == BluetoothDevice.BOND_BONDED
         } ?: return ConnectResult.Failed("bond_missing_repair_required")
 
-        val seen = when (val scan = scanForKnown(bonded.address)) {
-            is DeviceScan.Found -> scan.device
-            DeviceScan.Absent -> return ConnectResult.CompanionAbsent
-            is DeviceScan.Failed -> return ConnectResult.Failed(scan.code)
+        val seen = if (confirmPresenceByScan) {
+            when (val scan = scanForKnown(bonded.address)) {
+                is DeviceScan.Found -> scan.device
+                DeviceScan.Absent -> return ConnectResult.CompanionAbsent
+                is DeviceScan.Failed -> return ConnectResult.Failed(scan.code)
+            }
+        } else {
+            bonded
         }
         val ready = CompletableDeferred<ConnectResult>()
         connectionReady = ready
@@ -403,6 +410,7 @@ class BleKitsuTransport(
         }
         failedProofs = 0
         envelopeSession = session
+        connectedDeviceAddress = profile.deviceAddress
         try {
             synchronizeClock()
         } catch (cancelled: CancellationException) {
@@ -587,6 +595,20 @@ class BleKitsuTransport(
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             when {
+                newState == BluetoothProfile.STATE_DISCONNECTED -> {
+                    if (this@BleKitsuTransport.gatt === gatt) {
+                        this@BleKitsuTransport.gatt = null
+                        negotiatedMtu = 23
+                        writeCharacteristic = null
+                        notifyCharacteristic = null
+                        envelopeSession = null
+                        connectedDeviceAddress = null
+                        connectionReady?.complete(ConnectResult.Failed("gatt_status_$status"))
+                        pairingInbox?.close(PairingException("gatt_disconnected"))
+                        failPending("gatt_disconnected")
+                    }
+                    runCatching { gatt.close() }
+                }
                 status != BluetoothGatt.GATT_SUCCESS ->
                     connectionReady?.complete(ConnectResult.Failed("gatt_status_$status"))
                 newState == BluetoothProfile.STATE_CONNECTED -> {
@@ -594,12 +616,6 @@ class BleKitsuTransport(
                     if (!mtuStarted && !gatt.discoverServices()) {
                         connectionReady?.complete(ConnectResult.Failed("service_discovery_start_failed"))
                     }
-                }
-                newState == BluetoothProfile.STATE_DISCONNECTED -> {
-                    negotiatedMtu = 23
-                    writeCharacteristic = null
-                    pairingInbox?.close(PairingException("gatt_disconnected"))
-                    failPending("gatt_disconnected")
                 }
             }
         }
@@ -1082,6 +1098,13 @@ class BleKitsuTransport(
 
     override fun events(after: String?): Flow<EventEnvelope> = flow { emitAll(eventBus) }
 
+    /** Lets the foreground public-gateway service take over an already-authenticated
+     * GATT session without disconnecting and immediately trying to scan it again. */
+    fun isConnectedTo(deviceAddress: String): Boolean =
+        connectedDeviceAddress?.equals(deviceAddress, ignoreCase = true) == true &&
+            gatt != null && writeCharacteristic != null && notifyCharacteristic != null &&
+            envelopeSession != null
+
     @SuppressLint("MissingPermission")
     override suspend fun disconnect() {
         val active = gatt
@@ -1091,6 +1114,7 @@ class BleKitsuTransport(
         notifyCharacteristic = null
         negotiatedMtu = 23
         envelopeSession = null
+        connectedDeviceAddress = null
         meshOneShotReady = false
         handshakeResponse?.completeExceptionally(HandshakeException("disconnected"))
         handshakeResponse = null

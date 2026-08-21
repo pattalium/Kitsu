@@ -35,7 +35,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.11.0";
+constexpr char FIRMWARE_VERSION[] = "0.11.1";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 

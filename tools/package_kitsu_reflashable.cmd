@@ -14,7 +14,7 @@ set "PYTHON=%~dp0..\..\esptool411-runtime\Scripts\python.exe"
 set "ESPTOOL=%~dp0..\..\esptool411-runtime\Scripts\esptool.exe"
 set "BUILD_DIR=%PROJECT_ROOT%\.pio\build\heltec_wifi_lora_32_V3_reflashable"
 set "FIRMWARE_VERSION=%~2"
-if "%FIRMWARE_VERSION%"=="" set "FIRMWARE_VERSION=0.11.0"
+if "%FIRMWARE_VERSION%"=="" set "FIRMWARE_VERSION=0.11.1"
 
 "%PYTHON%" "%~dp0package_kitsu_reflashable.py" ^
     --project-root "%PROJECT_ROOT%" ^

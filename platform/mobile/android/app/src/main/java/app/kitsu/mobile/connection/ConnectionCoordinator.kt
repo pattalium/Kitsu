@@ -197,6 +197,17 @@ class ConnectionCoordinator internal constructor(
 
     fun isDirect(): Boolean = active?.mode == ConnectionMode.DIRECT_BLE
 
+    /** Transfers ownership of an existing direct session to the public-gateway
+     * foreground service. The GATT link stays alive; only the normal UI path lets go. */
+    suspend fun handoffDirectForPublicGateway(): Boolean = mutex.withLock {
+        if (active !== direct) return@withLock false
+        active = null
+        backendPollingAuthorizedUntilNanos = 0L
+        runCatching { backend.disconnect() }
+        offline("public_gateway_using_bluetooth")
+        true
+    }
+
     fun isAutomaticReconnectSuppressed(): Boolean = automaticReconnectSuppressed
 
     /**

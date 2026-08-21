@@ -66,11 +66,16 @@ class AppServices(application: Application) {
         credentials = credentials,
         backend = deviceRelay,
         sessions = MobileRelayDeviceSessionFactory { bond ->
-            BleKitsuTransport(
-                context = application,
-                credentials = MobileRelayController.fixedBondCredentials(bond),
-                configuration = bleConfiguration,
-            )
+            if (direct.isConnectedTo(bond.deviceAddress)) {
+                direct
+            } else {
+                BleKitsuTransport(
+                    context = application,
+                    credentials = MobileRelayController.fixedBondCredentials(bond),
+                    configuration = bleConfiguration,
+                    confirmPresenceByScan = false,
+                )
+            }
         },
     )
     // Construct and synchronously load the non-secret stay-disconnected choice before any

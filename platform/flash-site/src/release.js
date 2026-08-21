@@ -19,8 +19,8 @@ export const FLASH_PLAN = Object.freeze({
   partitionBytes: 3072,
   partitionSha256: "f9b22e16fcfb701520dd6c7e0791582ececbbd44c317c8d519e3d6b2b9ce8b7a",
   applicationOffset: 0x010000,
-  applicationBytes: 1380432,
-  applicationSha256: "7196bb7b16d169a33b4dffc484ac3ea8af06369530e442c0373c47f78e91f5bd",
+  applicationBytes: 1380288,
+  applicationSha256: "106ecd2f2013f13997bfb1994a4ba4589b3e9fa9bbf07153ccf7ce3611ee6d67",
 });
 
 const TOP_LEVEL_KEYS = [

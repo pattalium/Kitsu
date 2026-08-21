@@ -1266,13 +1266,18 @@ ConnectionConfigStore::commitMobileRelayGateway(
     setResult(ConfigResult::Ok);
     return MobileRelayGatewayConfigResult::Unchanged;
   }
-  GatewayConfig relay{};
-  relay.mobileRelayOnly = true;
-  memcpy(relay.gatewayId, gatewayUuid, sizeof(relay.gatewayId));
-  memcpy(relay.caCertificateDer, caCertificateDer, caCertificateBytes);
-  relay.caCertificateBytes = static_cast<uint16_t>(caCertificateBytes);
-  const ConfigResult result = commitGateway(relay);
-  secureZero(&relay, sizeof(relay));
+  auto* relay = new (std::nothrow) GatewayConfig{};
+  if (!relay) {
+    setResult(ConfigResult::StorageAllocationFailed);
+    return MobileRelayGatewayConfigResult::Failed;
+  }
+  relay->mobileRelayOnly = true;
+  memcpy(relay->gatewayId, gatewayUuid, sizeof(relay->gatewayId));
+  memcpy(relay->caCertificateDer, caCertificateDer, caCertificateBytes);
+  relay->caCertificateBytes = static_cast<uint16_t>(caCertificateBytes);
+  const ConfigResult result = commitGateway(*relay);
+  secureZero(relay, sizeof(*relay));
+  delete relay;
   return result == ConfigResult::Ok
       ? MobileRelayGatewayConfigResult::Changed
       : MobileRelayGatewayConfigResult::Failed;

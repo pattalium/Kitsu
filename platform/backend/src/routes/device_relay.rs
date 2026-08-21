@@ -54,6 +54,22 @@ pub async fn put_device_relay(
     Json(request): Json<PutDeviceRelayRequest>,
 ) -> Result<Json<MobileRelayResponse>, ApiError> {
     let credential_digest = relay_credential_digest(&headers)?;
+    match state
+        .db
+        .device_relay(installation_id, &credential_digest)
+        .await
+    {
+        Ok(existing) => {
+            if existing.relay.view.gateway_id != request.gateway_id {
+                return Err(ApiError::Conflict(
+                    "device relay is bound to another gateway",
+                ));
+            }
+            return Ok(Json(relay_response(&state, existing.relay.view)));
+        }
+        Err(ApiError::Unauthorized) => {}
+        Err(error) => return Err(error),
+    }
     let source_address = trusted_client_ip(&state.config, remote, &headers)?;
     let source_digest = device_relay_source_digest(
         &state.config.browser_state_key.0,

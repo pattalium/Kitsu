@@ -119,12 +119,13 @@ class MobileRelayController(
                     throw cancelled
                 } catch (failure: Throwable) {
                     SafeLog.warn("mobile_relay", "relay_retry", failure)
+                    val code = (failure as? TransportException)?.code ?: "retrying"
                     mutableState.value = mutableState.value.copy(
                         running = true,
-                        detail = (failure as? TransportException)?.code ?: "retrying",
+                        detail = code,
                         enrollmentRemainingMillis = null,
                     )
-                    delay(RETRY_MILLIS)
+                    delay(if (code == "rate_limited") RATE_LIMIT_RETRY_MILLIS else RETRY_MILLIS)
                 }
             }
         } finally {
@@ -166,7 +167,8 @@ class MobileRelayController(
                     throw cancelled
                 } catch (failure: Throwable) {
                     SafeLog.warn("mobile_relay", "downlink_retry", failure)
-                    delay(RETRY_MILLIS)
+                    val code = (failure as? TransportException)?.code
+                    delay(if (code == "rate_limited") RATE_LIMIT_RETRY_MILLIS else RETRY_MILLIS)
                 }
             }
         }
@@ -179,6 +181,7 @@ class MobileRelayController(
                 if (bonds.isEmpty()) throw TransportException("mobile_relay_pairing_required")
                 var completed = 0
                 var lastFailureCode: String? = null
+                var rateLimited = false
                 for (bond in bonds) {
                     val session = sessions.create(bond)
                     try {
@@ -211,6 +214,11 @@ class MobileRelayController(
                     } catch (failure: Throwable) {
                         SafeLog.warn("mobile_relay", "device_retry", failure)
                         val code = (failure as? TransportException)?.code ?: "retrying_devices"
+                        if (code == "rate_limited") {
+                            rateLimited = true
+                            lastFailureCode = code
+                            break
+                        }
                         if (lastFailureCode != "existing_gateway_enrollment_requires_reset") {
                             lastFailureCode = code
                         }
@@ -227,7 +235,7 @@ class MobileRelayController(
                     },
                     enrollmentRemainingMillis = null,
                 )
-                delay(DEVICE_POLL_MILLIS)
+                delay(if (rateLimited) RATE_LIMIT_RETRY_MILLIS else DEVICE_POLL_MILLIS)
             }
         } finally {
             websocket.cancel()
@@ -601,6 +609,7 @@ class MobileRelayController(
 
         private const val RETRY_MILLIS = 2_000L
         private const val DEVICE_POLL_MILLIS = 2_000L
+        private const val RATE_LIMIT_RETRY_MILLIS = 60L * 60L * 1_000L
         private const val ENROLLMENT_POLL_MILLIS = 1_000L
         private const val DEFAULT_ENROLLMENT_WINDOW_MILLIS = 60_000
         private const val MAX_ENROLLMENT_WINDOW_MILLIS = 300_000

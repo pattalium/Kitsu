@@ -157,11 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun connect(userInitiated: Boolean, directOnly: Boolean = false) {
         if (services.mobileRelayController.state.value.enabled) {
-            if (directOnly) {
-                mutableNotice.value = "Disconnect the public gateway before using nearby Bluetooth"
-            } else {
-                reconnectRemote()
-            }
+            mutableNotice.value = "Public gateway is already using the Kitsu Bluetooth connection"
             return
         }
         if (connectionJob?.isActive == true && disconnectJob?.isActive != true) return

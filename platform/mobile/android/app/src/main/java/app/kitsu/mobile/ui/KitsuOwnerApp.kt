@@ -232,6 +232,7 @@ fun KitsuOwnerApp(
             ) {
                 ConnectionCard(
                     state = state,
+                    mobileRelayState = mobileRelayState,
                     ownerAccountStatus = ownerAccountStatus,
                     gatewayEnrollmentState = gatewayEnrollmentState,
                     onConnectNearby = viewModel::reconnectBluetooth,
@@ -279,6 +280,7 @@ internal data class ConnectionPresentation(
 @Composable
 private fun ConnectionCard(
     state: OwnerState,
+    mobileRelayState: MobileRelayUiState,
     ownerAccountStatus: OwnerAccountStatus,
     gatewayEnrollmentState: MainViewModel.GatewayEnrollmentState,
     onConnectNearby: () -> Unit,
@@ -292,14 +294,29 @@ private fun ConnectionCard(
     val enrollmentInFlight = gatewayEnrollmentInFlight(gatewayEnrollmentState)
     val enrollmentMonitoring = gatewayEnrollmentState == MainViewModel.GatewayEnrollmentState.SwitchingToWifi ||
         gatewayEnrollmentState == MainViewModel.GatewayEnrollmentState.PollingBackend
-    val presentation = when (gatewayEnrollmentState) {
-        MainViewModel.GatewayEnrollmentState.SwitchingToWifi -> ConnectionPresentation(
+    val presentation = when {
+        mobileRelayState.enabled -> ConnectionPresentation(
+            if (mobileRelayState.detail == "connected_public_gateway") {
+                "Public gateway connected"
+            } else {
+                "Connecting public gateway"
+            },
+            when (mobileRelayState.detail) {
+                "hold_prg_to_connect" -> "Hold PRG on Kitsu to finish connecting."
+                "connected_public_gateway" -> "The app is relaying Kitsu over Bluetooth."
+                "rate_limited" -> "Paused after too many automatic retries."
+                else -> friendlyCode(mobileRelayState.detail)
+            },
+            Color(0xFF5B477A),
+            Icons.Filled.Cloud,
+        )
+        gatewayEnrollmentState == MainViewModel.GatewayEnrollmentState.SwitchingToWifi -> ConnectionPresentation(
             "Switching to Wi-Fi",
             "Kitsu accepted enrollment. Bluetooth is ending so the gateway can take over.",
             Color(0xFF42536F),
             Icons.Filled.Wifi,
         )
-        MainViewModel.GatewayEnrollmentState.PollingBackend -> ConnectionPresentation(
+        gatewayEnrollmentState == MainViewModel.GatewayEnrollmentState.PollingBackend -> ConnectionPresentation(
             "Waiting for the gateway",
             "Checking the authenticated owner service for this Kitsu.",
             Color(0xFF42536F),
@@ -339,6 +356,7 @@ private fun ConnectionCard(
                 }
             }
             when {
+                mobileRelayState.enabled -> Unit
                 state.pairing -> OutlinedButton(
                     onClick = onCancelPairing,
                     modifier = Modifier.fillMaxWidth().testTag("connection-cancel-pairing"),
