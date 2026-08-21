@@ -10,7 +10,7 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const EXPECTED_MIGRATION_COUNT: i64 = 9;
+const EXPECTED_MIGRATION_COUNT: i64 = 10;
 
 #[derive(Parser)]
 #[command(about = "Apply or preflight the embedded Kitsu PostgreSQL migrations")]

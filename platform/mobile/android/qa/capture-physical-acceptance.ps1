@@ -108,10 +108,10 @@ param(
     [string]$ExpectedPackageName = 'app.kitsu.mobile',
 
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$')]
-    [string]$ExpectedVersionName = '1.1.0',
+    [string]$ExpectedVersionName = '1.1.1',
 
     [ValidateRange(1, 2147483647)]
-    [int]$ExpectedVersionCode = 6,
+    [int]$ExpectedVersionCode = 7,
 
     [ValidateRange(1, 1000)]
     [int]$ExpectedMinimumApi = 26,

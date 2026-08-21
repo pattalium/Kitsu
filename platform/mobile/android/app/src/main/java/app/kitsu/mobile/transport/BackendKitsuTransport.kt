@@ -582,6 +582,17 @@ class BackendKitsuTransport(
         return OwnerEnrollmentChallenge(enrollment, response.claimToken)
     }
 
+    override suspend fun createEnrollment(
+        installationId: String,
+        hardwareUid: String,
+        displayName: String,
+    ): OwnerEnrollmentChallenge {
+        if (!MobileRelayWirePolicy.canonicalUuid(installationId)) {
+            throw TransportException("invalid_mobile_relay_identity")
+        }
+        return createEnrollment(hardwareUid, displayName)
+    }
+
     override suspend fun ensureRelay(installationId: String, gatewayId: String): MobileRelayIdentity {
         if (!isCanonicalLowercaseUuid(installationId) || !isCanonicalLowercaseUuid(gatewayId)) {
             throw TransportException("invalid_mobile_relay_identity")

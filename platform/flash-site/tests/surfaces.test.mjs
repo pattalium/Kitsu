@@ -26,7 +26,7 @@ test("documentation is a complete user manual without private deployment identif
     "PORTRAIT DEVICE REFERENCE",
     "NATIVE ANDROID APP",
     "MESHCORE MESSAGES",
-    "OPTIONAL CONNECTIVITY",
+    "PORTABLE CONNECTIVITY",
     "SAFE WEB SERIAL INSTALL",
     "DIAGNOSE BEFORE RESETTING",
     "SECURITY MODEL",

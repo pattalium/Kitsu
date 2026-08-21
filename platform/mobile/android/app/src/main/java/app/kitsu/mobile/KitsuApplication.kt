@@ -15,6 +15,7 @@ import app.kitsu.mobile.transport.BackendConfiguration
 import app.kitsu.mobile.transport.BackendKitsuTransport
 import app.kitsu.mobile.transport.BleGattConfiguration
 import app.kitsu.mobile.transport.BleKitsuTransport
+import app.kitsu.mobile.transport.DeviceRelayTransport
 import java.util.UUID
 
 class KitsuApplication : Application() {
@@ -50,21 +51,24 @@ class AppServices(application: Application) {
         configuration = bleConfiguration,
     )
     private val remoteSelection = AndroidRemoteCompanionSelectionStore(application)
+    private val backendConfiguration = BackendConfiguration(BuildConfig.KITSU_BACKEND_URL)
     private val backend = BackendKitsuTransport(
-        configuration = BackendConfiguration(BuildConfig.KITSU_BACKEND_URL),
+        configuration = backendConfiguration,
         tokens = oidc,
         selection = remoteSelection,
+    )
+    private val deviceRelay = DeviceRelayTransport(
+        configuration = backendConfiguration,
+        credentials = credentials,
     )
     val mobileRelayController = MobileRelayController(
         context = application,
         credentials = credentials,
-        backend = backend,
-        enrollmentService = backend,
-        companionCatalog = backend,
+        backend = deviceRelay,
         sessions = MobileRelayDeviceSessionFactory { bond ->
             BleKitsuTransport(
                 context = application,
-                credentials = MobileRelayController.fixedBondCredentials(credentials, bond),
+                credentials = MobileRelayController.fixedBondCredentials(bond),
                 configuration = bleConfiguration,
             )
         },

@@ -30,6 +30,55 @@ class MobileRelayContractTest {
         assertEquals("mobile.relay.exchange", MobileRelayBleOperations().exchange)
     }
 
+    @Test fun deviceRelayRoutesAndScopedAuthorizationAreExact() {
+        val routes = DeviceRelayHttpRoutes()
+        assertEquals("/v1/device-relays/{installation_id}", routes.binding)
+        assertEquals("/v1/device-relays/{installation_id}/enrollments", routes.enrollments)
+        assertEquals(
+            "/v1/device-relays/{installation_id}/enrollments/{enrollment_id}/claim",
+            routes.claim,
+        )
+        assertEquals("/v1/device-relays/{installation_id}/envelopes", routes.envelopes)
+        assertEquals("/v1/device-relays/{installation_id}/session", routes.session)
+
+        val token = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { it.toByte() })
+        assertEquals(43, token.length)
+        assertTrue(MobileRelayWirePolicy.canonicalRelayCredential(token))
+        assertEquals("KitsuRelay $token", DeviceRelayAuthorization.headerValue(token))
+    }
+
+    @Test fun legacyOwnerRelaySettingsRotateIdentityAndPreserveUserChoice() {
+        val legacy = MobileRelaySettings(
+            installationId = "00112233-4455-6677-8899-aabbccddeeff",
+            enabled = true,
+            selectedDeviceAddresses = listOf("00:11:22:33:44:55"),
+            companionBindings = listOf(
+                MobileRelayCompanionBinding(
+                    hardwareUid = "KT1234",
+                    companionId = "10112233-4455-6677-8899-aabbccddeeff",
+                ),
+            ),
+            pendingEnrollment = MobileRelayPendingEnrollment(
+                hardwareUid = "KT1234",
+                enrollmentId = "30112233-4455-6677-8899-aabbccddeeff",
+                expiresAt = "2026-08-21T12:00:00Z",
+            ),
+        )
+        val token = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 7 })
+        val migrated = MobileRelaySettingsPolicy.migrateLegacy(
+            existing = legacy,
+            installationId = "20112233-4455-6677-8899-aabbccddeeff",
+            relayCredentialB64 = token,
+        )
+
+        assertNotEquals(legacy.installationId, migrated.installationId)
+        assertEquals(token, migrated.relayCredentialB64)
+        assertTrue(migrated.enabled)
+        assertEquals(legacy.selectedDeviceAddresses, migrated.selectedDeviceAddresses)
+        assertTrue(migrated.companionBindings.isEmpty())
+        assertEquals(null, migrated.pendingEnrollment)
+    }
+
     @Test fun pullReassemblesExactOrderedChunks() = runTest {
         val payload = ByteArray(MOBILE_RELAY_CHUNK_BYTES + 17) { (it % 251).toByte() }
         val actual = MobileRelayTransfer.pull(MobileRelayPullKind.UPLINK) { _, offset ->

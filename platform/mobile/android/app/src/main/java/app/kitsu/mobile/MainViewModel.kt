@@ -122,7 +122,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reconnectBluetooth() {
         if (services.mobileRelayController.state.value.enabled) {
-            mutableNotice.value = "Turn off mobile relay before using nearby Bluetooth"
+            mutableNotice.value = "Disconnect the public gateway before using nearby Bluetooth"
             return
         }
         if (deviceSetupInProgress()) {
@@ -158,7 +158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun connect(userInitiated: Boolean, directOnly: Boolean = false) {
         if (services.mobileRelayController.state.value.enabled) {
             if (directOnly) {
-                mutableNotice.value = "Turn off mobile relay before using nearby Bluetooth"
+                mutableNotice.value = "Disconnect the public gateway before using nearby Bluetooth"
             } else {
                 reconnectRemote()
             }
@@ -493,10 +493,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 mutableNotice.value = when (
                     (failure as? app.kitsu.mobile.transport.TransportException)?.code
                 ) {
-                    "mobile_relay_pairing_required" -> "Pair a Kitsu before enabling mobile relay"
+                    "mobile_relay_pairing_required" -> "Pair a Kitsu before connecting the public gateway"
                     "mobile_relay_setup_busy" ->
-                        "Finish the current device setup before enabling mobile relay"
-                    else -> "Mobile relay setting was not changed"
+                        "Finish the current device setup before connecting the public gateway"
+                    else -> "Public gateway setting was not changed"
                 }
             }
     }
@@ -509,7 +509,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun pairController(label: String) {
         if (services.mobileRelayController.state.value.enabled) {
-            mutableNotice.value = "Turn off mobile relay before pairing another Kitsu"
+            mutableNotice.value = "Disconnect the public gateway before pairing another Kitsu"
             return
         }
         if (pairingJob?.isActive == true) return

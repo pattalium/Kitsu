@@ -81,7 +81,7 @@
           </article>
           <article>
             <b>02</b>
-            <div><h3>Wi-Fi at home</h3><p>After owner-approved setup, Kitsu can reconnect through its authenticated gateway when the phone is not nearby.</p></div>
+            <div><h3>Public gateway through Android</h3><p>Keep Kitsu portable: the paired phone carries its encrypted gateway traffic over any working Internet connection. Kitsu itself needs no Wi-Fi or owner account.</p></div>
           </article>
           <article>
             <b>03</b>
@@ -99,7 +99,7 @@
           <li><span>1</span><div><strong>Install Kitsu firmware</strong><p>Use the browser flasher with a supported Heltec board. The installer preserves companion data and writes only the reviewed firmware regions.</p></div></li>
           <li><span>2</span><div><strong>Install the Android app</strong><p>Download and manually install the signed Android APK below. Android 8 or newer is required.</p></div></li>
           <li><span>3</span><div><strong>Pair with physical confirmation</strong><p>Compare the six-digit code on Android and Kitsu, accept only if they match, then follow the two PRG prompts.</p></div></li>
-          <li><span>4</span><div><strong>Add Wi-Fi when you want remote access</strong><p>Network credentials stay inside the authenticated Bluetooth setup flow. They are never entered on this website.</p></div></li>
+          <li><span>4</span><div><strong>Connect to the public gateway</strong><p>Tap the button in Android and hold PRG when Kitsu asks. No username, password, or Heltec Wi-Fi setup is required.</p></div></li>
         </ol>
         <div class="start-actions">
           <a class="primary" href="https://flash.k32.run">Open firmware installer</a>
@@ -132,8 +132,8 @@
         <a href="https://docs.k32.run" class="resource-card">
           <span>Manual</span><h3>Learn Kitsu from first boot to daily use.</h3><p>Setup, controls, Wi-Fi, messages, updates, and troubleshooting.</p><b>Read the manual →</b>
         </a>
-        <a href="https://docs.k32.run/android/#owner-account" class="resource-card">
-          <span>Owner account</span><h3>Know exactly when sign-in is needed.</h3><p>Direct Bluetooth needs no account. The guide explains remote access, first credentials, sign-in, and recovery.</p><b>Read the account guide →</b>
+        <a href="https://docs.k32.run/connectivity/" class="resource-card">
+          <span>Public gateway</span><h3>Connect without an account or Heltec Wi-Fi.</h3><p>The Android phone bridges paired Kitsu devices to the public service after one physical PRG approval.</p><b>Read the gateway guide →</b>
         </a>
         <a href="https://flash.k32.run" class="resource-card">
           <span>Firmware</span><h3>Install or update from a supported browser.</h3><p>Signed release checks, targeted writes, and read-back verification.</p><b>Open the installer →</b>
@@ -148,7 +148,7 @@
           <p class="eyebrow">YOUR HARDWARE STAYS YOURS</p>
           <h2>Reflashable by design.</h2>
         </div>
-        <p>Kitsu does not permanently lock the Heltec. You can update it, erase it, return to stock MeshCore, or repurpose the board. Network connections still use authenticated Bluetooth, pinned TLS, owner sign-in, signed actions, and replay protection.</p>
+        <p>Kitsu does not permanently lock the Heltec. You can update it, erase it, return to stock MeshCore, or repurpose the board. Network connections still use authenticated Bluetooth, pinned TLS, scoped gateway credentials, signed actions, and replay protection.</p>
       </section>
     </main>
 

@@ -1247,34 +1247,51 @@ private fun SettingsScreen(
         }
         item {
             OutlinedCard(Modifier.fillMaxWidth().testTag("mobile-relay-settings")) {
-                Row(
+                Column(
                     Modifier.fillMaxWidth().padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Mobile relay", style = MaterialTheme.typography.titleMedium)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Public gateway", style = MaterialTheme.typography.titleMedium)
                         Text(
                             when {
                                 mobileRelayState.pairedDeviceCount == 0 ->
                                     "Pair a Kitsu first. Existing Wi-Fi and LAN connectivity is unchanged."
+                                mobileRelayState.detail == "hold_prg_to_connect" -> {
+                                    val seconds = mobileRelayState.enrollmentRemainingMillis
+                                        ?.let { (it + 999) / 1_000 }
+                                    "Hold PRG on Kitsu to connect" +
+                                        (seconds?.let { " · ${it}s remaining" } ?: "")
+                                }
+                                mobileRelayState.detail == "connected_public_gateway" ->
+                                    "Connected to public gateway"
+                                mobileRelayState.detail == "finishing_public_gateway" ->
+                                    "Finishing public gateway connection"
                                 mobileRelayState.enabled ->
-                                    "${mobileRelayState.selectedDeviceCount} of 3 device slots selected · ${friendlyCode(mobileRelayState.detail)}"
+                                    "Connecting to public gateway · ${friendlyCode(mobileRelayState.detail)}"
                                 else ->
-                                    "Optional owner relay for up to three paired Kitsu devices."
+                                    "Connect up to three paired Kitsu devices without an owner account."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(
-                        checked = mobileRelayState.enabled,
-                        onCheckedChange = viewModel::setMobileRelayEnabled,
-                        enabled = mobileRelayState.enabled ||
-                            (ownerAccountStatus == OwnerAccountStatus.SIGNED_IN &&
-                                mobileRelayState.pairedDeviceCount > 0),
-                        modifier = Modifier.testTag("mobile-relay-toggle"),
-                    )
+                    if (mobileRelayState.enabled) {
+                        OutlinedButton(
+                            onClick = { viewModel.setMobileRelayEnabled(false) },
+                            modifier = Modifier.fillMaxWidth().testTag("mobile-relay-toggle"),
+                        ) {
+                            Text("Disconnect public gateway")
+                        }
+                    } else {
+                        Button(
+                            onClick = { viewModel.setMobileRelayEnabled(true) },
+                            enabled = mobileRelayState.pairedDeviceCount > 0 && !pairingBlocked,
+                            modifier = Modifier.fillMaxWidth().testTag("mobile-relay-toggle"),
+                        ) {
+                            Text("Connect to public gateway")
+                        }
+                    }
                 }
             }
         }
@@ -1765,6 +1782,8 @@ private fun friendlyCode(code: String): String = when {
         "Choose which Kitsu to connect under Owner access."
     code == "remote_companion_offline" ->
         "The enrolled Kitsu is not online through its gateway."
+    code == "existing_gateway_enrollment_requires_reset" ->
+        "This Kitsu is still enrolled to an earlier gateway. Reset its gateway enrollment or contact support."
     code in setOf("backend_unavailable", "backend_permission_invalid") || code.startsWith("http_") ->
         "The authenticated owner service could not be reached. Check internet access and retry."
     code == "connection_cancelled" ->

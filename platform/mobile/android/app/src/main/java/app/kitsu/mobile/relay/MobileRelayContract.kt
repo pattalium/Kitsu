@@ -2,6 +2,7 @@ package app.kitsu.mobile.relay
 
 import app.kitsu.mobile.model.GatewayEnrollmentReceipt
 import app.kitsu.mobile.model.KitsuStatus
+import app.kitsu.mobile.model.OwnerEnrollmentChallenge
 import app.kitsu.mobile.security.BondedCompanion
 import app.kitsu.mobile.transport.ConnectResult
 import app.kitsu.mobile.transport.TransportException
@@ -27,6 +28,25 @@ data class MobileRelayHttpRoutes(
     val envelopes: String = "/v1/mobile-relays/{installation_id}/envelopes",
     val session: String = "/v1/mobile-relays/{installation_id}/session",
 )
+
+data class DeviceRelayHttpRoutes(
+    val binding: String = "/v1/device-relays/{installation_id}",
+    val enrollments: String = "/v1/device-relays/{installation_id}/enrollments",
+    val claim: String = "/v1/device-relays/{installation_id}/enrollments/{enrollment_id}/claim",
+    val envelopes: String = "/v1/device-relays/{installation_id}/envelopes",
+    val session: String = "/v1/device-relays/{installation_id}/session",
+)
+
+object DeviceRelayAuthorization {
+    const val SCHEME = "KitsuRelay"
+
+    fun headerValue(relayCredentialB64: String): String {
+        if (!MobileRelayWirePolicy.canonicalRelayCredential(relayCredentialB64)) {
+            throw TransportException("relay_credential_unavailable")
+        }
+        return "$SCHEME $relayCredentialB64"
+    }
+}
 
 data class MobileRelayBleOperations(
     val exchange: String = "mobile.relay.exchange",
@@ -57,9 +77,50 @@ data class MobileRelayBindingRequest(
 @Serializable
 data class MobileRelaySettings(
     @SerialName("installation_id") val installationId: String,
+    @SerialName("relay_credential_b64") val relayCredentialB64: String? = null,
     val enabled: Boolean = false,
     @SerialName("selected_device_addresses") val selectedDeviceAddresses: List<String> = emptyList(),
+    @SerialName("companion_bindings") val companionBindings: List<MobileRelayCompanionBinding> = emptyList(),
+    @SerialName("pending_enrollment") val pendingEnrollment: MobileRelayPendingEnrollment? = null,
 )
+
+@Serializable
+data class MobileRelayCompanionBinding(
+    @SerialName("hardware_uid") val hardwareUid: String,
+    @SerialName("companion_id") val companionId: String,
+)
+
+/** Bounded crash-recovery metadata; claim tokens and issuer documents remain memory-only. */
+@Serializable
+data class MobileRelayPendingEnrollment(
+    @SerialName("hardware_uid") val hardwareUid: String,
+    @SerialName("enrollment_id") val enrollmentId: String,
+    @SerialName("expires_at") val expiresAt: String,
+)
+
+object MobileRelaySettingsPolicy {
+    fun migrateLegacy(
+        existing: MobileRelaySettings?,
+        installationId: String,
+        relayCredentialB64: String,
+    ): MobileRelaySettings {
+        require(MobileRelayWirePolicy.canonicalUuid(installationId))
+        require(MobileRelayWirePolicy.canonicalRelayCredential(relayCredentialB64))
+        return MobileRelaySettings(
+            installationId = installationId,
+            relayCredentialB64 = relayCredentialB64,
+            enabled = existing?.enabled ?: false,
+            selectedDeviceAddresses = existing?.selectedDeviceAddresses ?: emptyList(),
+        )
+    }
+
+    fun bindCompanion(
+        existing: List<MobileRelayCompanionBinding>,
+        binding: MobileRelayCompanionBinding,
+    ): List<MobileRelayCompanionBinding> = existing.filterNot {
+        it.hardwareUid == binding.hardwareUid || it.companionId == binding.companionId
+    }.plus(binding).takeLast(MAX_MOBILE_RELAY_DEVICES)
+}
 
 @Serializable
 data class MobileRelayClaimResponse(
@@ -123,6 +184,11 @@ enum class MobileRelayPushKind(val wireName: String, val responseKind: String, v
 
 interface MobileRelayBackend {
     suspend fun ensureRelay(installationId: String, gatewayId: String): MobileRelayIdentity
+    suspend fun createEnrollment(
+        installationId: String,
+        hardwareUid: String,
+        displayName: String,
+    ): OwnerEnrollmentChallenge
     suspend fun claimEnrollment(installationId: String, enrollmentId: String, exactRequest: ByteArray): ByteArray
     suspend fun uploadEnvelope(
         installationId: String,
@@ -158,6 +224,7 @@ object MobileRelayWirePolicy {
     const val CHUNK_SCHEMA = "kitsu.mobile-relay.chunk.v1"
     const val RECEIPT_SCHEMA = "kitsu.mobile-relay.receipt.v1"
     const val REMOTE_ACTION_SCHEMA = "kitsu.remote-action.v1"
+    const val RELAY_CREDENTIAL_BYTES = 32
 
     fun canonicalUuid(value: String): Boolean = runCatching {
         value == value.lowercase() && UUID.fromString(value).toString() == value &&
@@ -167,6 +234,14 @@ object MobileRelayWirePolicy {
     fun canonicalU64(value: String): Boolean {
         if (!Regex("^(0|[1-9][0-9]{0,18})$").matches(value)) return false
         return value.toULongOrNull() != null && value.toULong() <= Long.MAX_VALUE.toULong()
+    }
+
+    fun canonicalRelayCredential(value: String?): Boolean {
+        if (value == null || value.length != 43) return false
+        return runCatching {
+            val decoded = decodeCanonical(value, RELAY_CREDENTIAL_BYTES)
+            decoded.size == RELAY_CREDENTIAL_BYTES
+        }.getOrDefault(false)
     }
 
     fun decodeCanonical(value: String, maxBytes: Int): ByteArray {

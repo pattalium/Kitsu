@@ -21,6 +21,7 @@ use crate::{
 type HmacSha256 = Hmac<Sha256>;
 
 const OIDC_SUBJECT_DIGEST_DOMAIN: &[u8] = b"kitsu.oidc-subject-tombstone.v1\0";
+const DEVICE_RELAY_SOURCE_DOMAIN: &[u8] = b"kitsu.device-relay-source.v1\0";
 
 pub struct EncryptedBytes {
     pub nonce: [u8; 12],
@@ -42,6 +43,13 @@ pub fn oidc_subject_digest(issuer: &str, subject: &str) -> [u8; 32] {
 pub fn contact_source_digest(key: &[u8; 32], address: &str) -> [u8; 32] {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts a 32-byte key");
     mac.update(b"kitsu.public-contact-source.v1\0");
+    mac.update(address.as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+pub fn device_relay_source_digest(key: &[u8; 32], address: &str) -> [u8; 32] {
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts a 32-byte key");
+    mac.update(DEVICE_RELAY_SOURCE_DOMAIN);
     mac.update(address.as_bytes());
     mac.finalize().into_bytes().into()
 }

@@ -44,6 +44,17 @@ column contains the plaintext companion secret.
   logical gateway UUID; it receives no gateway certificate or device secret.
   Device enrollment proof and signed-envelope HMAC verification are identical
   to the PC gateway path.
+- An account-free native relay instead presents a 32-byte installation secret
+  as the distinct `KitsuRelay` authorization scheme. The backend stores only
+  its SHA-256 digest, limits it to one immutable installation/gateway binding,
+  and never converts it into owner authorization. It may create and claim up
+  to three companion enrollments; envelope and action-session access remain
+  disabled until the first exact enrollment claim completes.
+- Account-free enrollment is abuse-limited trust on first use, not hardware
+  attestation. Firmware requires local PRG confirmation before releasing its
+  enrollment request, but the backend sees only proof by the key in the
+  caller-supplied CSR. The service does not cryptographically attest PRG,
+  Heltec possession, manufacturing identity, or eFuse state.
 - A fresh gateway cannot self-register through those trusted headers. An owner
   first creates a short-lived one-use bootstrap. The PC submits a signed P-256
   CSR with that bearer token, receives a certificate whose SAN is the
@@ -105,7 +116,8 @@ listener serves `/health/ready` and `/metrics`; do not expose it publicly.
 Owner routes accept either a valid native-app Bearer token or a browser BFF
 session. Browser POST routes additionally require `Origin` and
 `X-CSRF-Token`. Mobile-relay routes are native-only and reject browser
-sessions.
+sessions. Device-relay routes require the separate installation-scoped
+`KitsuRelay` credential and never grant owner API access.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -136,6 +148,12 @@ sessions.
 | `POST /v1/mobile-relays/{installation_id}/enrollments/{enrollment_id}/claim` | Relay the exact existing device enrollment claim. |
 | `POST /v1/mobile-relays/{installation_id}/envelopes` | Upload an untouched device envelope with its spool-record header. |
 | `GET /v1/mobile-relays/{installation_id}/session` | Owner-authenticated action WebSocket using exact gateway action frames. |
+| `PUT /v1/device-relays/{installation_id}` | Idempotently create an account-free pending relay using its installation credential. |
+| `GET /v1/device-relays/{installation_id}` | Resume that exact credential's immutable relay identity and current signing CA. |
+| `POST /v1/device-relays/{installation_id}/enrollments` | Create a one-use enrollment for device 1, 2, or 3. |
+| `POST /v1/device-relays/{installation_id}/enrollments/{enrollment_id}/claim` | Submit the exact existing device claim; the first successful claim activates relay traffic. |
+| `POST /v1/device-relays/{installation_id}/envelopes` | Upload an exact device envelope after activation. |
+| `GET /v1/device-relays/{installation_id}/session` | Open the exact gateway action-frame WebSocket after activation. |
 
 The native app chooses non-nil installation and logical gateway UUIDs. Create
 the immutable binding with:
@@ -168,6 +186,28 @@ the same single canonical `X-Kitsu-Spool-Record-Id` decimal `u64` header. The
 relay CA field is the current companion/device-signing CA certificate for the
 pre-enrollment device trust handoff; it is not the backend HTTPS CA or a
 gateway/client credential.
+
+For account-free setup, the native app generates and persists 32 random bytes
+before its first request and sends their canonical 43-character unpadded
+base64url encoding on every device-relay request:
+
+```http
+PUT /v1/device-relays/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+Authorization: KitsuRelay <43-character canonical unpadded base64url token>
+Content-Type: application/json
+
+{"gateway_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+```
+
+The PUT response is the same relay/CA shape shown above. Same-token retries
+are idempotent, a changed logical gateway is `409`, and a missing, malformed,
+wrong, or cross-installation credential is `401`. The pending credential may
+create one live activation enrollment and submit that enrollment's exact
+claim. The completed claim is replay-safe and idempotently activates steady
+envelope/WebSocket traffic. Once active, the credential may create additional
+enrollments until the backend-enforced total of three active or in-progress
+companions is reached. Never-activated synthetic relay identities with no live
+or resumable enrollment are removed after one day by the retention worker.
 
 `GET /v1/companions/{id}/snapshot` returns:
 

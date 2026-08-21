@@ -1,5 +1,6 @@
 pub mod bootstrap;
 pub mod browser;
+pub mod device_relay;
 pub mod gateway;
 pub mod mobile_relay;
 pub mod ops;
@@ -152,6 +153,26 @@ pub fn public_router(state: AppState) -> Router {
         .route(
             "/v1/gateway/catalog",
             axum::routing::put(gateway::put_catalog),
+        )
+        .route(
+            "/v1/device-relays/{installation_id}",
+            get(device_relay::get_device_relay).put(device_relay::put_device_relay),
+        )
+        .route(
+            "/v1/device-relays/{installation_id}/enrollments",
+            post(device_relay::create_enrollment),
+        )
+        .route(
+            "/v1/device-relays/{installation_id}/enrollments/{enrollment_id}/claim",
+            post(device_relay::claim_enrollment),
+        )
+        .route(
+            "/v1/device-relays/{installation_id}/envelopes",
+            post(device_relay::ingest_envelope),
+        )
+        .route(
+            "/v1/device-relays/{installation_id}/session",
+            get(device_relay::session),
         )
         .merge(owner)
         .layer(SetResponseHeaderLayer::if_not_present(

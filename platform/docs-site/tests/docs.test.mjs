@@ -93,15 +93,15 @@ test("documentation publishes the authoritative app icon bytes", async () => {
   assert.deepEqual([...await readFile(published).then((bytes) => bytes.subarray(0, 8))], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 });
 
-test("owner account guide explains scope, issuance, sign-in, and recovery", async () => {
+test("public gateway is account-free while the optional owner guide remains complete", async () => {
   const [android, connectivity, home] = await Promise.all([
     read("android/index.html"),
     read("connectivity/index.html"),
     read("index.html"),
   ]);
   assert.match(android, /id="owner-account"/);
-  assert.match(android, /No account needed[\s\S]*Direct Bluetooth/);
-  assert.match(android, /Owner account needed[\s\S]*Remote access/);
+  assert.match(android, /No account needed[\s\S]*Bluetooth and public gateway/);
+  assert.match(android, /Owner account optional[\s\S]*Owner service and self-hosted gateways/);
   assert.match(android, /no public registration button/i);
   assert.match(android, /private bootstrap handoff/i);
   assert.match(android, /temporary password/i);
@@ -114,7 +114,7 @@ test("owner account guide explains scope, issuance, sign-in, and recovery", asyn
   assert.match(android, /operator-run recovery procedure/i);
   assert.match(android, /invalidates the old password, terminates its existing server-side sessions, and issues a new temporary password/i);
   assert.match(android, /Never include a password/i);
-  assert.match(connectivity, /Owner sign-in is for the remote path/);
+  assert.match(connectivity, /No owner account is required/);
   assert.match(connectivity, /Owner sign-in is not required for this local step/);
   assert.match(home, /href="\/android\/#owner-account"/);
 });

@@ -6,19 +6,18 @@ import androidx.core.content.ContextCompat
 import app.kitsu.mobile.model.GatewayEnrollmentReceipt
 import app.kitsu.mobile.security.BondedCompanion
 import app.kitsu.mobile.security.CredentialStore
-import app.kitsu.mobile.security.OAuthTokens
 import app.kitsu.mobile.security.SafeLog
 import app.kitsu.mobile.transport.ConnectResult
-import app.kitsu.mobile.transport.OwnerEnrollmentService
-import app.kitsu.mobile.transport.RemoteCompanionCatalog
 import app.kitsu.mobile.transport.TransportException
+import java.security.SecureRandom
+import java.time.Instant
+import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -39,6 +38,7 @@ data class MobileRelayUiState(
     val pairedDeviceCount: Int = 0,
     val selectedDeviceCount: Int = 0,
     val detail: String = "off",
+    val enrollmentRemainingMillis: Int? = null,
 )
 
 /**
@@ -49,8 +49,6 @@ class MobileRelayController(
     private val context: Context,
     private val credentials: CredentialStore,
     private val backend: MobileRelayBackend,
-    private val enrollmentService: OwnerEnrollmentService,
-    private val companionCatalog: RemoteCompanionCatalog,
     private val sessions: MobileRelayDeviceSessionFactory,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -58,6 +56,7 @@ class MobileRelayController(
     private val initialized = CompletableDeferred<Unit>()
     private val mutableState = MutableStateFlow(MobileRelayUiState())
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    private val random = SecureRandom()
     private val nextSpoolRecordId = AtomicLong(System.currentTimeMillis().coerceAtLeast(1L))
 
     val state: StateFlow<MobileRelayUiState> = mutableState.asStateFlow()
@@ -104,7 +103,11 @@ class MobileRelayController(
     }
 
     suspend fun runForegroundService() {
-        mutableState.value = mutableState.value.copy(running = true, detail = "starting")
+        mutableState.value = mutableState.value.copy(
+            running = true,
+            detail = "connecting_public_gateway",
+            enrollmentRemainingMillis = null,
+        )
         try {
             while (kotlin.coroutines.coroutineContext.isActive) {
                 val settings = enabledSettings() ?: break
@@ -119,12 +122,17 @@ class MobileRelayController(
                     mutableState.value = mutableState.value.copy(
                         running = true,
                         detail = (failure as? TransportException)?.code ?: "retrying",
+                        enrollmentRemainingMillis = null,
                     )
                     delay(RETRY_MILLIS)
                 }
             }
         } finally {
-            mutableState.value = mutableState.value.copy(running = false, detail = "off")
+            mutableState.value = mutableState.value.copy(
+                running = false,
+                detail = "off",
+                enrollmentRemainingMillis = null,
+            )
         }
     }
 
@@ -169,10 +177,8 @@ class MobileRelayController(
                 drainDownlinks(inbound, pending, deliveredActionIds)
                 val bonds = selectedBonds(settings)
                 if (bonds.isEmpty()) throw TransportException("mobile_relay_pairing_required")
-                val knownCompanions = runCatching { companionCatalog.companions() }
-                    .getOrDefault(emptyList())
-                    .groupBy { it.hardwareUid }
                 var completed = 0
+                var lastFailureCode: String? = null
                 for (bond in bonds) {
                     val session = sessions.create(bond)
                     try {
@@ -189,13 +195,13 @@ class MobileRelayController(
                         // Configuration may invalidate credentials bound to a different gateway.
                         val status = session.status()
                         val companionId = if (status.lan.gatewayEnrolled == true) {
-                            knownCompanions[status.deviceId]
-                                ?.singleOrNull()
-                                ?.id
-                                ?.takeIf(MobileRelayWirePolicy::canonicalUuid)
+                            val binding = settings.companionBindings
+                                .singleOrNull { it.hardwareUid == status.deviceId }
                                 ?: throw TransportException("mobile_relay_companion_binding_missing")
+                            clearPendingEnrollment(settings.installationId, status.deviceId)
+                            binding.companionId
                         } else {
-                            enroll(session, status.deviceId, status.displayName, initialSettings, identity)
+                            enroll(session, status.deviceId, status.displayName, settings, identity)
                         }
                         relayUplink(session, initialSettings.installationId)
                         deliverDownlinks(session, companionId, pending, deliveredActionIds)
@@ -204,13 +210,22 @@ class MobileRelayController(
                         throw cancelled
                     } catch (failure: Throwable) {
                         SafeLog.warn("mobile_relay", "device_retry", failure)
+                        val code = (failure as? TransportException)?.code ?: "retrying_devices"
+                        if (lastFailureCode != "existing_gateway_enrollment_requires_reset") {
+                            lastFailureCode = code
+                        }
                     } finally {
                         runCatching { session.disconnect() }
                     }
                 }
                 mutableState.value = mutableState.value.copy(
                     running = true,
-                    detail = if (completed == bonds.size) "relaying" else "retrying_devices",
+                    detail = if (completed == bonds.size) {
+                        "connected_public_gateway"
+                    } else {
+                        lastFailureCode ?: "retrying_devices"
+                    },
+                    enrollmentRemainingMillis = null,
                 )
                 delay(DEVICE_POLL_MILLIS)
             }
@@ -228,7 +243,28 @@ class MobileRelayController(
         settings: MobileRelaySettings,
         identity: MobileRelayIdentity,
     ): String {
-        val challenge = enrollmentService.createEnrollment(hardwareUid, displayName)
+        settings.pendingEnrollment?.let { pending ->
+            if (pending.hardwareUid != hardwareUid) {
+                throw TransportException("mobile_relay_enrollment_in_progress")
+            }
+            if (!Instant.parse(pending.expiresAt).isAfter(Instant.now())) {
+                throw TransportException("existing_gateway_enrollment_requires_reset")
+            }
+            mutableState.value = mutableState.value.copy(
+                running = true,
+                detail = "finishing_public_gateway",
+                enrollmentRemainingMillis = null,
+            )
+            return completeEnrollment(
+                session,
+                hardwareUid,
+                settings,
+                identity,
+                pending.enrollmentId,
+                recovering = true,
+            )
+        }
+        val challenge = backend.createEnrollment(settings.installationId, hardwareUid, displayName)
         val enrollmentId = challenge.enrollment.id
         val begin = session.beginEnrollment(enrollmentId, challenge.claimToken)
         validateEnrollmentReceipt(begin, enrollmentId)
@@ -237,6 +273,14 @@ class MobileRelayController(
         val deadline = System.nanoTime() + durationMillis * 1_000_000L
         var finish: GatewayEnrollmentReceipt? = null
         while (System.nanoTime() < deadline) {
+            val remainingMillis = ((deadline - System.nanoTime()) / 1_000_000L)
+                .coerceIn(1L, Int.MAX_VALUE.toLong())
+                .toInt()
+            mutableState.value = mutableState.value.copy(
+                running = true,
+                detail = "hold_prg_to_connect",
+                enrollmentRemainingMillis = remainingMillis,
+            )
             delay(ENROLLMENT_POLL_MILLIS)
             finish = session.finishEnrollment(enrollmentId)
             validateEnrollmentReceipt(finish, enrollmentId, allowPending = true)
@@ -245,8 +289,38 @@ class MobileRelayController(
         if (finish?.accepted != true || finish.state != "ready_for_wifi") {
             throw TransportException("mobile_relay_enrollment_expired")
         }
+        mutableState.value = mutableState.value.copy(
+            running = true,
+            detail = "finishing_public_gateway",
+            enrollmentRemainingMillis = null,
+        )
+        savePendingEnrollment(
+            settings.installationId,
+            MobileRelayPendingEnrollment(
+                hardwareUid = hardwareUid,
+                enrollmentId = enrollmentId,
+                expiresAt = challenge.enrollment.expiresAt,
+            ),
+        )
+        return completeEnrollment(session, hardwareUid, settings, identity, enrollmentId)
+    }
+
+    private suspend fun completeEnrollment(
+        session: MobileRelayDeviceSession,
+        hardwareUid: String,
+        settings: MobileRelaySettings,
+        identity: MobileRelayIdentity,
+        enrollmentId: String,
+        recovering: Boolean = false,
+    ): String {
         val exactRequest = MobileRelayTransfer.pull(MobileRelayPullKind.ENROLLMENT, session::pull)
-            ?: throw TransportException("mobile_relay_enrollment_request_missing")
+            ?: throw TransportException(
+                if (recovering) {
+                    "existing_gateway_enrollment_requires_reset"
+                } else {
+                    "mobile_relay_enrollment_request_missing"
+                },
+            )
         var exactResponse: ByteArray? = null
         try {
             exactResponse = backend.claimEnrollment(
@@ -263,7 +337,9 @@ class MobileRelayController(
             if (response.gatewayId != identity.gatewayId ||
                 !MobileRelayWirePolicy.canonicalUuid(response.companionId)
             ) throw TransportException("mobile_relay_enrollment_binding_failed")
+            saveCompanionBinding(settings.installationId, hardwareUid, response.companionId)
             MobileRelayTransfer.push(MobileRelayPushKind.ENROLLMENT, exactResponse, session::push)
+            clearPendingEnrollment(settings.installationId, hardwareUid, enrollmentId)
             return response.companionId
         } finally {
             exactRequest.fill(0)
@@ -367,20 +443,41 @@ class MobileRelayController(
     }
 
     private suspend fun loadOrCreateSettings(): MobileRelaySettings {
-        credentials.mobileRelaySettings()?.let { return it }
-        return MobileRelaySettings(installationId = UUID.randomUUID().toString()).also {
-            credentials.saveMobileRelaySettings(it)
-        }
+        val existing = credentials.mobileRelaySettings()
+        if (existing != null &&
+            MobileRelayWirePolicy.canonicalRelayCredential(existing.relayCredentialB64)
+        ) return existing
+        // 1.1.0 used an owner-scoped relay with the same deterministic gateway
+        // derivation. Rotate both identifiers so the first account-free connect
+        // deliberately reconfigures and re-enrolls instead of colliding with it.
+        return MobileRelaySettingsPolicy.migrateLegacy(
+            existing = existing,
+            installationId = UUID.randomUUID().toString(),
+            relayCredentialB64 = newRelayCredential(),
+        ).also { credentials.saveMobileRelaySettings(it) }
     }
 
     private fun validateSettings(settings: MobileRelaySettings, bonds: List<BondedCompanion>) {
         if (!MobileRelayWirePolicy.canonicalUuid(settings.installationId) ||
+            !MobileRelayWirePolicy.canonicalRelayCredential(settings.relayCredentialB64) ||
             settings.selectedDeviceAddresses.size > MAX_MOBILE_RELAY_DEVICES ||
             settings.selectedDeviceAddresses.distinctBy(String::lowercase).size !=
             settings.selectedDeviceAddresses.size ||
             settings.selectedDeviceAddresses.any { selected ->
                 bonds.none { it.deviceAddress.equals(selected, ignoreCase = true) }
-            } || (settings.enabled && settings.selectedDeviceAddresses.isEmpty())
+            } || settings.companionBindings.size > MAX_MOBILE_RELAY_DEVICES ||
+            settings.companionBindings.distinctBy(MobileRelayCompanionBinding::hardwareUid).size !=
+            settings.companionBindings.size ||
+            settings.companionBindings.distinctBy(MobileRelayCompanionBinding::companionId).size !=
+            settings.companionBindings.size ||
+            settings.companionBindings.any {
+                !HARDWARE_UID.matches(it.hardwareUid) ||
+                    !MobileRelayWirePolicy.canonicalUuid(it.companionId)
+            } || settings.pendingEnrollment?.let {
+                !HARDWARE_UID.matches(it.hardwareUid) ||
+                    !MobileRelayWirePolicy.canonicalUuid(it.enrollmentId) ||
+                    runCatching { Instant.parse(it.expiresAt) }.getOrNull() == null
+            } == true || (settings.enabled && settings.selectedDeviceAddresses.isEmpty())
         ) throw TransportException("invalid_mobile_relay_settings")
     }
 
@@ -395,12 +492,63 @@ class MobileRelayController(
             pairedDeviceCount = bonds.size.coerceAtMost(MAX_MOBILE_RELAY_DEVICES),
             selectedDeviceCount = settings.selectedDeviceAddresses.size,
             detail = if (settings.enabled) {
-                if (running) mutableState.value.detail else "waiting"
+                if (running) mutableState.value.detail else "connecting_public_gateway"
             } else {
                 "off"
             },
+            enrollmentRemainingMillis = if (running) {
+                mutableState.value.enrollmentRemainingMillis
+            } else {
+                null
+            },
         )
     }
+
+    private suspend fun saveCompanionBinding(
+        installationId: String,
+        hardwareUid: String,
+        companionId: String,
+    ) = settingsMutex.withLock {
+        val current = loadOrCreateSettings()
+        if (current.installationId != installationId) {
+            throw TransportException("mobile_relay_binding_changed")
+        }
+        val binding = MobileRelayCompanionBinding(hardwareUid, companionId)
+        val updated = current.copy(
+            companionBindings = MobileRelaySettingsPolicy.bindCompanion(
+                current.companionBindings,
+                binding,
+            ),
+        )
+        credentials.saveMobileRelaySettings(updated)
+    }
+
+    private suspend fun savePendingEnrollment(
+        installationId: String,
+        pending: MobileRelayPendingEnrollment,
+    ) = settingsMutex.withLock {
+        val current = loadOrCreateSettings()
+        if (current.installationId != installationId) {
+            throw TransportException("mobile_relay_binding_changed")
+        }
+        credentials.saveMobileRelaySettings(current.copy(pendingEnrollment = pending))
+    }
+
+    private suspend fun clearPendingEnrollment(
+        installationId: String,
+        hardwareUid: String,
+        enrollmentId: String? = null,
+    ) = settingsMutex.withLock {
+        val current = loadOrCreateSettings()
+        val pending = current.pendingEnrollment ?: return@withLock
+        if (current.installationId != installationId || pending.hardwareUid != hardwareUid ||
+            enrollmentId?.let { pending.enrollmentId != it } == true
+        ) return@withLock
+        credentials.saveMobileRelaySettings(current.copy(pendingEnrollment = null))
+    }
+
+    private fun newRelayCredential(): String = Base64.getUrlEncoder().withoutPadding()
+        .encodeToString(ByteArray(MobileRelayWirePolicy.RELAY_CREDENTIAL_BYTES).also(random::nextBytes))
 
     private fun startService() {
         runCatching { ContextCompat.startForegroundService(context, serviceIntent()) }
@@ -437,20 +585,19 @@ class MobileRelayController(
     )
 
     private class FixedBondCredentialStore(
-        private val delegate: CredentialStore,
         private val bond: BondedCompanion,
     ) : CredentialStore {
         override suspend fun bondedCompanion(): BondedCompanion = bond
         override suspend fun bondedCompanions(): List<BondedCompanion> = listOf(bond)
         override suspend fun saveBondedCompanion(value: BondedCompanion?) = Unit
         override suspend fun savePendingBondedCompanion(value: BondedCompanion?) = Unit
-        override suspend fun oauthTokens(): OAuthTokens? = delegate.oauthTokens()
-        override suspend fun saveOauthTokens(value: OAuthTokens?) = Unit
+        override suspend fun oauthTokens() = null
+        override suspend fun saveOauthTokens(value: app.kitsu.mobile.security.OAuthTokens?) = Unit
     }
 
     companion object {
-        fun fixedBondCredentials(delegate: CredentialStore, bond: BondedCompanion): CredentialStore =
-            FixedBondCredentialStore(delegate, bond)
+        fun fixedBondCredentials(bond: BondedCompanion): CredentialStore =
+            FixedBondCredentialStore(bond)
 
         private const val RETRY_MILLIS = 2_000L
         private const val DEVICE_POLL_MILLIS = 2_000L
@@ -460,5 +607,6 @@ class MobileRelayController(
         private const val MAX_PENDING_DOWNLINKS = 32
         private const val MAX_DELIVERED_ACTION_IDS = 64
         private const val MAX_UPLINKS_PER_DEVICE_CYCLE = 4
+        private val HARDWARE_UID = Regex("^KT[0-9A-F]{4}$")
     }
 }

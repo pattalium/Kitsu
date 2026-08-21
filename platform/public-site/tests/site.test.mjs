@@ -32,7 +32,7 @@ test("publishes a complete product surface with real destinations", async () => 
   assert.match(html, /Portrait companion/);
   assert.match(html, /Download Android/);
   assert.match(html, /https:\/\/docs\.k32\.run/);
-  assert.match(html, /https:\/\/docs\.k32\.run\/android\/#owner-account/);
+  assert.match(html, /https:\/\/docs\.k32\.run\/connectivity\//);
   assert.match(html, /https:\/\/flash\.k32\.run/);
   assert.match(html, /https:\/\/app\.k32\.run/);
   assert.match(html, /https:\/\/github\.com\/pattalium\/Kitsu/);

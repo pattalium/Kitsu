@@ -144,7 +144,7 @@ fn relay_rate_subject(owner_id: Uuid, installation_id: Uuid) -> [u8; 32] {
     sha256(&subject)
 }
 
-fn relay_response(state: &AppState, view: MobileRelayView) -> MobileRelayResponse {
+pub(crate) fn relay_response(state: &AppState, view: MobileRelayView) -> MobileRelayResponse {
     MobileRelayResponse {
         installation_id: view.installation_id,
         gateway_id: view.gateway_id,

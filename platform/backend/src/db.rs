@@ -11,6 +11,7 @@ use sqlx::{
     postgres::{PgPoolOptions, PgRow},
     PgPool, Postgres, Row, Transaction,
 };
+use subtle::ConstantTimeEq;
 
 use crate::{
     crypto::{oidc_subject_digest, sha256, EncryptedBytes},
@@ -34,6 +35,9 @@ use crate::{
 // idempotency token before its five-minute provider window closes.
 const ISSUANCE_LEASE_SECONDS: i64 = 195;
 const PROVIDER_RETRY_WINDOW_SECONDS: i64 = 255;
+const DEVICE_RELAY_OWNER_ISSUER: &str = "urn:kitsu:device-relay";
+const DEVICE_RELAY_MAXIMUM_COMPANIONS: i64 = 3;
+const DEVICE_RELAY_PENDING_RETENTION_SECONDS: i64 = 86_400;
 
 #[derive(Clone)]
 pub struct Database {
@@ -83,6 +87,11 @@ pub struct MobileRelayView {
 pub struct MobileRelay {
     pub view: MobileRelayView,
     pub gateway: Gateway,
+}
+
+pub struct DeviceRelay {
+    pub relay: MobileRelay,
+    pub activated: bool,
 }
 
 #[derive(Serialize)]
@@ -367,6 +376,15 @@ impl Database {
                     Cow::Borrowed(include_str!("../migrations/0009_mobile_relay.sql")),
                     false,
                 ),
+                sqlx::migrate::Migration::new(
+                    10,
+                    Cow::Borrowed("device relay credentials"),
+                    sqlx::migrate::MigrationType::Simple,
+                    Cow::Borrowed(include_str!(
+                        "../migrations/0010_device_relay_credentials.sql"
+                    )),
+                    false,
+                ),
             ]),
             ..sqlx::migrate::Migrator::DEFAULT
         };
@@ -489,6 +507,74 @@ impl Database {
         sqlx::query(
             "DELETE FROM rate_limit_buckets WHERE expires_at < clock_timestamp()-interval '1 day'",
         )
+        .execute(&mut *tx)
+        .await?;
+        // Bound account-free bootstrap rows without touching owner-created
+        // relays or a first-use claim that can still safely resume. A claimed
+        // companion or any durable audit foreign key also keeps the identity.
+        sqlx::query(
+            r#"
+            WITH candidates AS MATERIALIZED (
+              SELECT g.id AS gateway_id
+              FROM gateways g
+              JOIN mobile_relay_installations m ON m.gateway_id=g.id
+              JOIN mobile_relay_credentials c
+                ON c.installation_id=m.installation_id
+              JOIN owners o ON o.id=m.owner_id
+              WHERE o.issuer=$1 AND o.subject=m.installation_id::text
+                AND c.activated_at IS NULL
+                AND c.created_at<clock_timestamp()
+                      -make_interval(secs => $2::double precision)
+                AND NOT EXISTS (
+                  SELECT 1 FROM gateway_companions gc
+                  WHERE gc.gateway_id=g.id AND gc.unbound_at IS NULL
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM enrollment_challenges e
+                  WHERE e.owner_id=m.owner_id AND (
+                    e.status='claimed' OR
+                    (e.status='pending' AND e.expires_at>clock_timestamp()) OR
+                    (e.status='issuing' AND NOT (
+                      e.provider_job_id IS NULL AND
+                      e.provider_started_at IS NOT NULL AND
+                      e.provider_started_at<=clock_timestamp()
+                        -make_interval(secs => $3::double precision)
+                    ))
+                  )
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM audit_log a
+                  WHERE a.actor_gateway_id=g.id OR a.actor_owner_id=m.owner_id
+                )
+              FOR UPDATE OF g,c,o SKIP LOCKED
+            )
+            DELETE FROM gateways g USING candidates d
+            WHERE g.id=d.gateway_id
+            "#,
+        )
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
+        .bind(DEVICE_RELAY_PENDING_RETENTION_SECONDS)
+        .bind(PROVIDER_RETRY_WINDOW_SECONDS)
+        .execute(&mut *tx)
+        .await?;
+        // The gateway delete cascades its relay installation and credential;
+        // removing the now-orphaned synthetic owner also removes expired
+        // enrollment challenges. Human/OIDC owners never match this issuer.
+        sqlx::query(
+            r#"
+            DELETE FROM owners o
+            WHERE o.issuer=$1
+              AND NOT EXISTS (SELECT 1 FROM gateways g WHERE g.owner_id=o.id)
+              AND NOT EXISTS (
+                SELECT 1 FROM mobile_relay_installations m WHERE m.owner_id=o.id
+              )
+              AND NOT EXISTS (SELECT 1 FROM companions c WHERE c.owner_id=o.id)
+              AND NOT EXISTS (
+                SELECT 1 FROM audit_log a WHERE a.actor_owner_id=o.id
+              )
+            "#,
+        )
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
         .execute(&mut *tx)
         .await?;
         sqlx::query("DELETE FROM device_requests WHERE received_at < clock_timestamp()-make_interval(days=>$1)")
@@ -2624,6 +2710,341 @@ impl Database {
         })
     }
 
+    /// Creates one account-free relay identity. A dedicated internal owner per
+    /// installation preserves all existing gateway/enrollment ownership
+    /// constraints without granting the credential access to owner routes.
+    /// The credential remains pending until a device enrollment claim made
+    /// through this relay succeeds.
+    pub async fn create_or_get_device_relay(
+        &self,
+        installation_id: Uuid,
+        gateway_id: Uuid,
+        token_digest: &[u8; 32],
+    ) -> Result<DeviceRelay, ApiError> {
+        if installation_id.is_nil() || gateway_id.is_nil() {
+            return Err(ApiError::Invalid("invalid device relay identity"));
+        }
+        let subject = installation_id.to_string();
+        let candidate_owner_id = Uuid::new_v4();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO owners (id,issuer,subject,display_name)
+            VALUES ($1,$2,$3,'Device relay')
+            ON CONFLICT (issuer,subject) DO NOTHING
+            "#,
+        )
+        .bind(candidate_owner_id)
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
+        .bind(&subject)
+        .execute(&mut *tx)
+        .await?;
+        // Serializes first-use races for the same installation without a
+        // process-local lock. The owner row is dedicated to this installation.
+        let owner_id: Uuid =
+            sqlx::query_scalar("SELECT id FROM owners WHERE issuer=$1 AND subject=$2 FOR UPDATE")
+                .bind(DEVICE_RELAY_OWNER_ISSUER)
+                .bind(&subject)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        let existing = sqlx::query(
+            r#"
+            SELECT m.installation_id,m.gateway_id,m.created_at,m.owner_id,
+                   g.status::text AS gateway_status,c.token_digest,c.activated_at
+            FROM mobile_relay_installations m
+            JOIN gateways g ON g.id=m.gateway_id AND g.owner_id=m.owner_id
+            LEFT JOIN mobile_relay_credentials c
+              ON c.installation_id=m.installation_id
+            WHERE m.installation_id=$1
+            FOR UPDATE OF g
+            "#,
+        )
+        .bind(installation_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(row) = existing {
+            if row.get::<Uuid, _>("owner_id") != owner_id {
+                return Err(ApiError::Unauthorized);
+            }
+            let stored = row
+                .get::<Option<Vec<u8>>, _>("token_digest")
+                .map(exact_bytes::<32>)
+                .transpose()?
+                .ok_or(ApiError::Unauthorized)?;
+            if !bool::from(stored.ct_eq(token_digest)) {
+                return Err(ApiError::Unauthorized);
+            }
+            if row.get::<Uuid, _>("gateway_id") != gateway_id {
+                return Err(ApiError::Conflict(
+                    "device relay is bound to another gateway",
+                ));
+            }
+            if row.get::<String, _>("gateway_status") != "active" {
+                return Err(ApiError::Forbidden);
+            }
+            let relay = device_relay_from_row(&row)?;
+            tx.commit().await?;
+            return Ok(relay);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO gateways (id,owner_id,status,activated_at)
+            VALUES ($1,$2,'active',clock_timestamp())
+            ON CONFLICT (id) DO NOTHING
+            "#,
+        )
+        .bind(gateway_id)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        let gateway_owner: Option<Uuid> = sqlx::query_scalar(
+            "SELECT owner_id FROM gateways WHERE id=$1 AND status='active' FOR SHARE",
+        )
+        .bind(gateway_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if gateway_owner != Some(owner_id) {
+            return Err(ApiError::Conflict(
+                "device relay gateway identity is unavailable",
+            ));
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO mobile_relay_installations
+                (installation_id,owner_id,gateway_id)
+            VALUES ($1,$2,$3)
+            "#,
+        )
+        .bind(installation_id)
+        .bind(owner_id)
+        .bind(gateway_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_conflict)?;
+        sqlx::query(
+            r#"
+            INSERT INTO mobile_relay_credentials (installation_id,token_digest)
+            VALUES ($1,$2)
+            "#,
+        )
+        .bind(installation_id)
+        .bind(token_digest.as_slice())
+        .execute(&mut *tx)
+        .await
+        .map_err(map_conflict)?;
+        let row = sqlx::query(
+            r#"
+            SELECT m.installation_id,m.gateway_id,m.created_at,m.owner_id,
+                   c.activated_at
+            FROM mobile_relay_installations m
+            JOIN mobile_relay_credentials c
+              ON c.installation_id=m.installation_id
+            WHERE m.installation_id=$1 AND m.owner_id=$2
+            "#,
+        )
+        .bind(installation_id)
+        .bind(owner_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let relay = device_relay_from_row(&row)?;
+        tx.commit().await?;
+        Ok(relay)
+    }
+
+    /// Authenticates one installation-scoped credential. Missing
+    /// installations and wrong credentials intentionally have one result.
+    pub async fn device_relay(
+        &self,
+        installation_id: Uuid,
+        token_digest: &[u8; 32],
+    ) -> Result<DeviceRelay, ApiError> {
+        if installation_id.is_nil() {
+            return Err(ApiError::Unauthorized);
+        }
+        let row = sqlx::query(
+            r#"
+            SELECT m.installation_id,m.gateway_id,m.created_at,m.owner_id,
+                   c.activated_at
+            FROM mobile_relay_installations m
+            JOIN mobile_relay_credentials c
+              ON c.installation_id=m.installation_id
+            JOIN gateways g ON g.id=m.gateway_id AND g.owner_id=m.owner_id
+            JOIN owners o ON o.id=m.owner_id
+            WHERE m.installation_id=$1 AND c.token_digest=$2
+              AND o.issuer=$3 AND o.subject=$4 AND g.status='active'
+            "#,
+        )
+        .bind(installation_id)
+        .bind(token_digest.as_slice())
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
+        .bind(installation_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+        device_relay_from_row(&row)
+    }
+
+    /// Creates a one-use device enrollment for this relay. A pending
+    /// credential may hold one live activation attempt; an active credential
+    /// may fill the installation's remaining three companion slots.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_device_relay_enrollment(
+        &self,
+        installation_id: Uuid,
+        credential_digest: &[u8; 32],
+        hardware_uid: &str,
+        display_name: &str,
+        claim_token_digest: &[u8; 32],
+        ttl: Duration,
+    ) -> Result<EnrollmentView, ApiError> {
+        if installation_id.is_nil() {
+            return Err(ApiError::Unauthorized);
+        }
+        let ttl_seconds = i64::try_from(ttl.as_secs()).map_err(ApiError::internal)?;
+        let mut tx = self.pool.begin().await?;
+        let relay = sqlx::query(
+            r#"
+            SELECT m.owner_id,m.gateway_id,c.activated_at
+            FROM mobile_relay_installations m
+            JOIN mobile_relay_credentials c
+              ON c.installation_id=m.installation_id
+            JOIN gateways g ON g.id=m.gateway_id AND g.owner_id=m.owner_id
+            JOIN owners o ON o.id=m.owner_id
+            WHERE m.installation_id=$1 AND c.token_digest=$2
+              AND o.issuer=$3 AND o.subject=$4 AND g.status='active'
+            FOR UPDATE OF c,g
+            "#,
+        )
+        .bind(installation_id)
+        .bind(credential_digest.as_slice())
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
+        .bind(installation_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+        // A missing or wrong relay principal remains a uniform 401 even when
+        // the caller also supplied malformed enrollment fields.
+        validate_identity_text(hardware_uid, display_name)?;
+        let owner_id: Uuid = relay.get("owner_id");
+        let gateway_id: Uuid = relay.get("gateway_id");
+        let occupied: i64 = sqlx::query_scalar(
+            r#"
+            SELECT
+              (SELECT count(*) FROM companions
+               WHERE owner_id=$1 AND status='active')
+              +
+              (SELECT count(*) FROM enrollment_challenges
+               WHERE owner_id=$1 AND
+                 ((status='issuing' AND NOT (
+                    provider_job_id IS NULL AND provider_started_at IS NOT NULL AND
+                    provider_started_at<=clock_timestamp()
+                      -make_interval(secs => $2::double precision)
+                  )) OR
+                  (status='pending' AND expires_at>clock_timestamp())))
+            "#,
+        )
+        .bind(owner_id)
+        .bind(PROVIDER_RETRY_WINDOW_SECONDS)
+        .fetch_one(&mut *tx)
+        .await?;
+        if occupied >= DEVICE_RELAY_MAXIMUM_COMPANIONS {
+            return Err(ApiError::Conflict("device relay companion limit reached"));
+        }
+        if relay
+            .get::<Option<DateTime<Utc>>, _>("activated_at")
+            .is_none()
+            && occupied != 0
+        {
+            return Err(ApiError::Conflict(
+                "device relay activation enrollment already exists",
+            ));
+        }
+
+        let enrollment_id = Uuid::new_v4();
+        let expires_at: DateTime<Utc> = sqlx::query_scalar(
+            r#"
+            INSERT INTO enrollment_challenges
+                (id,owner_id,token_digest,hardware_uid,display_name,expires_at)
+            VALUES ($1,$2,$3,$4,$5,
+                    clock_timestamp()+make_interval(secs => $6::double precision))
+            RETURNING expires_at
+            "#,
+        )
+        .bind(enrollment_id)
+        .bind(owner_id)
+        .bind(claim_token_digest.as_slice())
+        .bind(hardware_uid)
+        .bind(display_name)
+        .bind(ttl_seconds)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_conflict)?;
+        insert_audit(
+            &mut tx,
+            "system",
+            None,
+            None,
+            None,
+            "enrollment.created",
+            "enrollment",
+            enrollment_id.to_string(),
+            json!({
+                "relay_gateway_id": gateway_id,
+                "hardware_uid_sha256": hex::encode(sha256(hardware_uid.as_bytes()))
+            }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(EnrollmentView {
+            id: enrollment_id,
+            hardware_uid: hardware_uid.to_owned(),
+            display_name: display_name.to_owned(),
+            status: "pending".into(),
+            expires_at,
+        })
+    }
+
+    /// Idempotently unlocks steady relay traffic after the shared enrollment
+    /// transaction has bound the claim's first-use device key to this exact
+    /// logical gateway. Physical confirmation is enforced locally by firmware
+    /// and is not attested to this service.
+    pub async fn activate_device_relay(
+        &self,
+        installation_id: Uuid,
+        enrollment_id: Uuid,
+        credential_digest: &[u8; 32],
+    ) -> Result<(), ApiError> {
+        let changed = sqlx::query(
+            r#"
+            UPDATE mobile_relay_credentials c
+            SET activated_at=COALESCE(c.activated_at,clock_timestamp())
+            FROM mobile_relay_installations m,owners o,enrollment_challenges e
+            WHERE c.installation_id=$1 AND c.token_digest=$2
+              AND m.installation_id=c.installation_id
+              AND o.id=m.owner_id AND o.issuer=$3 AND o.subject=$4
+              AND e.id=$5 AND e.owner_id=m.owner_id AND e.status='claimed'
+              AND e.claimed_gateway_id=m.gateway_id AND e.companion_id IS NOT NULL
+            "#,
+        )
+        .bind(installation_id)
+        .bind(credential_digest.as_slice())
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
+        .bind(installation_id.to_string())
+        .bind(enrollment_id)
+        .execute(&self.pool)
+        .await?;
+        if changed.rows_affected() == 1 {
+            return Ok(());
+        }
+        // Preserve uniform credential failures while distinguishing a valid
+        // pending installation from a claim that does not belong to it.
+        self.device_relay(installation_id, credential_digest)
+            .await?;
+        Err(ApiError::Forbidden)
+    }
+
     pub async fn create_certificate_rotation(
         &self,
         owner_id: Uuid,
@@ -3363,6 +3784,29 @@ fn owner_from_row(row: &PgRow) -> Owner {
         issuer: row.get("issuer"),
         subject: row.get("subject"),
     }
+}
+
+fn device_relay_from_row(row: &PgRow) -> Result<DeviceRelay, ApiError> {
+    let gateway_id: Uuid = row.get("gateway_id");
+    let owner_id: Uuid = row.get("owner_id");
+    Ok(DeviceRelay {
+        relay: MobileRelay {
+            view: MobileRelayView {
+                installation_id: row.get("installation_id"),
+                gateway_id,
+                created_at: row.get("created_at"),
+            },
+            gateway: Gateway {
+                id: gateway_id,
+                owner_id,
+                certificate_id: None,
+                certificate_sha256: None,
+            },
+        },
+        activated: row
+            .get::<Option<DateTime<Utc>>, _>("activated_at")
+            .is_some(),
+    })
 }
 
 fn account_deletion_from_row(row: &PgRow) -> AccountDeletionView {

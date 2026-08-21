@@ -26,10 +26,10 @@ class MobileRelayForegroundService : Service() {
         notifications.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
-                "Kitsu mobile relay",
+                "Kitsu public gateway",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Keeps selected paired Kitsu devices connected to the owner gateway"
+                description = "Connects selected paired Kitsu devices to the public gateway"
             },
         )
     }
@@ -40,8 +40,8 @@ class MobileRelayForegroundService : Service() {
                 NOTIFICATION_ID,
                 NotificationCompat.Builder(this, CHANNEL_ID)
                     .setSmallIcon(R.mipmap.ic_launcher)
-                    .setContentTitle("Kitsu mobile relay")
-                    .setContentText("Relaying for up to three selected paired devices")
+                    .setContentTitle("Kitsu public gateway")
+                    .setContentText("Connecting up to three paired Kitsu devices")
                     .setOngoing(true)
                     .setCategory(NotificationCompat.CATEGORY_SERVICE)
                     .build(),

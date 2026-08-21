@@ -70,7 +70,7 @@ async fn postgres16_durability_and_concurrency_invariants() {
         .fetch_one(db.pool())
         .await
         .unwrap();
-    assert_eq!(migration_count, 9);
+    assert_eq!(migration_count, 10);
 
     let owner = db
         .upsert_owner(&OidcPrincipal {
@@ -134,6 +134,141 @@ async fn postgres16_durability_and_concurrency_invariants() {
             .await,
         Err(ApiError::Conflict(_))
     ));
+
+    // An account-free installation receives a separate, pending relay
+    // principal. Exact retries preserve it, while wrong credentials and
+    // immutable-gateway rebinds are rejected without granting owner access.
+    let device_relay_installation_id = Uuid::new_v4();
+    let device_relay_gateway_id = Uuid::new_v4();
+    let device_relay_credential = sha256(b"integration device relay credential");
+    let device_relay = db
+        .create_or_get_device_relay(
+            device_relay_installation_id,
+            device_relay_gateway_id,
+            &device_relay_credential,
+        )
+        .await
+        .unwrap();
+    assert!(!device_relay.activated);
+    let device_relay_replay = db
+        .create_or_get_device_relay(
+            device_relay_installation_id,
+            device_relay_gateway_id,
+            &device_relay_credential,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        device_relay_replay.relay.view.created_at,
+        device_relay.relay.view.created_at
+    );
+    assert!(matches!(
+        db.device_relay(
+            device_relay_installation_id,
+            &sha256(b"wrong integration device relay credential")
+        )
+        .await,
+        Err(ApiError::Unauthorized)
+    ));
+    assert!(matches!(
+        db.create_device_relay_enrollment(
+            device_relay_installation_id,
+            &sha256(b"wrong integration device relay credential"),
+            "x",
+            "",
+            &sha256(b"untrusted enrollment token"),
+            std::time::Duration::from_secs(600),
+        )
+        .await,
+        Err(ApiError::Unauthorized)
+    ));
+    assert!(matches!(
+        db.create_or_get_device_relay(
+            device_relay_installation_id,
+            Uuid::new_v4(),
+            &device_relay_credential
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    assert!(matches!(
+        db.mobile_relay(owner.id, device_relay_installation_id)
+            .await,
+        Err(ApiError::NotFound)
+    ));
+
+    // A pending principal has one live enrollment slot. An ambiguous CA
+    // attempt beyond the provider replay window releases that slot so the
+    // documented replacement-claim recovery remains possible.
+    let device_enrollment = db
+        .create_device_relay_enrollment(
+            device_relay_installation_id,
+            &device_relay_credential,
+            &format!("device-relay-{}", Uuid::new_v4()),
+            "Device relay companion",
+            &sha256(b"device relay enrollment token"),
+            std::time::Duration::from_secs(600),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.create_device_relay_enrollment(
+            device_relay_installation_id,
+            &device_relay_credential,
+            &format!("device-relay-{}", Uuid::new_v4()),
+            "Second pending companion",
+            &sha256(b"second pending device relay enrollment token"),
+            std::time::Duration::from_secs(600),
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    query(
+        r#"
+        UPDATE enrollment_challenges SET status='issuing',
+          claim_request_sha256=$2,reserved_companion_id=$3,
+          provider_started_at=clock_timestamp()-interval '5 minutes',
+          provider_ambiguous=TRUE
+        WHERE id=$1
+        "#,
+    )
+    .bind(device_enrollment.id)
+    .bind(sha256(b"ambiguous device relay claim").as_slice())
+    .bind(Uuid::new_v4())
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.create_device_relay_enrollment(
+        device_relay_installation_id,
+        &device_relay_credential,
+        &format!("device-relay-{}", Uuid::new_v4()),
+        "Replacement companion",
+        &sha256(b"replacement device relay enrollment token"),
+        std::time::Duration::from_secs(600),
+    )
+    .await
+    .unwrap();
+
+    // The retention worker removes only old, never-activated synthetic
+    // identities. This one has no enrollment and is asserted after the
+    // existing retention pass below.
+    let expired_device_relay_installation_id = Uuid::new_v4();
+    let expired_device_relay_gateway_id = Uuid::new_v4();
+    let expired_device_relay_credential = sha256(b"expired device relay credential");
+    db.create_or_get_device_relay(
+        expired_device_relay_installation_id,
+        expired_device_relay_gateway_id,
+        &expired_device_relay_credential,
+    )
+    .await
+    .unwrap();
+    query(
+        "UPDATE mobile_relay_credentials SET created_at=clock_timestamp()-interval '2 days' WHERE installation_id=$1",
+    )
+    .bind(expired_device_relay_installation_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
 
     // Exercise the one-use, owner-authorized gateway bootstrap all the way to
     // durable certificate identity, including exact replay and request binding.
@@ -647,6 +782,24 @@ async fn postgres16_durability_and_concurrency_invariants() {
             .await
             .unwrap();
     assert_eq!(retained_contact_count, 0);
+    assert!(matches!(
+        db.device_relay(
+            expired_device_relay_installation_id,
+            &expired_device_relay_credential
+        )
+        .await,
+        Err(ApiError::Unauthorized)
+    ));
+    // Existing OIDC-owned relay rows are outside the synthetic issuer and
+    // survive the same cleanup pass.
+    assert_eq!(
+        db.mobile_relay(owner.id, relay_installation_id)
+            .await
+            .unwrap()
+            .gateway
+            .id,
+        relay_gateway_id
+    );
 
     // Migration 0007 makes deletion crash-resumable: tombstone first, retry
     // the external IdP phase, persist the IdP result, then erase local keys.
@@ -790,7 +943,7 @@ async fn postgres16_durability_and_concurrency_invariants() {
         .fetch_one(restarted.pool())
         .await
         .unwrap();
-    assert_eq!(migration_count, 9);
+    assert_eq!(migration_count, 10);
     let persisted_request_count: i64 = query_scalar("SELECT count(*) FROM device_requests")
         .fetch_one(restarted.pool())
         .await

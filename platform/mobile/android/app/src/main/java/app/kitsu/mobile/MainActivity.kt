@@ -118,11 +118,12 @@ class MainActivity : ComponentActivity() {
                 },
                 onSignOut = {
                     lifecycleScope.launch {
-                        runCatching { applicationServices.mobileRelayController.setEnabled(false) }
                         applicationServices.ownerRepository.handleSignedOut()
                         viewModel.markOwnerSignedOut()
                         applicationServices.oidc.signOut()
-                        viewModel.reconnectIfAllowed()
+                        if (!applicationServices.mobileRelayController.state.value.enabled) {
+                            viewModel.reconnectIfAllowed()
+                        }
                     }
                 },
             )

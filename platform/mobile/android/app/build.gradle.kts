@@ -153,8 +153,8 @@ val generateSourceProvenance = tasks.register("generateSourceProvenance") {
                 appendLine("  \"schema\": \"kitsu.android-source-provenance.v1\",")
                 appendLine("  \"generated_at_utc\": \"${Instant.now()}\",")
                 appendLine("  \"application_id\": \"app.kitsu.mobile\",")
-                appendLine("  \"version_code\": 6,")
-                appendLine("  \"version_name\": \"1.1.0\",")
+                appendLine("  \"version_code\": 7,")
+                appendLine("  \"version_name\": \"1.1.1\",")
                 appendLine("  \"backend_url\": \"${escaped(configured("KITSU_BACKEND_URL", "https://api.k32.run"))}\",")
                 appendLine("  \"oidc_issuer\": \"${escaped(configuredOidcIssuer)}\",")
                 appendLine(
@@ -185,8 +185,8 @@ android {
         applicationId = "app.kitsu.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.1.0"
+        versionCode = 7
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appAuthRedirectScheme"] = redirectScheme
