@@ -153,8 +153,8 @@ val generateSourceProvenance = tasks.register("generateSourceProvenance") {
                 appendLine("  \"schema\": \"kitsu.android-source-provenance.v1\",")
                 appendLine("  \"generated_at_utc\": \"${Instant.now()}\",")
                 appendLine("  \"application_id\": \"app.kitsu.mobile\",")
-                appendLine("  \"version_code\": 10,")
-                appendLine("  \"version_name\": \"1.1.4\",")
+                appendLine("  \"version_code\": 11,")
+                appendLine("  \"version_name\": \"1.1.5\",")
                 appendLine("  \"backend_url\": \"${escaped(configured("KITSU_BACKEND_URL", "https://api.k32.run"))}\",")
                 appendLine("  \"oidc_issuer\": \"${escaped(configuredOidcIssuer)}\",")
                 appendLine(
