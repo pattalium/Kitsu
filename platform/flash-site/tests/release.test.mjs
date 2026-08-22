@@ -247,6 +247,22 @@ test("pins the installed Kitsu Ed25519 SPKI and verifies exact signed bytes", as
   );
 });
 
+test("keeps the byte-exact signature fixtures outside text conversion", async () => {
+  const attributes = await readFile(new URL("../../../.gitattributes", import.meta.url), "utf8");
+  const lines = new Set(attributes.split(/\r?\n/));
+  assert.ok(lines.has("* text=auto eol=lf"), "missing deterministic LF text export policy");
+  for (const fixture of [
+    "known-signed-message.json",
+    "known-signed-message.sig.b64",
+    "update-authority-public.txt",
+  ]) {
+    assert.ok(
+      lines.has(`platform/flash-site/tests/fixtures/${fixture} -text`),
+      `missing binary attribute for ${fixture}`,
+    );
+  }
+});
+
 test("computes byte-exact SHA-256 digests", async () => {
   assert.equal(
     await sha256Hex(new TextEncoder().encode("K32 Kitsu")),
