@@ -145,6 +145,11 @@ class KitsuMobileRelay {
   // session until its exact backend ACK arrives.
   void onBleDisconnected();
 
+  // Clears only volatile work bound to the configured gateway. Long-lived
+  // dependencies stay initialized so a later owner enrollment can reuse the
+  // relay without rebooting.
+  void clearGatewayState();
+
   bool handleExchange(const uint8_t* requestJson, size_t requestBytes,
                       const MobileRelayGuards& guards, int64_t nowEpoch,
                       bool clockValid, uint8_t* responseJson,

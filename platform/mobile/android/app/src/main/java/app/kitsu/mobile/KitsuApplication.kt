@@ -57,6 +57,9 @@ class AppServices(application: Application) {
         tokens = oidc,
         selection = remoteSelection,
     )
+    // Load the owner's non-secret stay-disconnected choice before any ViewModel can connect.
+    private val reconnectSuppressionStore = AndroidReconnectSuppressionStore(application)
+    private val coordinator = ConnectionCoordinator(direct, backend, reconnectSuppressionStore)
     private val deviceRelay = DeviceRelayTransport(
         configuration = backendConfiguration,
         credentials = credentials,
@@ -77,11 +80,8 @@ class AppServices(application: Application) {
                 )
             }
         },
+        onSessionsClosed = coordinator::completePublicGatewayHandoff,
     )
-    // Construct and synchronously load the non-secret stay-disconnected choice before any
-    // MainViewModel init block can schedule an automatic connection.
-    private val reconnectSuppressionStore = AndroidReconnectSuppressionStore(application)
-    private val coordinator = ConnectionCoordinator(direct, backend, reconnectSuppressionStore)
     val ownerRepository = OwnerRepository(
         coordinator,
         EncryptedBoundedCache(application),

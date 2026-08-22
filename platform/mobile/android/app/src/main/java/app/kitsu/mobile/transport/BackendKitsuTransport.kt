@@ -26,6 +26,7 @@ import app.kitsu.mobile.relay.MAX_RELAY_ENROLLMENT_REQUEST_BYTES
 import app.kitsu.mobile.relay.MAX_RELAY_FRAME_BYTES
 import app.kitsu.mobile.relay.MobileRelayBackend
 import app.kitsu.mobile.relay.MobileRelayBindingRequest
+import app.kitsu.mobile.relay.MobileRelayBackendConnectionState
 import app.kitsu.mobile.relay.MobileRelayClaimResponse
 import app.kitsu.mobile.relay.MobileRelayEnvelopeAccepted
 import app.kitsu.mobile.relay.MobileRelayHttpRoutes
@@ -658,16 +659,22 @@ class BackendKitsuTransport(
         )
     }
 
-    override fun downlinks(installationId: String): Flow<ByteArray> = callbackFlow {
+    override fun downlinks(
+        installationId: String,
+        onConnectionState: (MobileRelayBackendConnectionState) -> Unit,
+    ): Flow<ByteArray> = callbackFlow {
         if (!isCanonicalLowercaseUuid(installationId)) {
+            onConnectionState(MobileRelayBackendConnectionState(detail = "invalid_mobile_relay_identity"))
             close(TransportException("invalid_mobile_relay_identity"))
             return@callbackFlow
         }
         val token = tokens.accessToken()
         if (token.isNullOrBlank()) {
+            onConnectionState(MobileRelayBackendConnectionState(detail = "sign_in_required"))
             close(TransportException("sign_in_required"))
             return@callbackFlow
         }
+        onConnectionState(MobileRelayBackendConnectionState(detail = "connecting_public_gateway"))
         val request = Request.Builder()
             .url(
                 endpoint(mobileRelayRoute(configuration.mobileRelayRoutes.session, installationId))
@@ -676,6 +683,15 @@ class BackendKitsuTransport(
             .header("Authorization", "Bearer $token")
             .build()
         val socket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                onConnectionState(
+                    MobileRelayBackendConnectionState(
+                        connected = true,
+                        detail = "connected_public_gateway",
+                    ),
+                )
+            }
+
             override fun onMessage(webSocket: WebSocket, text: String) =
                 accept(webSocket, text.toByteArray())
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) =
@@ -692,14 +708,22 @@ class BackendKitsuTransport(
             }
 
             override fun onFailure(webSocket: WebSocket, failure: Throwable, response: Response?) {
+                onConnectionState(
+                    MobileRelayBackendConnectionState(detail = "mobile_relay_session_failed"),
+                )
                 close(TransportException("mobile_relay_session_failed", failure))
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                onConnectionState(MobileRelayBackendConnectionState(detail = "public_gateway_closed"))
                 close()
             }
         })
         awaitClose { socket.close(1000, "relay_stop") }
+    }
+
+    override suspend fun forgetRelay(installationId: String) {
+        throw TransportException("mobile_relay_forget_unsupported")
     }
 
     override suspend fun status(): KitsuStatus = BackendWireMapper.status(

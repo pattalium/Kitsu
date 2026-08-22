@@ -779,6 +779,19 @@ void testAuthenticatedMobileRelayHappyAndGuards() {
       &outcome));
   assert(outcome.downlinkCompleted && sink.calls == 1U &&
          std::string(sink.frame.begin(), sink.frame.end()) == exactAction);
+
+  static const uint8_t queued[] = "{\"queued\":true}";
+  assert(relay.enqueueDevicePayload(
+             "companion.snapshot", queued, sizeof(queued) - 1U,
+             1800000031LL) == MobileRelayResult::Ok);
+  assert(relay.enqueueDevicePayload(
+             "action_result", queued, sizeof(queued) - 1U,
+             1800000031LL) == MobileRelayResult::Ok);
+  assert(relay.status().uplinkPending && relay.status().pendingPayloads == 1U);
+  relay.clearGatewayState();
+  const MobileRelayStatus cleared = relay.status();
+  assert(cleared.begun && !cleared.uploadActive && !cleared.uplinkPending &&
+         cleared.pendingPayloads == 0U);
 }
 
 }  // namespace

@@ -197,11 +197,11 @@ class OwnerRepository(
     }
 
     /** Hands an existing nearby GATT session to the opt-in foreground relay. */
-    suspend fun releaseDirectForMobileRelay() {
+    suspend fun releaseDirectForMobileRelay(deviceAddress: String? = null) {
         if (!coordinator.isDirect()) return
         eventJob?.cancelAndJoin()
         eventJob = null
-        coordinator.handoffDirectForPublicGateway()
+        coordinator.handoffDirectForPublicGateway(deviceAddress)
         mutableState.value = mutableState.value.copy(
             connection = coordinator.state.value,
             loading = false,

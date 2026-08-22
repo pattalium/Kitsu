@@ -439,8 +439,21 @@ pub(crate) async fn process_envelope(
         .await
 }
 
-pub(crate) async fn gateway_socket(state: AppState, gateway: Gateway, socket: WebSocket) {
+pub(crate) async fn gateway_socket(state: AppState, gateway: Gateway, mut socket: WebSocket) {
     let (connection_id, mut queued) = state.hubs.register_gateway(gateway.id).await;
+    let still_active = state
+        .db
+        .gateway_by_id(gateway.id)
+        .await
+        .is_ok_and(|active| active.is_some_and(|active| active.owner_id == gateway.owner_id));
+    if !still_active {
+        state
+            .hubs
+            .unregister_gateway(gateway.id, connection_id)
+            .await;
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    }
     metrics::gauge!("kitsu_gateway_sessions", "gateway_id" => gateway.id.to_string())
         .increment(1.0);
     let (mut sender, mut receiver) = socket.split();
@@ -456,8 +469,16 @@ pub(crate) async fn gateway_socket(state: AppState, gateway: Gateway, socket: We
     }
     loop {
         tokio::select! {
-            Some(action) = queued.recv() => {
-                if send_action(&state, &gateway, action, &mut sender).await.is_err() { break; }
+            queued_message = queued.recv() => {
+                match queued_message {
+                    Some(action) => {
+                        if send_action(&state, &gateway, action, &mut sender).await.is_err() { break; }
+                    }
+                    None => {
+                        let _ = sender.send(Message::Close(None)).await;
+                        break;
+                    }
+                }
             }
             _ = poll.tick() => {
                 if send_pending(&state, &gateway, &mut sender).await.is_err() { break; }

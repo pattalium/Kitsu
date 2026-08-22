@@ -30,6 +30,7 @@ class ConnectionCoordinator internal constructor(
     val state: StateFlow<ConnectionState> = mutableState.asStateFlow()
 
     @Volatile private var active: KitsuTransport? = null
+    @Volatile private var directOwnedByPublicGateway = false
     // Loaded synchronously during service construction, before any ViewModel init can request
     // an automatic connection. Store read failures fail closed instead of surprising the owner.
     @Volatile private var automaticReconnectSuppressed = runCatching {
@@ -199,13 +200,28 @@ class ConnectionCoordinator internal constructor(
 
     /** Transfers ownership of an existing direct session to the public-gateway
      * foreground service. The GATT link stays alive; only the normal UI path lets go. */
-    suspend fun handoffDirectForPublicGateway(): Boolean = mutex.withLock {
+    suspend fun handoffDirectForPublicGateway(deviceAddress: String? = null): Boolean = mutex.withLock {
         if (active !== direct) return@withLock false
+        if (deviceAddress != null && !direct.isConnectedTo(deviceAddress)) {
+            active = null
+            backendPollingAuthorizedUntilNanos = 0L
+            runCatching { direct.disconnect() }
+            runCatching { backend.disconnect() }
+            offline("public_gateway_switching_kitsu")
+            return@withLock false
+        }
         active = null
+        directOwnedByPublicGateway = true
         backendPollingAuthorizedUntilNanos = 0L
         runCatching { backend.disconnect() }
         offline("public_gateway_using_bluetooth")
         true
+    }
+
+    /** Releases coordinator protection after relay stop, also closing an unclaimed handoff. */
+    suspend fun completePublicGatewayHandoff() = mutex.withLock {
+        if (directOwnedByPublicGateway) runCatching { direct.disconnect() }
+        directOwnedByPublicGateway = false
     }
 
     fun isAutomaticReconnectSuppressed(): Boolean = automaticReconnectSuppressed
@@ -308,7 +324,11 @@ class ConnectionCoordinator internal constructor(
     }
 
     private suspend fun disconnectTransports() {
-        val transports = listOfNotNull(active, direct, backend).distinct()
+        val transports = listOfNotNull(
+            active,
+            direct.takeUnless { directOwnedByPublicGateway },
+            backend,
+        ).distinct()
         active = null
         transports.forEach { transport ->
             try {

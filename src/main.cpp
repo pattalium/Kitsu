@@ -35,7 +35,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.11.3";
+constexpr char FIRMWARE_VERSION[] = "0.11.4";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 
@@ -681,6 +681,73 @@ bool emptyObject(const uint8_t* input, size_t bytes) {
   }
   skipWhitespace(input, bytes, cursor);
   return cursor == bytes;
+}
+
+bool parseCanonicalUuid(const uint8_t* input, size_t bytes,
+                        uint8_t output[
+                            kitsu868::connectivity::kEnrollmentUuidBytes]) {
+  if (!output) return false;
+  memset(output, 0,
+         kitsu868::connectivity::kEnrollmentUuidBytes);
+  if (!input || bytes != 36U) return false;
+  size_t written = 0U;
+  int high = -1;
+  for (size_t i = 0U; i < bytes; ++i) {
+    const bool separator = i == 8U || i == 13U || i == 18U || i == 23U;
+    if (separator) {
+      if (input[i] != '-') return false;
+      continue;
+    }
+    const uint8_t c = input[i];
+    int nibble = -1;
+    if (c >= '0' && c <= '9') {
+      nibble = c - '0';
+    } else if (c >= 'a' && c <= 'f') {
+      nibble = c - 'a' + 10;
+    }
+    if (nibble < 0) return false;
+    if (high < 0) {
+      high = nibble;
+    } else {
+      if (written >= kitsu868::connectivity::kEnrollmentUuidBytes) {
+        return false;
+      }
+      output[written++] = static_cast<uint8_t>((high << 4U) | nibble);
+      high = -1;
+    }
+  }
+  uint8_t aggregate = 0U;
+  for (size_t i = 0U;
+       i < kitsu868::connectivity::kEnrollmentUuidBytes; ++i) {
+    aggregate |= output[i];
+  }
+  return written == kitsu868::connectivity::kEnrollmentUuidBytes &&
+      high < 0 && aggregate != 0U;
+}
+
+bool parseGatewayForget(
+    const uint8_t* input, size_t bytes,
+    uint8_t gatewayId[kitsu868::connectivity::kEnrollmentUuidBytes]) {
+  if (!gatewayId) return false;
+  memset(gatewayId, 0,
+         kitsu868::connectivity::kEnrollmentUuidBytes);
+  if (!input || !kitsu868::companion::validUtf8(input, bytes)) return false;
+  size_t cursor = 0U;
+  const uint8_t* key = nullptr;
+  size_t keyBytes = 0U;
+  const uint8_t* value = nullptr;
+  size_t valueBytes = 0U;
+  if (!consume(input, bytes, cursor, '{') ||
+      !parseAsciiString(input, bytes, cursor, key, keyBytes) ||
+      !sameToken(key, keyBytes, "gateway_id") ||
+      !consume(input, bytes, cursor, ':') ||
+      !parseAsciiString(input, bytes, cursor, value, valueBytes) ||
+      !consume(input, bytes, cursor, '}')) {
+    return false;
+  }
+  skipWhitespace(input, bytes, cursor);
+  return cursor == bytes &&
+      parseCanonicalUuid(value, valueBytes, gatewayId);
 }
 
 bool parseClockSync(const uint8_t* input, size_t bytes, uint32_t& epoch) {
@@ -1591,6 +1658,72 @@ bool configureGateway(const uint8_t* payload, size_t payloadBytes,
   return true;
 }
 
+void appendGatewayForgetReceipt(String& output, bool accepted,
+                                const char* error) {
+  output =
+      "{\"schema\":\"kitsu.gateway-forget.v1\",\"accepted\":";
+  output += accepted ? "true" : "false";
+  output += ",\"state\":\"";
+  output += accepted ? "forgotten" : "rejected";
+  output += "\",\"error_code\":";
+  if (accepted) {
+    output += "null";
+  } else {
+    output += '"';
+    output += error ? error : "storage_unavailable";
+    output += '"';
+  }
+  output += '}';
+}
+
+bool forgetGateway(const uint8_t* payload, size_t payloadBytes,
+                   String& output) {
+  uint8_t expectedGatewayId[
+      kitsu868::connectivity::kEnrollmentUuidBytes]{};
+  if (!parseGatewayForget(payload, payloadBytes, expectedGatewayId)) {
+    appendGatewayForgetReceipt(output, false, "invalid_request");
+    wipeSensitive(expectedGatewayId, sizeof(expectedGatewayId));
+    return true;
+  }
+
+  const kitsu868::connectivity::ConfigResult result =
+      connectionConfigStore.forgetMobileRelayGateway(expectedGatewayId);
+  wipeSensitive(expectedGatewayId, sizeof(expectedGatewayId));
+  if (result != kitsu868::connectivity::ConfigResult::Ok) {
+    const char* error =
+        result == kitsu868::connectivity::ConfigResult::InvalidArgument
+            ? "gateway_mode_unsupported"
+            : result ==
+                      kitsu868::connectivity::ConfigResult::InvalidGatewayId
+                  ? "gateway_mismatch"
+                  : kitsu868::connectivity::configResultName(result);
+    appendGatewayForgetReceipt(output, false, error);
+    return true;
+  }
+
+  // Commit the durable clear before resetting volatile coordinators. No pack,
+  // companion brain, controller root, BLE bond, or Wi-Fi field is touched.
+  gatewayEnrollmentFlow.abort();
+  gatewayBootstrap.cancel();
+  if (gatewayBootstrapWorkspace) {
+    wipeSensitive(gatewayBootstrapWorkspace,
+                  sizeof(*gatewayBootstrapWorkspace));
+    delete gatewayBootstrapWorkspace;
+    gatewayBootstrapWorkspace = nullptr;
+  }
+  gatewayBootstrapTransport.close();
+  gatewayBootstrapLastResult =
+      kitsu868::connectivity::GatewayBootstrapResult::NotActive;
+  stopGatewayLanRuntime();
+  mobileRelay.clearGatewayState();
+  gatewayLanNextSnapshotAt = 0U;
+  gatewayLanLastSnapshotHash = 0U;
+  gatewayLanLastObservedSnapshotHash = 0U;
+  gatewaySnapshotDirty = true;
+  appendGatewayForgetReceipt(output, true, nullptr);
+  return true;
+}
+
 kitsu868::connectivity::GatewayEnrollmentGuards gatewayEnrollmentGuards(
     uint32_t now) {
   const kitsu868::connectivity::ConnectionConfigStatus config =
@@ -1904,7 +2037,10 @@ bool handleMobileRelayExchange(
     stopGatewayLanRuntime();
     gatewaySnapshotDirty = true;
   }
-  if (outcome.enrollmentCompleted || outcome.downlinkCompleted) {
+  // A gateway ACK only retires the exact pending uplink. Treating every
+  // successful downlink as new snapshot truth creates an ACK -> snapshot
+  // feedback loop that bypasses GATEWAY_SNAPSHOT_INTERVAL_MS.
+  if (outcome.enrollmentCompleted) {
     gatewaySnapshotDirty = true;
   }
   return encoded;
@@ -2050,6 +2186,8 @@ bool handleCompanionBleRequest(
   } else if (strcmp(request.operation, "gateway.configure") == 0) {
     handled = companion_api::configureGateway(payload, payloadBytes,
                                                 response);
+  } else if (strcmp(request.operation, "gateway.forget") == 0) {
+    handled = companion_api::forgetGateway(payload, payloadBytes, response);
   }
 
   if (!handled) {

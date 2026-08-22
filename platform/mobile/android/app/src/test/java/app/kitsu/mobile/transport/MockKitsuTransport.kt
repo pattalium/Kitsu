@@ -34,12 +34,16 @@ class MockKitsuTransport(
     var connectCount = 0
     var disconnectCount = 0
     var connectDelayMillis = 0L
+    var connectedAddress: String? = null
     var wifiProvisioningCount = 0
     var meshConfigurationCount = 0
     var gatewayConfigurationCount = 0
     var enrollmentBeginCount = 0
     var enrollmentFinishCount = 0
     var mockChannels = listOf(MeshChannel(0, true, "Public"))
+
+    override fun isConnectedTo(deviceAddress: String): Boolean =
+        connectedAddress?.equals(deviceAddress, ignoreCase = true) == true
 
     var mockStatus = KitsuStatus(
         deviceId = "KTDEAD",

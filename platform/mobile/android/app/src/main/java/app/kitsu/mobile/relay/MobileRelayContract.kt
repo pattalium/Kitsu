@@ -79,7 +79,11 @@ data class MobileRelaySettings(
     @SerialName("installation_id") val installationId: String,
     @SerialName("relay_credential_b64") val relayCredentialB64: String? = null,
     val enabled: Boolean = false,
+    @SerialName("activation_attempted") val activationAttempted: Boolean = false,
+    @SerialName("activation_complete") val activationComplete: Boolean = false,
+    @SerialName("forget_pending") val forgetPending: Boolean = false,
     @SerialName("selected_device_addresses") val selectedDeviceAddresses: List<String> = emptyList(),
+    @SerialName("configured_device_addresses") val configuredDeviceAddresses: List<String> = emptyList(),
     @SerialName("companion_bindings") val companionBindings: List<MobileRelayCompanionBinding> = emptyList(),
     @SerialName("pending_enrollment") val pendingEnrollment: MobileRelayPendingEnrollment? = null,
 )
@@ -88,6 +92,20 @@ data class MobileRelaySettings(
 data class MobileRelayCompanionBinding(
     @SerialName("hardware_uid") val hardwareUid: String,
     @SerialName("companion_id") val companionId: String,
+    @SerialName("device_address") val deviceAddress: String? = null,
+)
+
+@Serializable
+data class GatewayForgetReceipt(
+    val schema: String,
+    val accepted: Boolean,
+    val state: String,
+    @SerialName("error_code") val errorCode: String? = null,
+)
+
+data class MobileRelayBackendConnectionState(
+    val connected: Boolean = false,
+    val detail: String = "off",
 )
 
 /** Bounded crash-recovery metadata; claim tokens and issuer documents remain memory-only. */
@@ -99,6 +117,9 @@ data class MobileRelayPendingEnrollment(
 )
 
 object MobileRelaySettingsPolicy {
+    fun canStartAutomatically(settings: MobileRelaySettings): Boolean =
+        settings.enabled && settings.activationComplete && !settings.forgetPending
+
     fun migrateLegacy(
         existing: MobileRelaySettings?,
         installationId: String,
@@ -195,16 +216,22 @@ interface MobileRelayBackend {
         spoolRecordId: String,
         exactEnvelope: ByteArray,
     ): ByteArray
-    fun downlinks(installationId: String): Flow<ByteArray>
+    fun downlinks(
+        installationId: String,
+        onConnectionState: (MobileRelayBackendConnectionState) -> Unit,
+    ): Flow<ByteArray>
+    suspend fun forgetRelay(installationId: String)
 }
 
 interface MobileRelayDeviceSession {
     suspend fun connect(): ConnectResult
+    fun isConnected(): Boolean = false
     suspend fun disconnect()
     suspend fun status(): KitsuStatus
     suspend fun beginEnrollment(enrollmentId: String, claimToken: String): GatewayEnrollmentReceipt
     suspend fun finishEnrollment(enrollmentId: String): GatewayEnrollmentReceipt
     suspend fun configureRelay(gatewayId: String, caCertificateDerB64: String): MobileRelayReceipt
+    suspend fun forgetGateway(expectedGatewayId: String): GatewayForgetReceipt
     suspend fun pull(kind: MobileRelayPullKind, offset: Int): MobileRelayChunk
     suspend fun push(
         kind: MobileRelayPushKind,

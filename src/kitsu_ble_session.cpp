@@ -318,7 +318,7 @@ bool operationAllowed(const char* operation) {
       "state.get",          "history.get",       "peers.get",
       "messages.get",       "channels.get",      "clock.sync",
       "mesh.configure",     "action.apply",      "wifi.configure",
-      "wifi.retry",         "gateway.configure",
+      "wifi.retry",         "gateway.configure",  "gateway.forget",
       "gateway.enroll.begin",
       "gateway.enroll.finish",
       "mobile.relay.exchange",

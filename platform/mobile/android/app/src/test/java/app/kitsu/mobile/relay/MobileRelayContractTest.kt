@@ -74,9 +74,30 @@ class MobileRelayContractTest {
         assertNotEquals(legacy.installationId, migrated.installationId)
         assertEquals(token, migrated.relayCredentialB64)
         assertTrue(migrated.enabled)
+        assertEquals(false, migrated.activationComplete)
         assertEquals(legacy.selectedDeviceAddresses, migrated.selectedDeviceAddresses)
         assertTrue(migrated.companionBindings.isEmpty())
         assertEquals(null, migrated.pendingEnrollment)
+    }
+
+    @Test fun automaticStartRequiresACompletedActivation() {
+        val base = MobileRelaySettings(
+            installationId = "00112233-4455-6677-8899-aabbccddeeff",
+            enabled = true,
+        )
+
+        assertEquals(false, MobileRelaySettingsPolicy.canStartAutomatically(base))
+        assertTrue(
+            MobileRelaySettingsPolicy.canStartAutomatically(
+                base.copy(activationComplete = true),
+            ),
+        )
+        assertEquals(
+            false,
+            MobileRelaySettingsPolicy.canStartAutomatically(
+                base.copy(activationComplete = true, forgetPending = true),
+            ),
+        )
     }
 
     @Test fun pullReassemblesExactOrderedChunks() = runTest {

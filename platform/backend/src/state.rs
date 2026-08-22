@@ -59,6 +59,11 @@ impl ConnectionHubs {
         }
     }
 
+    /// Drops the live sender so an explicitly revoked gateway session exits.
+    pub async fn disconnect_gateway(&self, gateway_id: Uuid) -> bool {
+        self.gateways.write().await.remove(&gateway_id).is_some()
+    }
+
     pub async fn send_gateway(&self, gateway_id: Uuid, action: RemoteAction) -> bool {
         self.gateways
             .read()

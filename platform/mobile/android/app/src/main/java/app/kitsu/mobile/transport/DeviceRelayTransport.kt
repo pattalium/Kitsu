@@ -8,6 +8,7 @@ import app.kitsu.mobile.relay.MAX_RELAY_ENROLLMENT_REQUEST_BYTES
 import app.kitsu.mobile.relay.MAX_RELAY_FRAME_BYTES
 import app.kitsu.mobile.relay.MobileRelayBackend
 import app.kitsu.mobile.relay.MobileRelayBindingRequest
+import app.kitsu.mobile.relay.MobileRelayBackendConnectionState
 import app.kitsu.mobile.relay.MobileRelayClaimResponse
 import app.kitsu.mobile.relay.MobileRelayEnvelopeAccepted
 import app.kitsu.mobile.relay.MobileRelayIdentity
@@ -142,20 +143,39 @@ class DeviceRelayTransport(
         return MobileRelayWirePolicy.gatewayAcknowledgement(accepted.spoolRecordId, accepted.sequence)
     }
 
-    override fun downlinks(installationId: String): Flow<ByteArray> = callbackFlow {
+    override fun downlinks(
+        installationId: String,
+        onConnectionState: (MobileRelayBackendConnectionState) -> Unit,
+    ): Flow<ByteArray> = callbackFlow {
         if (!MobileRelayWirePolicy.canonicalUuid(installationId)) {
+            onConnectionState(MobileRelayBackendConnectionState(detail = "invalid_mobile_relay_identity"))
             close(TransportException("invalid_mobile_relay_identity"))
             return@callbackFlow
         }
         val token = runCatching { credential(installationId) }.getOrElse {
+            onConnectionState(
+                MobileRelayBackendConnectionState(
+                    detail = (it as? TransportException)?.code ?: "relay_credential_unavailable",
+                ),
+            )
             close(it)
             return@callbackFlow
         }
+        onConnectionState(MobileRelayBackendConnectionState(detail = "connecting_public_gateway"))
         val request = Request.Builder()
             .url(endpoint(route(routes.session, installationId)).newBuilder().scheme("wss").build())
             .header(AUTHORIZATION, DeviceRelayAuthorization.headerValue(token))
             .build()
         val socket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                onConnectionState(
+                    MobileRelayBackendConnectionState(
+                        connected = true,
+                        detail = "connected_public_gateway",
+                    ),
+                )
+            }
+
             override fun onMessage(webSocket: WebSocket, text: String) =
                 accept(webSocket, text.toByteArray())
 
@@ -173,14 +193,50 @@ class DeviceRelayTransport(
             }
 
             override fun onFailure(webSocket: WebSocket, failure: Throwable, response: Response?) {
-                close(TransportException("device_relay_session_failed", failure))
+                val code = when (response?.code) {
+                    401 -> "relay_credential_rejected"
+                    403 -> "device_relay_not_activated"
+                    429 -> "rate_limited"
+                    else -> "device_relay_session_failed"
+                }
+                onConnectionState(MobileRelayBackendConnectionState(detail = code))
+                close(TransportException(code, failure))
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                onConnectionState(MobileRelayBackendConnectionState(detail = "public_gateway_closed"))
                 close()
             }
         })
         awaitClose { socket.close(1000, "relay_stop") }
+    }
+
+    /** User-confirmed recovery may resume only when the installation is authoritatively absent. */
+    override suspend fun forgetRelay(installationId: String) {
+        if (!MobileRelayWirePolicy.canonicalUuid(installationId)) {
+            throw TransportException("invalid_mobile_relay_identity")
+        }
+        val request = authorize(
+            installationId,
+            Request.Builder().url(endpoint(route(routes.binding, installationId))).delete(),
+        )
+        withContext(Dispatchers.IO) {
+            val response = try {
+                client.newCall(request).execute()
+            } catch (failure: IOException) {
+                throw TransportException("backend_unavailable", failure)
+            }
+            response.use {
+                if (it.code == 404) return@withContext
+                val body = boundedBodyBytes(it)
+                if (it.code == 401) throw TransportException("relay_credential_rejected")
+                if (it.code != 200) throw backendFailure(it.code, body)
+                val forgotten = runCatching {
+                    json.decodeFromString<ForgetRelayResponse>(body.toString(Charsets.UTF_8))
+                }.getOrElse { failure -> throw TransportException("malformed_response", failure) }
+                if (!forgotten.forgotten) throw TransportException("malformed_response")
+            }
+        }
     }
 
     private suspend inline fun <reified T> post(
@@ -354,6 +410,9 @@ class DeviceRelayTransport(
 
     @Serializable
     private data class ApiErrorEnvelope(val error: ApiErrorBody? = null)
+
+    @Serializable
+    private data class ForgetRelayResponse(val forgotten: Boolean)
 
     private companion object {
         const val AUTHORIZATION = "Authorization"

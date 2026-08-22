@@ -175,6 +175,11 @@ class ConnectionConfigStore final : public EnrollmentCredentialSink,
                      GatewayTrustValidator& trust);
   ConfigResult commitWifi(const WifiConfig& config);
   ConfigResult commitGateway(const GatewayConfig& config);
+  // Authenticated owner reset for a mobile-relay gateway. The expected UUID
+  // prevents a stale controller view from clearing a newer gateway. An
+  // already-unconfigured store resumes the fail-closed fallback-slot scrub.
+  ConfigResult forgetMobileRelayGateway(
+      const uint8_t expectedGatewayUuid[kEnrollmentUuidBytes]);
   MobileRelayGatewayConfigResult commitMobileRelayGateway(
       const uint8_t gatewayUuid[kEnrollmentUuidBytes],
       const uint8_t* caCertificateDer,

@@ -26,11 +26,13 @@ class MainActivity : ComponentActivity() {
         CONNECT,
         ENABLE_BLUETOOTH,
         PAIR_CONTROLLER,
+        PUBLIC_GATEWAY,
     }
 
     private var blePermissionContinuation = BlePermissionContinuation.CONNECT
     private var bluetoothEnableContinuation = BlePermissionContinuation.CONNECT
     private var pendingPairingLabel: String? = null
+    private var pendingMobileRelayAddress: String? = null
 
     private val bluetoothEnableLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -44,6 +46,10 @@ class MainActivity : ComponentActivity() {
             }
             BlePermissionContinuation.CONNECT,
             BlePermissionContinuation.ENABLE_BLUETOOTH -> viewModel.reconnectBluetooth()
+            BlePermissionContinuation.PUBLIC_GATEWAY -> {
+                pendingMobileRelayAddress?.let(viewModel::connectMobileRelayDevice)
+                pendingMobileRelayAddress = null
+            }
         }
     }
 
@@ -58,12 +64,19 @@ class MainActivity : ComponentActivity() {
         ) {
             continueAfterBlePermission(continuation)
         } else {
-            if (continuation == BlePermissionContinuation.PAIR_CONTROLLER) {
-                pendingPairingLabel?.let(viewModel::pairController)
-                pendingPairingLabel = null
-            } else {
-                // Let the transport publish PERMISSION_REQUIRED again so the UI remains truthful.
-                viewModel.reconnectBluetooth()
+            when (continuation) {
+                BlePermissionContinuation.PAIR_CONTROLLER -> {
+                    pendingPairingLabel?.let(viewModel::pairController)
+                    pendingPairingLabel = null
+                }
+                BlePermissionContinuation.PUBLIC_GATEWAY -> {
+                    pendingMobileRelayAddress?.let(viewModel::connectMobileRelayDevice)
+                    pendingMobileRelayAddress = null
+                }
+                else -> {
+                    // Let the transport publish PERMISSION_REQUIRED again so the UI remains truthful.
+                    viewModel.reconnectBluetooth()
+                }
             }
         }
     }
@@ -97,6 +110,10 @@ class MainActivity : ComponentActivity() {
                 },
                 onEnableBluetooth = {
                     requestBlePermissions(BlePermissionContinuation.ENABLE_BLUETOOTH)
+                },
+                onPrepareMobileRelayBluetooth = { deviceAddress ->
+                    pendingMobileRelayAddress = deviceAddress
+                    requestBlePermissions(BlePermissionContinuation.PUBLIC_GATEWAY)
                 },
                 onPairController = { label ->
                     pendingPairingLabel = label
@@ -167,6 +184,10 @@ class MainActivity : ComponentActivity() {
             }
             BlePermissionContinuation.CONNECT,
             BlePermissionContinuation.ENABLE_BLUETOOTH -> viewModel.reconnectBluetooth()
+            BlePermissionContinuation.PUBLIC_GATEWAY -> {
+                pendingMobileRelayAddress?.let(viewModel::connectMobileRelayDevice)
+                pendingMobileRelayAddress = null
+            }
         }
     }
 

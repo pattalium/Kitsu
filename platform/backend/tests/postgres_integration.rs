@@ -249,6 +249,60 @@ async fn postgres16_durability_and_concurrency_invariants() {
     .await
     .unwrap();
 
+    // Explicit forget is credential-scoped, cancels the recoverable claim,
+    // and leaves only revoked synthetic identity tombstones.
+    assert!(matches!(
+        db.forget_device_relay(
+            device_relay_installation_id,
+            &sha256(b"wrong forget credential")
+        )
+        .await,
+        Err(ApiError::Unauthorized)
+    ));
+    assert!(matches!(
+        db.forget_device_relay(Uuid::new_v4(), &device_relay_credential)
+            .await,
+        Err(ApiError::NotFound)
+    ));
+    assert_eq!(
+        db.forget_device_relay(device_relay_installation_id, &device_relay_credential)
+            .await
+            .unwrap(),
+        device_relay_gateway_id
+    );
+    assert!(matches!(
+        db.device_relay(device_relay_installation_id, &device_relay_credential)
+            .await,
+        Err(ApiError::Unauthorized)
+    ));
+    assert!(matches!(
+        db.forget_device_relay(device_relay_installation_id, &device_relay_credential)
+            .await,
+        Err(ApiError::NotFound)
+    ));
+    let forgotten = query(
+        r#"
+        SELECT g.status::text AS gateway_status,o.subject,
+          (SELECT count(*) FROM enrollment_challenges e
+           WHERE e.owner_id=o.id AND e.status IN ('pending','issuing'))
+            AS active_enrollments,
+          (SELECT count(*) FROM mobile_relay_installations m
+           WHERE m.owner_id=o.id) AS installations
+        FROM gateways g JOIN owners o ON o.id=g.owner_id
+        WHERE g.id=$1
+        "#,
+    )
+    .bind(device_relay_gateway_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(forgotten.get::<String, _>("gateway_status"), "revoked");
+    assert!(forgotten
+        .get::<String, _>("subject")
+        .starts_with("forgotten:"));
+    assert_eq!(forgotten.get::<i64, _>("active_enrollments"), 0);
+    assert_eq!(forgotten.get::<i64, _>("installations"), 0);
+
     // The retention worker removes only old, never-activated synthetic
     // identities. This one has no enrollment and is asserted after the
     // existing retention pass below.

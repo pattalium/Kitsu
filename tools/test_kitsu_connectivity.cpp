@@ -457,6 +457,7 @@ void storeTests() {
   ConnectionConfigStore relayStore;
   assert(relayStore.begin(relayStorage, relayCrypto, trust) ==
          ConfigResult::Ok);
+  assert(relayStore.commitWifi(wifi) == ConfigResult::Ok);
   uint8_t relayGatewayId[16]{};
   relayGatewayId[0] = 0x55U;
   assert(relayStore.commitMobileRelayGateway(
@@ -483,6 +484,61 @@ void storeTests() {
   const ConnectionConfigStatus afterRelayReplay = relayStore.status();
   assert(afterRelayReplay.generation == beforeRelayReplay.generation &&
          afterRelayReplay.gatewayEnrolled);
+
+  // Forget is guarded by the current logical gateway ID and accepts only the
+  // mobile-relay mode. A stale ID cannot clear the active enrollment.
+  uint8_t staleGatewayId[16]{};
+  staleGatewayId[0] = 0x56U;
+  assert(relayStore.forgetMobileRelayGateway(staleGatewayId) ==
+         ConfigResult::InvalidGatewayId);
+  assert(relayStore.status().generation == afterRelayReplay.generation &&
+         relayStore.status().gatewayEnrolled);
+  assert(afterBadReadback.forgetMobileRelayGateway(gateway.gatewayId) ==
+         ConfigResult::InvalidArgument);
+  assert(afterBadReadback.status().gatewayEnrolled);
+
+  assert(relayStore.forgetMobileRelayGateway(relayGatewayId) ==
+         ConfigResult::Ok);
+  const ConnectionConfigStatus forgotten = relayStore.status();
+  assert(forgotten.generation == afterRelayReplay.generation + 1U &&
+         forgotten.wifiConfigured && !forgotten.gatewayConfigured &&
+         !forgotten.gatewayLanConfigured &&
+         !forgotten.mobileRelayConfigured && !forgotten.gatewayEnrolled);
+  WifiConfig retainedWifi{};
+  GatewayConfig forgottenGateway{};
+  assert(relayStore.copyWifi(retainedWifi) &&
+         strcmp(retainedWifi.passphrase, "correct horse battery") == 0 &&
+         !relayStore.copyGateway(forgottenGateway));
+  relayStore.setRemoteConnectivityAllowed(true);
+  GatewayLanCredentialView forgottenCredentials{};
+  assert(!relayStore.acquire(forgottenCredentials));
+
+  // A repeated request after the gateway identity has been cleared is a
+  // read-only success, allowing interrupted phone cleanup to resume safely.
+  assert(relayStore.forgetMobileRelayGateway(relayGatewayId) ==
+         ConfigResult::Ok);
+  assert(relayStore.status().generation == forgotten.generation);
+  ConnectionConfigStore forgottenRebooted;
+  assert(forgottenRebooted.begin(relayStorage, relayCrypto, trust) ==
+         ConfigResult::Ok);
+  assert(forgottenRebooted.status().wifiConfigured &&
+         !forgottenRebooted.status().gatewayConfigured &&
+         !forgottenRebooted.status().gatewayEnrolled);
+  size_t forgottenNonemptySlots = 0U;
+  for (const auto& slot : relayStorage.slots_) {
+    if (slot[0] != 0xffU) ++forgottenNonemptySlots;
+  }
+  assert(forgottenNonemptySlots == 1U);
+  const int8_t forgottenActiveSlot = forgottenRebooted.status().activeSlot;
+  assert(forgottenActiveSlot >= 0);
+  relayStorage.slots_[static_cast<size_t>(forgottenActiveSlot)][100U] ^=
+      0x55U;
+  ConnectionConfigStore forgottenCorrupt;
+  assert(forgottenCorrupt.begin(relayStorage, relayCrypto, trust) ==
+         ConfigResult::StorageCorrupt);
+  assert(!forgottenCorrupt.ready() &&
+         !forgottenCorrupt.status().gatewayConfigured &&
+         !forgottenCorrupt.status().gatewayEnrolled);
 
   storage.corruptEveryNonemptySlot();
   ConnectionConfigStore corrupt;

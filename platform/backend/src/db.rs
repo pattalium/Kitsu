@@ -2886,6 +2886,221 @@ impl Database {
         device_relay_from_row(&row)
     }
 
+    /// Revokes one account-free relay without crossing its dedicated
+    /// synthetic-owner boundary. Certificate and audit identities remain as
+    /// tombstones so revocation history and foreign-key integrity survive.
+    pub async fn forget_device_relay(
+        &self,
+        installation_id: Uuid,
+        token_digest: &[u8; 32],
+    ) -> Result<Uuid, ApiError> {
+        if installation_id.is_nil() {
+            return Err(ApiError::NotFound);
+        }
+        let mut tx = self.pool.begin().await?;
+        let relay = sqlx::query(
+            r#"
+            SELECT m.owner_id,m.gateway_id,c.token_digest
+            FROM mobile_relay_installations m
+            JOIN mobile_relay_credentials c
+              ON c.installation_id=m.installation_id
+            JOIN owners o ON o.id=m.owner_id
+            JOIN gateways g ON g.id=m.gateway_id AND g.owner_id=m.owner_id
+            WHERE m.installation_id=$1
+              AND o.issuer=$2 AND o.subject=$3
+            FOR UPDATE OF m,c,o,g
+            "#,
+        )
+        .bind(installation_id)
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
+        .bind(installation_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+        let stored_digest = exact_bytes::<32>(relay.get::<Vec<u8>, _>("token_digest"))?;
+        if !bool::from(stored_digest.ct_eq(token_digest)) {
+            return Err(ApiError::Unauthorized);
+        }
+        let owner_id: Uuid = relay.get("owner_id");
+        let gateway_id: Uuid = relay.get("gateway_id");
+
+        // Creation gives every account-free installation exactly one owner
+        // and one gateway. Refuse a broad cleanup if that invariant was ever
+        // violated instead of touching unrelated owner data.
+        let isolated: bool = sqlx::query_scalar(
+            r#"
+            SELECT
+              (SELECT count(*) FROM mobile_relay_installations
+               WHERE owner_id=$1)=1
+              AND
+              (SELECT count(*) FROM gateways WHERE owner_id=$1)=1
+            "#,
+        )
+        .bind(owner_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !isolated {
+            return Err(ApiError::Conflict("device relay ownership is not isolated"));
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE enrollment_challenges
+            SET status='cancelled',issuance_id=NULL,issuance_started_at=NULL
+            WHERE owner_id=$1 AND status IN ('pending','issuing')
+            "#,
+        )
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE gateway_bootstraps
+            SET status='cancelled',issuance_id=NULL,issuance_started_at=NULL
+            WHERE owner_id=$1 AND status IN ('pending','issuing')
+            "#,
+        )
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE remote_actions
+            SET status='cancelled',completed_at=COALESCE(completed_at,clock_timestamp()),
+                result=COALESCE(result,'{"code":"relay_forgotten"}'::jsonb)
+            WHERE owner_id=$1 AND status IN ('queued','delivered')
+            "#,
+        )
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE gateway_companions gc
+            SET unbound_at=COALESCE(gc.unbound_at,clock_timestamp())
+            FROM companions c
+            WHERE gc.gateway_id=$1 AND gc.companion_id=c.id
+              AND c.owner_id=$2 AND gc.unbound_at IS NULL
+            "#,
+        )
+        .bind(gateway_id)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE companion_secret_versions s
+            SET revoked_at=COALESCE(s.revoked_at,clock_timestamp()),
+                accept_until=LEAST(COALESCE(s.accept_until,clock_timestamp()),
+                                   clock_timestamp())
+            FROM companions c
+            WHERE s.companion_id=c.id AND c.owner_id=$1
+            "#,
+        )
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE companion_certificates cc
+            SET status='revoked',revoked_at=COALESCE(cc.revoked_at,clock_timestamp()),
+                revocation_reason=COALESCE(cc.revocation_reason,'cessation_of_operation')
+            FROM companions c
+            WHERE cc.companion_id=c.id AND c.owner_id=$1
+              AND cc.status<>'revoked'
+            "#,
+        )
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE gateway_certificate_rotations SET status='cancelled' WHERE gateway_id=$1 AND status='pending'",
+        )
+        .bind(gateway_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE gateway_certificates SET status='revoked',revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE gateway_id=$1 AND status<>'revoked'",
+        )
+        .bind(gateway_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM gateway_lan_profiles WHERE gateway_id=$1")
+            .bind(gateway_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"
+            UPDATE companions
+            SET status='retired',hardware_uid='forgotten:'||id::text,
+                display_name='Forgotten companion',last_seen_at=NULL,
+                updated_at=clock_timestamp()
+            WHERE owner_id=$1
+            "#,
+        )
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE gateways
+            SET status='revoked',revoked_at=COALESCE(revoked_at,clock_timestamp()),
+                last_proof_at=NULL
+            WHERE id=$1 AND owner_id=$2
+            "#,
+        )
+        .bind(gateway_id)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let revoked = sqlx::query(
+            "DELETE FROM mobile_relay_credentials WHERE installation_id=$1 AND token_digest=$2",
+        )
+        .bind(installation_id)
+        .bind(token_digest.as_slice())
+        .execute(&mut *tx)
+        .await?;
+        if revoked.rows_affected() != 1 {
+            return Err(ApiError::Conflict("device relay state changed"));
+        }
+        let removed = sqlx::query(
+            "DELETE FROM mobile_relay_installations WHERE installation_id=$1 AND owner_id=$2 AND gateway_id=$3",
+        )
+        .bind(installation_id)
+        .bind(owner_id)
+        .bind(gateway_id)
+        .execute(&mut *tx)
+        .await?;
+        if removed.rows_affected() != 1 {
+            return Err(ApiError::Conflict("device relay state changed"));
+        }
+        sqlx::query(
+            "DELETE FROM rate_limit_buckets WHERE subject_hash=$1 AND scope LIKE 'device_relay.%'",
+        )
+        .bind(token_digest.as_slice())
+        .execute(&mut *tx)
+        .await?;
+        let tombstoned = sqlx::query(
+            r#"
+            UPDATE owners
+            SET subject='forgotten:'||id::text,email=NULL,display_name=NULL,
+                last_login_at=clock_timestamp()
+            WHERE id=$1 AND issuer=$2 AND subject=$3
+            "#,
+        )
+        .bind(owner_id)
+        .bind(DEVICE_RELAY_OWNER_ISSUER)
+        .bind(installation_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        if tombstoned.rows_affected() != 1 {
+            return Err(ApiError::Conflict("device relay state changed"));
+        }
+        tx.commit().await?;
+        Ok(gateway_id)
+    }
+
     /// Creates a one-use device enrollment for this relay. A pending
     /// credential may hold one live activation attempt; an active credential
     /// may fill the installation's remaining three companion slots.

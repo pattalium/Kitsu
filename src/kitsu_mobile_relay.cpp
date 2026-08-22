@@ -491,6 +491,14 @@ void KitsuMobileRelay::stop() {
 
 void KitsuMobileRelay::onBleDisconnected() { clearUpload(); }
 
+void KitsuMobileRelay::clearGatewayState() {
+  clearUpload();
+  clearUplink();
+  clearPendingPayloads();
+  nextTxSequence_ = 0U;
+  lastTxSequence_ = 0U;
+}
+
 bool KitsuMobileRelay::reserveSequence(uint64_t& output) {
   output = 0U;
   if (!sequences_ || !sequences_->remoteConnectivityAllowed()) return false;

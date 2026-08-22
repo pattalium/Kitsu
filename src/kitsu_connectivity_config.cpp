@@ -1246,6 +1246,81 @@ ConfigResult ConnectionConfigStore::commitGateway(
   return persistPlain(buffers.outer, buffers.plain, status_.generation + 1U);
 }
 
+ConfigResult ConnectionConfigStore::forgetMobileRelayGateway(
+    const uint8_t expectedGatewayUuid[kEnrollmentUuidBytes]) {
+  if (!status_.begun) return setResult(ConfigResult::NotBegun);
+  if (!expectedGatewayUuid ||
+      allZero(expectedGatewayUuid, kEnrollmentUuidBytes)) {
+    return setResult(ConfigResult::InvalidArgument);
+  }
+  if (status_.gatewayConfigured) {
+    if (!status_.mobileRelayConfigured || status_.gatewayLanConfigured) {
+      return setResult(ConfigResult::InvalidArgument);
+    }
+    if (memcmp(gateway_.gatewayId, expectedGatewayUuid,
+               kEnrollmentUuidBytes) != 0) {
+      return setResult(ConfigResult::InvalidGatewayId);
+    }
+    if (status_.generation == UINT32_MAX) {
+      return setResult(ConfigResult::CryptoFailed);
+    }
+  }
+
+  TransientBuffers buffers;
+  if (!buffers.ready()) {
+    return setResult(ConfigResult::StorageAllocationFailed);
+  }
+
+  if (status_.gatewayConfigured) {
+    const ConfigResult loaded = loadActivePlain(buffers.outer, buffers.plain);
+    if (loaded != ConfigResult::Ok) return setResult(loaded);
+
+    // Wi-Fi precedes kGatewayOffset and is intentionally retained. Gateway
+    // trust, enrollment private material, the mobile-relay marker, and the v2
+    // bootstrap port are cleared in the new authenticated generation.
+    memset(buffers.plain + kGatewayOffset, 0,
+           kUsedPlainV2Bytes - kGatewayOffset);
+    const uint32_t retainedFlags = getU32(buffers.plain + 8U) &
+        ~(kFlagGateway | kFlagEnrollment | kFlagMobileRelay);
+    putU32(buffers.plain + 8U, retainedFlags);
+    const ConfigResult persisted = persistPlain(
+        buffers.outer, buffers.plain, status_.generation + 1U);
+    if (persisted != ConfigResult::Ok) return setResult(persisted);
+  }
+
+  // The newest authenticated clear generation is the power-loss anchor.
+  // Erase every older fallback only after that generation read back
+  // successfully, and never erase the active slot. If power is lost or an
+  // erase fails, a repeated authenticated Forget resumes this scrub while the
+  // active clear generation continues to win boot selection. Once success is
+  // acknowledged, corrupting that one slot fails closed instead of restoring
+  // an older enrolled gateway.
+  if (status_.activeSlot >= 0) {
+    const uint8_t activeSlot = static_cast<uint8_t>(status_.activeSlot);
+    for (uint8_t slot = 0U; slot < kConnectionSlotCount; ++slot) {
+      if (slot == activeSlot) continue;
+      size_t loadedBytes = 0U;
+      if (!storage_->readSlot(slot, buffers.outer,
+                              kConnectionSnapshotBytes, loadedBytes)) {
+        return setResult(ConfigResult::StorageReadFailed);
+      }
+      if (loadedBytes == 0U) continue;
+      memset(buffers.outer, 0xff, kConnectionSnapshotBytes);
+      if (!storage_->writeSlot(slot, buffers.outer,
+                               kConnectionSnapshotBytes)) {
+        return setResult(ConfigResult::StorageWriteFailed);
+      }
+      loadedBytes = 0U;
+      if (!storage_->readSlot(slot, buffers.outer,
+                              kConnectionSnapshotBytes, loadedBytes) ||
+          loadedBytes != 0U) {
+        return setResult(ConfigResult::StorageReadbackFailed);
+      }
+    }
+  }
+  return setResult(ConfigResult::Ok);
+}
+
 MobileRelayGatewayConfigResult
 ConnectionConfigStore::commitMobileRelayGateway(
     const uint8_t gatewayUuid[kEnrollmentUuidBytes],

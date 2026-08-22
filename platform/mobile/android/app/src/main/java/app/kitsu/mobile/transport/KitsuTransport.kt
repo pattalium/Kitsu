@@ -41,6 +41,7 @@ class TransportException(val code: String, cause: Throwable? = null) :
 interface KitsuTransport {
     val mode: ConnectionMode
 
+    fun isConnectedTo(deviceAddress: String): Boolean = false
     suspend fun connect(): ConnectResult
     suspend fun disconnect()
     suspend fun status(): KitsuStatus

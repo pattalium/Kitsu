@@ -53,6 +53,7 @@ import app.kitsu.mobile.security.BondedCompanion
 import app.kitsu.mobile.security.CredentialStore
 import app.kitsu.mobile.security.SafeLog
 import app.kitsu.mobile.relay.MobileRelayBleOperations
+import app.kitsu.mobile.relay.GatewayForgetReceipt
 import app.kitsu.mobile.relay.MobileRelayChunk
 import app.kitsu.mobile.relay.MobileRelayDeviceSession
 import app.kitsu.mobile.relay.MobileRelayPullKind
@@ -1083,6 +1084,16 @@ class BleKitsuTransport(
         },
     )
 
+    override suspend fun forgetGateway(expectedGatewayId: String): GatewayForgetReceipt {
+        if (!MobileRelayWirePolicy.canonicalUuid(expectedGatewayId)) {
+            throw TransportException("invalid_mobile_relay_identity")
+        }
+        return requestBody(
+            "gateway.forget",
+            buildJsonObject { put("gateway_id", expectedGatewayId) },
+        )
+    }
+
     override suspend fun pull(kind: MobileRelayPullKind, offset: Int): MobileRelayChunk {
         val response = successfulPayload(
             mobileRelayOperations.exchange,
@@ -1130,9 +1141,13 @@ class BleKitsuTransport(
 
     /** Lets the foreground public-gateway service take over an already-authenticated
      * GATT session without disconnecting and immediately trying to scan it again. */
-    fun isConnectedTo(deviceAddress: String): Boolean =
+    override fun isConnectedTo(deviceAddress: String): Boolean =
         connectedDeviceAddress?.equals(deviceAddress, ignoreCase = true) == true &&
             gatt != null && writeCharacteristic != null && notifyCharacteristic != null &&
+            envelopeSession != null
+
+    override fun isConnected(): Boolean =
+        gatt != null && writeCharacteristic != null && notifyCharacteristic != null &&
             envelopeSession != null
 
     @SuppressLint("MissingPermission")

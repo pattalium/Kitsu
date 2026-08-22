@@ -90,7 +90,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshOwnerAccountStatus()
         viewModelScope.launch {
             services.mobileRelayController.awaitInitialized()
-            if (!services.mobileRelayController.state.value.enabled) {
+            if (!mobileRelayOwnsBluetooth()) {
                 connect(userInitiated = false)
             }
         }
@@ -113,6 +113,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reconnect() {
+        if (mobileRelayOwnsBluetooth()) {
+            mutableNotice.value = "Disconnect the public gateway before using owner connections"
+            return
+        }
         if (deviceSetupInProgress()) {
             mutableNotice.value = "Finish the current device setup step before switching connections"
             return
@@ -121,7 +125,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reconnectBluetooth() {
-        if (services.mobileRelayController.state.value.enabled) {
+        if (mobileRelayOwnsBluetooth()) {
             mutableNotice.value = "Disconnect the public gateway before using nearby Bluetooth"
             return
         }
@@ -133,6 +137,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reconnectRemote() {
+        if (mobileRelayOwnsBluetooth()) {
+            mutableNotice.value = "Disconnect the public gateway before using owner connections"
+            return
+        }
         if (connectionJob?.isActive == true && disconnectJob?.isActive != true) return
         if (deviceSetupInProgress()) {
             mutableNotice.value = "Finish the current device setup step before switching connections"
@@ -156,7 +164,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun reconnectIfAllowed() = connect(userInitiated = false)
 
     private fun connect(userInitiated: Boolean, directOnly: Boolean = false) {
-        if (services.mobileRelayController.state.value.enabled) {
+        if (mobileRelayOwnsBluetooth()) {
             mutableNotice.value = "Public gateway is already using the Kitsu Bluetooth connection"
             return
         }
@@ -472,27 +480,83 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.refreshGatewayCatalog()
     }
 
-    fun setMobileRelayEnabled(enabled: Boolean) = viewModelScope.launch {
+    fun connectMobileRelayDevice(deviceAddress: String) = viewModelScope.launch {
         runCatching {
-            if (enabled) {
-                if (pairingJob?.isActive == true || deviceSetupInProgress()) {
-                    throw app.kitsu.mobile.transport.TransportException("mobile_relay_setup_busy")
-                }
+            if (pairingJob?.isActive == true || deviceSetupInProgress()) {
+                throw app.kitsu.mobile.transport.TransportException("mobile_relay_setup_busy")
+            }
+            val relayState = services.mobileRelayController.state.value
+            if (relayState.teardownInProgress ||
+                (!relayState.enabled && relayState.running)
+            ) {
+                throw app.kitsu.mobile.transport.TransportException(
+                    "mobile_relay_teardown_in_progress",
+                )
+            }
+            services.mobileRelayController.preflightConnectDevice(deviceAddress)
+            if (!mobileRelayOwnsBluetooth()) {
                 val pendingConnection = connectionJob
                 pendingConnection?.cancel(CancellationException("mobile_relay_enabled"))
                 pendingConnection?.join()
-                repository.releaseDirectForMobileRelay()
+                repository.releaseDirectForMobileRelay(deviceAddress)
             }
-            services.mobileRelayController.setEnabled(enabled)
+            services.mobileRelayController.connectDevice(deviceAddress)
+        }.onFailure { failure ->
+            mutableNotice.value = when (
+                (failure as? app.kitsu.mobile.transport.TransportException)?.code
+            ) {
+                "mobile_relay_pairing_required" -> "That Kitsu pairing is no longer available"
+                "mobile_relay_setup_busy" ->
+                    "Finish the current device setup before connecting the public gateway"
+                "mobile_relay_teardown_in_progress" ->
+                    "Wait for the public gateway to finish disconnecting"
+                "bluetooth_permission_required" ->
+                    "Allow Nearby devices in the Kitsu gateway card, then retry"
+                "bluetooth_disabled" ->
+                    "Turn on Bluetooth in the Kitsu gateway card, then retry"
+                else -> "Public gateway connection was not started"
+            }
         }
+    }
+
+    fun disconnectMobileRelayDevice(deviceAddress: String) = viewModelScope.launch {
+        runCatching { services.mobileRelayController.disconnectDevice(deviceAddress) }
+            .onFailure { mutableNotice.value = "That public gateway connection was not stopped" }
+    }
+
+    fun disconnectMobileRelayAll() = viewModelScope.launch {
+        runCatching { services.mobileRelayController.disconnectAll() }
+            .onFailure { mutableNotice.value = "Public gateway connections were not stopped" }
+    }
+
+    fun forgetMobileRelay() = viewModelScope.launch {
+        runCatching {
+            if (pairingJob?.isActive == true || deviceSetupInProgress()) {
+                throw app.kitsu.mobile.transport.TransportException("mobile_relay_setup_busy")
+            }
+            val pendingConnection = connectionJob
+            pendingConnection?.cancel(CancellationException("mobile_relay_forget"))
+            pendingConnection?.join()
+            repository.releaseDirectForMobileRelay()
+            services.mobileRelayController.forgetRelay()
+        }
+            .onSuccess {
+                mutableNotice.value = "Public gateway forgotten; phone pairings were kept"
+            }
             .onFailure { failure ->
-                mutableNotice.value = when (
-                    (failure as? app.kitsu.mobile.transport.TransportException)?.code
-                ) {
-                    "mobile_relay_pairing_required" -> "Pair a Kitsu before connecting the public gateway"
-                    "mobile_relay_setup_busy" ->
-                        "Finish the current device setup before connecting the public gateway"
-                    else -> "Public gateway setting was not changed"
+                mutableNotice.value = when (failure) {
+                    is app.kitsu.mobile.relay.MobileRelayDeviceCleanupException -> when (
+                        failure.cleanupCode
+                    ) {
+                        "mobile_relay_pairing_required",
+                        "bond_missing_repair_required" ->
+                            "Re-pair ${failure.deviceName} with this phone, then tap Finish forgetting"
+                        else -> "Bring ${failure.deviceName} nearby, then tap Finish forgetting · " +
+                            failure.cleanupCode.replace('_', ' ')
+                    }
+                    else -> "Public gateway was not forgotten · " +
+                        ((failure as? app.kitsu.mobile.transport.TransportException)?.code
+                            ?: "cleanup failed").replace('_', ' ')
                 }
             }
     }
@@ -504,7 +568,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun pairController(label: String) {
-        if (services.mobileRelayController.state.value.enabled) {
+        if (mobileRelayOwnsBluetooth()) {
             mutableNotice.value = "Disconnect the public gateway before pairing another Kitsu"
             return
         }
@@ -595,6 +659,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun deviceSetupInProgress(): Boolean =
         provisioningJob?.isActive == true || enrollmentJob?.isActive == true
+
+    private fun mobileRelayOwnsBluetooth(): Boolean =
+        services.mobileRelayController.state.value.let {
+            it.enabled || it.running || it.teardownInProgress || it.cleanupInProgress
+        }
 
     private companion object {
         val WIFI_ACCEPTED_VERIFICATION_ERRORS = setOf(

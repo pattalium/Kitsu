@@ -318,4 +318,25 @@ class ConnectionCoordinatorTest {
         assertEquals("backend_poll_not_authorized", result.detail)
         assertEquals(0, backend.connectCount)
     }
+
+    @Test fun publicGatewayHandoffIsAddressScopedAndProtectedUntilRelease() = runTest {
+        val direct = MockKitsuTransport(ConnectionMode.DIRECT_BLE).apply {
+            connectedAddress = "00:11:22:33:44:55"
+        }
+        val backend = MockKitsuTransport(ConnectionMode.REMOTE_BACKEND)
+        val coordinator = ConnectionCoordinator(direct, backend)
+        coordinator.connect()
+        val beforeHandoff = direct.disconnectCount
+
+        assertFalse(coordinator.handoffDirectForPublicGateway("AA:BB:CC:DD:EE:FF"))
+        assertEquals(beforeHandoff + 1, direct.disconnectCount)
+
+        coordinator.connect(userInitiated = true)
+        val beforeMatchingHandoff = direct.disconnectCount
+        assertTrue(coordinator.handoffDirectForPublicGateway("00:11:22:33:44:55"))
+        coordinator.disconnect()
+        assertEquals(beforeMatchingHandoff, direct.disconnectCount)
+        coordinator.completePublicGatewayHandoff()
+        assertEquals(beforeMatchingHandoff + 1, direct.disconnectCount)
+    }
 }

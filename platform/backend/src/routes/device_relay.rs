@@ -46,6 +46,11 @@ pub struct CreateDeviceRelayEnrollmentResponse {
     claim_token: String,
 }
 
+#[derive(Serialize)]
+pub struct ForgetDeviceRelayResponse {
+    forgotten: bool,
+}
+
 pub async fn put_device_relay(
     State(state): State<AppState>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
@@ -108,6 +113,20 @@ pub async fn get_device_relay(
         .device_relay(installation_id, &credential_digest)
         .await?;
     Ok(Json(relay_response(&state, relay.relay.view)))
+}
+
+pub async fn forget_device_relay(
+    State(state): State<AppState>,
+    Path(installation_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<ForgetDeviceRelayResponse>, ApiError> {
+    let credential_digest = relay_credential_digest(&headers)?;
+    let gateway_id = state
+        .db
+        .forget_device_relay(installation_id, &credential_digest)
+        .await?;
+    state.hubs.disconnect_gateway(gateway_id).await;
+    Ok(Json(ForgetDeviceRelayResponse { forgotten: true }))
 }
 
 pub async fn create_enrollment(

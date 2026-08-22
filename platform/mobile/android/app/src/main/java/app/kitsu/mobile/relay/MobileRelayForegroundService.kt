@@ -2,6 +2,7 @@ package app.kitsu.mobile.relay
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
@@ -35,20 +36,35 @@ class MobileRelayForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val disconnectIntent = PendingIntent.getService(
+            this,
+            0,
+            Intent(this, MobileRelayForegroundService::class.java)
+                .setAction(ACTION_DISCONNECT_ALL),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         try {
             startForeground(
                 NOTIFICATION_ID,
                 NotificationCompat.Builder(this, CHANNEL_ID)
                     .setSmallIcon(R.mipmap.ic_launcher)
                     .setContentTitle("Kitsu public gateway")
-                    .setContentText("Connecting up to three paired Kitsu devices")
+                    .setContentText("Relaying selected Kitsu devices when available")
                     .setOngoing(true)
                     .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                    .addAction(0, "Disconnect all", disconnectIntent)
                     .build(),
             )
         } catch (failure: SecurityException) {
             SafeLog.warn("mobile_relay", "foreground_permission_required", failure)
+            (application as KitsuApplication).services.mobileRelayController
+                .disableAfterForegroundStartFailure()
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_DISCONNECT_ALL) {
+            val controller = (application as KitsuApplication).services.mobileRelayController
+            scope.launch { controller.requestDisconnectAll() }
             return START_NOT_STICKY
         }
         if (relayJob?.isActive != true) {
@@ -75,5 +91,6 @@ class MobileRelayForegroundService : Service() {
     private companion object {
         const val CHANNEL_ID = "kitsu_mobile_relay"
         const val NOTIFICATION_ID = 41
+        const val ACTION_DISCONNECT_ALL = "app.kitsu.mobile.relay.DISCONNECT_ALL"
     }
 }

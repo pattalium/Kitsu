@@ -156,7 +156,9 @@ pub fn public_router(state: AppState) -> Router {
         )
         .route(
             "/v1/device-relays/{installation_id}",
-            get(device_relay::get_device_relay).put(device_relay::put_device_relay),
+            get(device_relay::get_device_relay)
+                .put(device_relay::put_device_relay)
+                .delete(device_relay::forget_device_relay),
         )
         .route(
             "/v1/device-relays/{installation_id}/enrollments",

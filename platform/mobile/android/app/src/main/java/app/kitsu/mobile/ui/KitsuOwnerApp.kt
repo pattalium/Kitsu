@@ -142,6 +142,7 @@ fun KitsuOwnerApp(
     viewModel: MainViewModel,
     onRequestBlePermissions: () -> Unit,
     onEnableBluetooth: () -> Unit,
+    onPrepareMobileRelayBluetooth: (String) -> Unit,
     onPairController: (String) -> Unit,
     onOpenAppSettings: () -> Unit,
     onSignIn: () -> Unit,
@@ -241,6 +242,8 @@ fun KitsuOwnerApp(
                     onOpenAppSettings = onOpenAppSettings,
                     onEnableBluetooth = onEnableBluetooth,
                     onDisconnect = viewModel::disconnect,
+                    onDisconnectPublicGateway = viewModel::disconnectMobileRelayAll,
+                    onForgetPublicGateway = viewModel::forgetMobileRelay,
                     onCancelPairing = viewModel::cancelPairing,
                 )
                 when (tab) {
@@ -254,6 +257,7 @@ fun KitsuOwnerApp(
                         requestPermissions = onRequestBlePermissions,
                         openAppSettings = onOpenAppSettings,
                         enableBluetooth = onEnableBluetooth,
+                        prepareMobileRelayBluetooth = onPrepareMobileRelayBluetooth,
                         pairController = onPairController,
                         signIn = onSignIn,
                         signOut = onSignOut,
@@ -289,21 +293,38 @@ private fun ConnectionCard(
     onOpenAppSettings: () -> Unit,
     onEnableBluetooth: () -> Unit,
     onDisconnect: () -> Unit,
+    onDisconnectPublicGateway: () -> Unit,
+    onForgetPublicGateway: () -> Unit,
     onCancelPairing: () -> Unit,
 ) {
     val enrollmentInFlight = gatewayEnrollmentInFlight(gatewayEnrollmentState)
     val enrollmentMonitoring = gatewayEnrollmentState == MainViewModel.GatewayEnrollmentState.SwitchingToWifi ||
         gatewayEnrollmentState == MainViewModel.GatewayEnrollmentState.PollingBackend
+    val relayOwnsBluetooth = mobileRelayState.enabled || mobileRelayState.running ||
+        mobileRelayState.teardownInProgress || mobileRelayState.cleanupInProgress
+    val relayNeedsAttention = relayOwnsBluetooth || mobileRelayState.cleanupPending
     val presentation = when {
-        mobileRelayState.enabled -> ConnectionPresentation(
-            if (mobileRelayState.detail == "connected_public_gateway") {
+        relayNeedsAttention -> ConnectionPresentation(
+            if (mobileRelayState.cleanupInProgress) {
+                "Forgetting public gateway"
+            } else if (mobileRelayState.teardownInProgress) {
+                "Disconnecting public gateway"
+            } else if (mobileRelayState.cleanupPending) {
+                "Public gateway cleanup pending"
+            } else if (mobileRelayState.backendConnected &&
+                mobileRelayState.devices.filter { it.selected }.let { selected ->
+                    selected.isNotEmpty() && selected.all {
+                        it.gatewayEnrolled && it.detail == "connected_public_gateway"
+                    }
+                }
+            ) {
                 "Public gateway connected"
             } else {
                 "Connecting public gateway"
             },
             when (mobileRelayState.detail) {
                 "hold_prg_to_connect" -> "Hold PRG on Kitsu to finish connecting."
-                "connected_public_gateway" -> "The app is relaying Kitsu over Bluetooth."
+                "connected_public_gateway" -> "The app is relaying selected Kitsu devices."
                 "rate_limited" -> "Paused after too many automatic retries."
                 else -> friendlyCode(mobileRelayState.detail)
             },
@@ -356,7 +377,30 @@ private fun ConnectionCard(
                 }
             }
             when {
-                mobileRelayState.enabled -> Unit
+                relayNeedsAttention -> OutlinedButton(
+                    onClick = if (mobileRelayState.cleanupPending) {
+                        onForgetPublicGateway
+                    } else {
+                        onDisconnectPublicGateway
+                    },
+                    enabled = !mobileRelayState.teardownInProgress &&
+                        !mobileRelayState.cleanupInProgress && !state.pairing &&
+                        !enrollmentInFlight,
+                    modifier = Modifier.fillMaxWidth().testTag("connection-disconnect-public-gateway"),
+                ) {
+                    Icon(
+                        if (mobileRelayState.cleanupPending) Icons.Filled.Refresh else Icons.Filled.LinkOff,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        if (mobileRelayState.cleanupPending) {
+                            "Finish forgetting"
+                        } else {
+                            "Disconnect public gateway"
+                        },
+                    )
+                }
                 state.pairing -> OutlinedButton(
                     onClick = onCancelPairing,
                     modifier = Modifier.fillMaxWidth().testTag("connection-cancel-pairing"),
@@ -1177,6 +1221,7 @@ private fun SettingsScreen(
     requestPermissions: () -> Unit,
     openAppSettings: () -> Unit,
     enableBluetooth: () -> Unit,
+    prepareMobileRelayBluetooth: (String) -> Unit,
     pairController: (String) -> Unit,
     signIn: () -> Unit,
     signOut: () -> Unit,
@@ -1195,10 +1240,14 @@ private fun SettingsScreen(
         wifiProvisioningState == MainViewModel.ProvisioningState.Saving ||
         wifiRetryState == MainViewModel.WifiRetryState.Retrying ||
         gatewayProvisioningState == MainViewModel.ProvisioningState.Saving
-    val pairingBlocked = deviceSetupInFlight || mobileRelayState.enabled ||
+    val relayOwnsBluetooth = mobileRelayState.enabled || mobileRelayState.running ||
+        mobileRelayState.teardownInProgress || mobileRelayState.cleanupInProgress
+    val relayTearingDown = mobileRelayState.teardownInProgress
+    val pairingBlocked = deviceSetupInFlight || relayOwnsBluetooth ||
         state.connection.mode == ConnectionMode.CONNECTING || state.loading
     val uriHandler = LocalUriHandler.current
     var showOwnerAccount by rememberSaveable { mutableStateOf(false) }
+    var showForgetPublicGateway by rememberSaveable { mutableStateOf(false) }
     if (showOwnerAccount) {
         OwnerAccountScreen(
             state = state,
@@ -1209,9 +1258,34 @@ private fun SettingsScreen(
             onLoadRemoteCompanions = viewModel::refreshRemoteCompanions,
             onSelectRemoteCompanion = viewModel::selectRemoteCompanion,
             onConnectRemote = viewModel::reconnectRemote,
+            connectionAllowed = !relayOwnsBluetooth,
             onOpenGuide = { uriHandler.openUri("https://docs.k32.run/android/#owner-account") },
         )
         return
+    }
+    if (showForgetPublicGateway) {
+        AlertDialog(
+            onDismissRequest = { showForgetPublicGateway = false },
+            title = { Text("Forget public gateway?") },
+            text = {
+                Text(
+                    "Bring every Kitsu used by this public gateway nearby. " +
+                        "Their public-gateway link and the server relay will be removed. " +
+                        "Phone pairings, Wi-Fi, packs, and companion data stay intact.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showForgetPublicGateway = false
+                        viewModel.forgetMobileRelay()
+                    },
+                ) { Text("Forget") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showForgetPublicGateway = false }) { Text("Cancel") }
+            },
+        )
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1275,18 +1349,11 @@ private fun SettingsScreen(
                             when {
                                 mobileRelayState.pairedDeviceCount == 0 ->
                                     "Pair a Kitsu first. Existing Wi-Fi and LAN connectivity is unchanged."
-                                mobileRelayState.detail == "hold_prg_to_connect" -> {
-                                    val seconds = mobileRelayState.enrollmentRemainingMillis
-                                        ?.let { (it + 999) / 1_000 }
-                                    "Hold PRG on Kitsu to connect" +
-                                        (seconds?.let { " · ${it}s remaining" } ?: "")
-                                }
-                                mobileRelayState.detail == "connected_public_gateway" ->
-                                    "Connected to public gateway"
-                                mobileRelayState.detail == "finishing_public_gateway" ->
-                                    "Finishing public gateway connection"
-                                mobileRelayState.enabled ->
-                                    "Connecting to public gateway · ${friendlyCode(mobileRelayState.detail)}"
+                                mobileRelayState.running && mobileRelayState.backendConnected ->
+                                    "Server relay connected. Each Kitsu below reports its own Bluetooth state."
+                                mobileRelayState.running -> "Public gateway relay is running."
+                                mobileRelayState.detail != "off" ->
+                                    friendlyCode(mobileRelayState.detail)
                                 else ->
                                     "Connect up to three paired Kitsu devices without an owner account."
                             },
@@ -1294,28 +1361,182 @@ private fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (mobileRelayState.enabled) {
-                        OutlinedButton(
-                            onClick = { viewModel.setMobileRelayEnabled(false) },
-                            modifier = Modifier.fillMaxWidth().testTag("mobile-relay-toggle"),
+                    mobileRelayState.devices.forEach { device ->
+                        OutlinedCard(
+                            Modifier.fillMaxWidth().testTag(
+                                "mobile-relay-device-${device.deviceAddress}",
+                            ),
                         ) {
-                            Text("Disconnect public gateway")
+                            Column(
+                                Modifier.fillMaxWidth().padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(device.displayName, fontWeight = FontWeight.SemiBold)
+                                val seconds = device.enrollmentRemainingMillis
+                                    ?.let { (it + 999) / 1_000 }
+                                 Text(
+                                     when {
+                                         mobileRelayState.cleanupPending && !device.cleanupRequired ->
+                                             "No public-gateway cleanup is needed on this Kitsu"
+                                         mobileRelayState.cleanupPending && device.cleanupComplete ->
+                                             "Public gateway removed from this Kitsu"
+                                         mobileRelayState.cleanupPending &&
+                                             device.detail == "waiting_public_gateway_cleanup" ->
+                                             "Waiting for Finish forgetting"
+                                         mobileRelayState.cleanupPending &&
+                                             device.detail == "forgetting_public_gateway" ->
+                                             "Removing the public gateway from this Kitsu"
+                                         mobileRelayState.cleanupPending && device.detail in setOf(
+                                             "mobile_relay_pairing_required",
+                                             "bond_missing_repair_required",
+                                         ) ->
+                                             "Re-pair this Kitsu with this phone, then tap Finish forgetting"
+                                         mobileRelayState.cleanupPending &&
+                                             device.detail == "companion_absent" ->
+                                             "Bring this Kitsu nearby, then tap Finish forgetting"
+                                         mobileRelayState.cleanupPending ->
+                                             "${friendlyCode(device.detail)} Tap Finish forgetting to retry."
+                                         device.detail == "hold_prg_to_connect" ->
+                                            "Hold PRG to connect" +
+                                                (seconds?.let { " · ${it}s remaining" } ?: "")
+                                        device.gatewayEnrolled && device.bluetoothConnected &&
+                                            device.detail == "connected_public_gateway" ->
+                                            "Bluetooth connected · public gateway ready"
+                                        device.bluetoothConnected ->
+                                            "Bluetooth connected · ${friendlyCode(device.detail)}"
+                                        device.selected -> friendlyCode(device.detail)
+                                        device.detail in setOf(
+                                            "bluetooth_permission_required",
+                                            "bluetooth_disabled",
+                                        ) -> friendlyCode(device.detail)
+                                        else -> "Not connected to public gateway"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                val enrollmentBusy = device.detail in setOf(
+                                    "connecting_bluetooth",
+                                    "configuring_public_gateway",
+                                    "hold_prg_to_connect",
+                                    "finishing_public_gateway",
+                                )
+                                if (!mobileRelayState.cleanupPending && device.selected) {
+                                    if (!device.gatewayEnrolled && !enrollmentBusy) {
+                                        Button(
+                                            onClick = {
+                                                if (device.detail == "bluetooth_permission_required" ||
+                                                    device.detail == "bluetooth_disabled"
+                                                ) {
+                                                    prepareMobileRelayBluetooth(device.deviceAddress)
+                                                } else {
+                                                    viewModel.connectMobileRelayDevice(
+                                                        device.deviceAddress,
+                                                    )
+                                                }
+                                            },
+                                            enabled = !relayTearingDown &&
+                                                !mobileRelayState.cleanupInProgress &&
+                                                !mobileRelayState.cleanupPending,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text(
+                                                when (device.detail) {
+                                                    "bluetooth_permission_required" ->
+                                                        "Allow Nearby devices"
+                                                    "bluetooth_disabled" -> "Turn on Bluetooth"
+                                                    else -> "Try Connect again"
+                                                },
+                                            )
+                                        }
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            viewModel.disconnectMobileRelayDevice(
+                                                device.deviceAddress,
+                                            )
+                                        },
+                                        enabled = !relayTearingDown &&
+                                            !mobileRelayState.cleanupInProgress &&
+                                            !mobileRelayState.cleanupPending,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) { Text("Disconnect") }
+                                } else if (!mobileRelayState.cleanupPending) {
+                                    Button(
+                                        onClick = {
+                                            if (device.detail == "bluetooth_permission_required" ||
+                                                device.detail == "bluetooth_disabled"
+                                            ) {
+                                                prepareMobileRelayBluetooth(device.deviceAddress)
+                                            } else {
+                                                viewModel.connectMobileRelayDevice(device.deviceAddress)
+                                            }
+                                        },
+                                        enabled = !deviceSetupInFlight && !state.pairing &&
+                                            !relayTearingDown &&
+                                            !mobileRelayState.cleanupInProgress &&
+                                            !mobileRelayState.cleanupPending,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(
+                                            when (device.detail) {
+                                                "bluetooth_permission_required" ->
+                                                    "Allow Nearby devices"
+                                                "bluetooth_disabled" -> "Turn on Bluetooth"
+                                                else -> "Connect"
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         }
-                    } else {
-                        Button(
-                            onClick = { viewModel.setMobileRelayEnabled(true) },
-                            enabled = mobileRelayState.pairedDeviceCount > 0 && !pairingBlocked,
-                            modifier = Modifier.fillMaxWidth().testTag("mobile-relay-toggle"),
+                    }
+                    if (mobileRelayState.selectedDeviceCount > 1 &&
+                        !mobileRelayState.cleanupPending
+                    ) {
+                        OutlinedButton(
+                            onClick = viewModel::disconnectMobileRelayAll,
+                            enabled = !relayTearingDown &&
+                                !mobileRelayState.cleanupInProgress &&
+                                !mobileRelayState.cleanupPending,
+                            modifier = Modifier.fillMaxWidth().testTag("mobile-relay-disconnect-all"),
+                        ) { Text("Disconnect all") }
+                    }
+                    if (mobileRelayState.hasRelayConfiguration) {
+                        TextButton(
+                            onClick = { showForgetPublicGateway = true },
+                            enabled = !mobileRelayState.cleanupInProgress &&
+                                !deviceSetupInFlight && !state.pairing,
+                            modifier = Modifier.fillMaxWidth().testTag("mobile-relay-forget"),
                         ) {
-                            Text("Connect to public gateway")
+                            Text(
+                                if (mobileRelayState.cleanupPending) {
+                                    "Finish forgetting public gateway"
+                                } else {
+                                    "Forget public gateway"
+                                },
+                            )
                         }
                     }
                 }
             }
         }
-        item { HorizontalDivider(Modifier.padding(vertical = 4.dp)) }
-        item { SectionHeading("Connection", "Choose the connection you want to use now.") }
-        if (state.connection.mode == ConnectionMode.PERMISSION_REQUIRED) {
+        if (relayOwnsBluetooth) {
+            item { HorizontalDivider(Modifier.padding(vertical = 4.dp)) }
+            item {
+                OutlinedCard(Modifier.fillMaxWidth().testTag("relay-owns-connection")) {
+                    Text(
+                        "Public gateway currently owns Bluetooth. Finish its Disconnect or " +
+                            "Forget action above before using owner connections, provisioning, " +
+                            "or Pair this phone.",
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        } else {
+            item { HorizontalDivider(Modifier.padding(vertical = 4.dp)) }
+            item { SectionHeading("Connection", "Choose the connection you want to use now.") }
+            if (state.connection.mode == ConnectionMode.PERMISSION_REQUIRED) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -1518,15 +1739,16 @@ private fun SettingsScreen(
                 }
             }
         }
-        if (state.errorCode == "bluetooth_permission_required") {
-            item {
-                OutlinedButton(
-                    onClick = openAppSettings,
-                    modifier = Modifier.fillMaxWidth().testTag("pairing-open-app-settings"),
-                ) {
-                    Icon(Icons.Filled.Settings, contentDescription = null)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Open Android app settings")
+            if (state.errorCode == "bluetooth_permission_required") {
+                item {
+                    OutlinedButton(
+                        onClick = openAppSettings,
+                        modifier = Modifier.fillMaxWidth().testTag("pairing-open-app-settings"),
+                    ) {
+                        Icon(Icons.Filled.Settings, contentDescription = null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("Open Android app settings")
+                    }
                 }
             }
         }
@@ -1543,6 +1765,7 @@ private fun OwnerAccountScreen(
     onLoadRemoteCompanions: () -> Unit,
     onSelectRemoteCompanion: (String) -> Unit,
     onConnectRemote: () -> Unit,
+    connectionAllowed: Boolean,
     onOpenGuide: () -> Unit,
 ) {
     val presentation = OwnerAccountUiPolicy.presentation(ownerAccountStatus)
@@ -1633,18 +1856,29 @@ private fun OwnerAccountScreen(
                 }
             }
             if (ownerAccountStatus == OwnerAccountStatus.SIGNED_IN) {
-                item {
-                    Button(
-                        onClick = onConnectRemote,
-                        enabled = !state.pairing && state.connection.mode != ConnectionMode.CONNECTING &&
-                            state.connection.mode != ConnectionMode.REMOTE_BACKEND &&
-                            (state.connection.mode != ConnectionMode.DIRECT_BLE ||
-                                wifiRemoteHandoffReady(state)),
-                        modifier = Modifier.fillMaxWidth().testTag("owner-connect-remote"),
-                    ) {
-                        Icon(Icons.Filled.Cloud, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text("Connect through owner service")
+                if (connectionAllowed) {
+                    item {
+                        Button(
+                            onClick = onConnectRemote,
+                            enabled = !state.pairing &&
+                                state.connection.mode != ConnectionMode.CONNECTING &&
+                                state.connection.mode != ConnectionMode.REMOTE_BACKEND &&
+                                (state.connection.mode != ConnectionMode.DIRECT_BLE ||
+                                    wifiRemoteHandoffReady(state)),
+                            modifier = Modifier.fillMaxWidth().testTag("owner-connect-remote"),
+                        ) {
+                            Icon(Icons.Filled.Cloud, contentDescription = null)
+                            Spacer(Modifier.size(8.dp))
+                            Text("Connect through owner service")
+                        }
+                    }
+                } else {
+                    item {
+                        Text(
+                            "Disconnect Public gateway before opening an owner connection.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
                 item {
@@ -1792,6 +2026,14 @@ private fun friendlyCode(code: String): String = when {
         "Kitsu paused authentication after failed attempts. Wait 30 seconds, then retry."
     code == "clock_sync_failed" ->
         "Kitsu connected, but its clock could not be synchronized. Retry nearby."
+    code == "mobile_relay_pairing_required" ->
+        "Re-pair the missing Kitsu with this phone, then tap Finish forgetting."
+    code == "waiting_public_gateway_cleanup" ->
+        "Waiting for Finish forgetting."
+    code == "public_gateway_forgotten" ->
+        "Public gateway removed from this Kitsu."
+    code in setOf("foreground_permission_required", "foreground_start_failed") ->
+        "Android could not start the public-gateway foreground service. Check app permissions and retry."
     code == "sign_in_required" ->
         "Sign in to use the Wi-Fi gateway connection."
     code == "no_remote_companion" ->

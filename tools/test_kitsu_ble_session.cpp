@@ -405,17 +405,19 @@ void testPairingHandshakeEnvelopeAndReplay() {
   uint8_t requestId[16]{};
   memset(nonce, 0x11, sizeof(nonce));
   memset(requestId, 0x22, sizeof(requestId));
-  const uint8_t payload[] = "{}";
+  const uint8_t payload[] =
+      "{\"gateway_id\":\"12345678-1234-4abc-8def-1234567890ab\"}";
   uint8_t requestJson[1024]{};
   size_t requestBytes = 0U;
   assert(kitsu868::companion::encodeEnvelope(
-             EnvelopeChannel::Request, 1U, nonce, requestId, "state.get",
+             EnvelopeChannel::Request, 1U, nonce, requestId, "gateway.forget",
              payload, sizeof(payload) - 1U, c2d, fixture.crypto, requestJson,
              sizeof(requestJson), requestBytes) == ProtocolResult::Ok);
   fixture.session.onFrame(requestJson, requestBytes, 2010U);
   assert(fixture.operations.calls == 1U);
-  assert(fixture.operations.lastOperation == "state.get");
-  assert(fixture.operations.lastPayload == "{}");
+  assert(fixture.operations.lastOperation == "gateway.forget");
+  assert(fixture.operations.lastPayload ==
+         "{\"gateway_id\":\"12345678-1234-4abc-8def-1234567890ab\"}");
 
   const std::string response = fixture.transport.frames.back();
   uint8_t decodedPayload[128]{};
@@ -425,7 +427,7 @@ void testPairingHandshakeEnvelopeAndReplay() {
              response.size(), d2c, EnvelopeChannel::Response, 1U,
              fixture.crypto, decoded, decodedPayload,
              sizeof(decodedPayload)) == ProtocolResult::Ok);
-  assert(strcmp(decoded.operation, "state.get") == 0);
+  assert(strcmp(decoded.operation, "gateway.forget") == 0);
   assert(std::string(reinterpret_cast<char*>(decodedPayload),
                      decoded.payloadBytes) == "{\"ok\":true}");
 
