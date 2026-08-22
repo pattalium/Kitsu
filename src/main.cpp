@@ -332,8 +332,11 @@ String serialLine;
 bool serialOverflow = false;
 bool serialControlRejected = false;
 
-bool handleCompanionBleRequest(
+__attribute__((noinline)) bool handleCompanionBleRequest(
     const kitsu868::companion::DecodedEnvelope& request,
+    const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
+    size_t responseCapacity, size_t& responseBytes);
+bool handleMobileRelayExchange(
     const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
     size_t responseCapacity, size_t& responseBytes);
 void wipeSensitive(void* memory, size_t bytes);
@@ -449,6 +452,11 @@ class FirmwareBleBridge final
       const kitsu868::companion::DecodedEnvelope& request,
       const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
       size_t responseCapacity, size_t& responseBytes) override {
+    if (strcmp(request.operation, "mobile.relay.exchange") == 0) {
+      return handleMobileRelayExchange(
+          payload, payloadBytes, responsePayload, responseCapacity,
+          responseBytes);
+    }
     return handleCompanionBleRequest(request, payload, payloadBytes,
                                      responsePayload, responseCapacity,
                                      responseBytes);
@@ -2012,7 +2020,7 @@ class FirmwareMobileRelayEnrollment final
 
 FirmwareMobileRelayEnrollment mobileRelayEnrollment;
 
-bool handleMobileRelayExchange(
+__attribute__((noinline)) bool handleMobileRelayExchange(
     const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
     size_t responseCapacity, size_t& responseBytes) {
   const uint32_t now = millis();
@@ -2140,7 +2148,7 @@ class FirmwareGatewayLanActionExecutor final
 FirmwareGatewayLanPayloadQueue gatewayLanPayloadQueue;
 FirmwareGatewayLanActionExecutor gatewayLanActionExecutor;
 
-bool handleCompanionBleRequest(
+__attribute__((noinline)) bool handleCompanionBleRequest(
     const kitsu868::companion::DecodedEnvelope& request,
     const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
     size_t responseCapacity, size_t& responseBytes) {
@@ -2155,11 +2163,6 @@ bool handleCompanionBleRequest(
   }
   if (strcmp(request.operation, "gateway.enroll.finish") == 0) {
     return companion_api::finishGatewayEnrollment(
-        payload, payloadBytes, responsePayload, responseCapacity,
-        responseBytes);
-  }
-  if (strcmp(request.operation, "mobile.relay.exchange") == 0) {
-    return handleMobileRelayExchange(
         payload, payloadBytes, responsePayload, responseCapacity,
         responseBytes);
   }
@@ -2185,7 +2188,7 @@ bool handleCompanionBleRequest(
     handled = companion_api::retryWifi(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "gateway.configure") == 0) {
     handled = companion_api::configureGateway(payload, payloadBytes,
-                                                response);
+                                               response);
   } else if (strcmp(request.operation, "gateway.forget") == 0) {
     handled = companion_api::forgetGateway(payload, payloadBytes, response);
   }

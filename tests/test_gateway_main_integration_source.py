@@ -64,6 +64,23 @@ class GatewayMainIntegrationSourceTests(unittest.TestCase):
         self.assertNotIn("KitsuGatewayBootstrap::exchangeAndInstall", bootstrap)
         self.assertIn("!deviceSecurity.remoteConnectivityAllowed()", service)
 
+    def test_mobile_relay_dispatch_keeps_its_small_stack_path(self):
+        bridge = MAIN.split("bool handleBleRequest(", 1)[1].split("private:", 1)[0]
+        relay = 'strcmp(request.operation, "mobile.relay.exchange")'
+        direct = "return handleMobileRelayExchange("
+        generic = "return handleCompanionBleRequest("
+        self.assertIn(relay, bridge)
+        self.assertIn(direct, bridge)
+        self.assertIn(generic, bridge)
+        self.assertLess(bridge.index(relay), bridge.index(direct))
+        self.assertLess(bridge.index(direct), bridge.index(generic))
+        self.assertIn(
+            "__attribute__((noinline)) bool handleMobileRelayExchange(", MAIN
+        )
+        self.assertIn(
+            "__attribute__((noinline)) bool handleCompanionBleRequest(", MAIN
+        )
+
     def test_native_client_lan_state_is_authoritative_runtime_state(self):
         state = MAIN.split("bool buildState", 1)[1].split(
             "void appendObservationTime", 1
