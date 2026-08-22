@@ -60,7 +60,12 @@ object CachePolicy {
 
 class EncryptedBoundedCache(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
-    private val file = File(context.filesDir, "owner-cache-v1.bin")
+    private val file = File(context.filesDir, "local-cache-v2.bin")
+
+    init {
+        // Version 2 deliberately starts a new local-device namespace.
+        File(context.filesDir, "owner-cache-v1.bin").delete()
+    }
 
     fun write(snapshot: CacheSnapshot) {
         val plaintext = json.encodeToString(CacheSnapshot.serializer(), CachePolicy.bounded(snapshot, json))
@@ -122,7 +127,7 @@ class EncryptedBoundedCache(context: Context) {
     }
 
     companion object {
-        private const val KEY_ALIAS = "kitsu.mobile.cache.v1"
+        private const val KEY_ALIAS = "kitsu.mobile.cache.v2"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val IV_BYTES = 12
     }

@@ -39,7 +39,7 @@ class PortraitOwnerUiTest {
         compose.onNodeWithTag("nav-messages").performClick()
         compose.onNodeWithText("Messages", substring = true).assertExists()
         compose.onNodeWithTag("nav-settings").performClick()
-        compose.onNodeWithText("Kitsu owner app").assertExists()
+        compose.onNodeWithText("Kitsu companion").assertExists()
 
         val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         assertTrue("portrait screenshot was ${screenshot.width}x${screenshot.height}", screenshot.height > screenshot.width)
@@ -78,20 +78,6 @@ class PortraitOwnerUiTest {
         val connect = compose.onAllNodesWithTag("connection-connect").fetchSemanticsNodes()
         val disconnect = compose.onAllNodesWithTag("connection-disconnect").fetchSemanticsNodes()
         assertTrue(connect.isNotEmpty() || disconnect.isNotEmpty())
-    }
-
-    @Test
-    fun ownerAccountExplainsRemoteAccessWithoutBlockingBluetooth() {
-        compose.onNodeWithTag("nav-settings").performClick()
-        compose.onNodeWithTag("owner-account-open").performScrollTo().performClick()
-        compose.onNodeWithTag("owner-account-screen").assertIsDisplayed()
-        compose.onNodeWithTag("owner-account-explainer").assertExists()
-        compose.onNodeWithText("Nearby Bluetooth works without an account", substring = true)
-            .performScrollTo()
-            .assertIsDisplayed()
-        compose.onNodeWithText("How to get the owner account").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("owner-account-guide").assertHasClickAction()
-        compose.onNodeWithTag("owner-account-back").assertHasClickAction()
     }
 
     @Test

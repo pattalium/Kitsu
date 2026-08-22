@@ -6,7 +6,6 @@
 
 #include "kitsu_companion_protocol.h"
 #include "kitsu_device_security.h"
-#include "kitsu_enrollment.h"
 #include "mesh_discovery_journal.h"
 
 namespace kitsu868 {
@@ -25,6 +24,7 @@ class Esp32DeviceSecurityStorage final : public DeviceSecurityStorage {
                 size_t& outputBytes) override;
   bool writeSlot(uint8_t slot, const uint8_t* input,
                  size_t inputBytes) override;
+  bool clearSlot(uint8_t slot) override;
 
  private:
   Preferences preferences_{};
@@ -104,33 +104,6 @@ class Esp32CompanionCrypto final : public companion::CompanionCrypto {
       const uint8_t* salt, size_t saltBytes, const uint8_t* info,
       size_t infoBytes,
       uint8_t output[companion::kEnvelopeKeyBytes]) override;
-};
-
-class Esp32EnrollmentPlatformCrypto final : public EnrollmentPlatformCrypto {
- public:
-  bool generateP256KeyPair(
-      uint8_t privateKey[kEnrollmentPrivateKeyBytes],
-      uint8_t publicKey[kEnrollmentPublicKeyBytes]) override;
-  bool createP256CsrDer(
-      const uint8_t privateKey[kEnrollmentPrivateKeyBytes],
-      const char* hardwareUid, size_t hardwareUidBytes, uint8_t* output,
-      size_t outputCapacity, size_t& outputBytes) override;
-  bool signP256DigestP1363(
-      const uint8_t privateKey[kEnrollmentPrivateKeyBytes],
-      const uint8_t digest[32],
-      uint8_t signature[kEnrollmentSignatureBytes]) override;
-  bool p256Ecdh(
-      const uint8_t privateKey[kEnrollmentPrivateKeyBytes],
-      const uint8_t peerPublicKey[kEnrollmentPublicKeyBytes],
-      uint8_t sharedSecret[32]) override;
-  bool aes256GcmOpen(const uint8_t key[32], const uint8_t nonce[12],
-                     const uint8_t* aad, size_t aadBytes,
-                     const uint8_t* ciphertext, size_t ciphertextBytes,
-                     const uint8_t tag[16], uint8_t* plaintext) override;
-  bool certificateBindsKeyAndCompanion(
-      const uint8_t* certificateDer, size_t certificateBytes,
-      const uint8_t expectedPublicKey[kEnrollmentPublicKeyBytes],
-      const uint8_t companionUuid[kEnrollmentUuidBytes]) override;
 };
 
 }  // namespace connectivity

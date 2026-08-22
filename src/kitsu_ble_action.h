@@ -26,12 +26,12 @@ enum class BleMessageRoute : uint8_t {
 
 enum class BleActionKind : uint8_t {
   Pet = 1,
-  Feed,
-  Play,
-  ListenOnce,
-  AdvertiseOnce,
-  SendMessage,
-  ShareLocationOnce,
+  Feed = 2,
+  Play = 3,
+  ListenOnce = 4,
+  // Value 5 was used by a withdrawn action. Keep SendMessage at 6 so an
+  // update cannot reinterpret a still-live persisted replay digest.
+  SendMessage = 6,
 };
 
 enum class BleActionDecodeResult : uint8_t {

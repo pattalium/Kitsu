@@ -1,8 +1,5 @@
 package app.kitsu.mobile.transport
 
-import app.kitsu.mobile.model.WifiProvisioning
-import app.kitsu.mobile.model.WifiSecurity
-import app.kitsu.mobile.model.toConfigureBody
 import java.util.UUID
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -58,27 +55,23 @@ class SecureEnvelopeCodecTest {
         assertEquals("mac_rejected", failure.code)
     }
 
-    @Test fun wifiConfigureOperationAndSecretBodyAreMacBound() {
+    @Test fun controllerOperationAndSensitiveBodyAreMacBound() {
         val client = SecureEnvelopeSession.derive(root, clientNonce, deviceNonce)
         val device = SecureEnvelopeSession.deriveForDevice(root, clientNonce, deviceNonce)
-        val payload = Json.encodeToString(
-            WifiProvisioning("Private network", "test-secret", WifiSecurity.WPA2_WPA3)
-                .toConfigureBody(),
-        ).toByteArray()
-        val encoded = client.encodeRequest(UUID.randomUUID(), "wifi.configure", payload)
+        val payload = "{\"private_value\":\"test-secret\"}".toByteArray()
+        val encoded = client.encodeRequest(UUID.randomUUID(), "firmware.update.begin", payload)
 
         // The GATT envelope is authenticated and base64url-wrapped; neither
         // transient input appears as plaintext in logs or packet framing.
         val outerText = encoded.toString(Charsets.UTF_8)
-        assertTrue(!outerText.contains("Private network"))
         assertTrue(!outerText.contains("test-secret"))
         val decoded = device.decodeIncoming(encoded)
-        assertEquals("wifi.configure", decoded.operation)
+        assertEquals("firmware.update.begin", decoded.operation)
         assertArrayEquals(payload, decoded.payload)
 
         val tamperTarget = SecureEnvelopeSession.deriveForDevice(root, clientNonce, deviceNonce)
         val operationTampered = outerText.replace(
-            "\"op\":\"wifi.configure\"",
+            "\"op\":\"firmware.update.begin\"",
             "\"op\":\"state.get\"",
         ).toByteArray()
         assertEquals(

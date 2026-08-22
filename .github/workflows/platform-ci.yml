@@ -25,13 +25,23 @@ jobs:
         run: python -m pip install platformio==6.1.19
       - name: Link owner-reflashable Heltec V3 firmware
         run: pio run -e heltec_wifi_lora_32_V3_reflashable
-      - name: All Python model, source-contract, and layout tests
-        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Local-first Python model, source-contract, layout, and release tests
+        run: >-
+          python -m unittest
+          tests.test_companion_brain_model
+          tests.test_connectivity_foundation
+          tests.test_gateway_main_integration_source
+          tests.test_kitsu_chat_contract
+          tests.test_kitsu_mesh_contract
+          tests.test_portrait_ui_layout
+          tests.test_stable_release_tooling
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: MeshCore interoperability vectors
         run: node --test tests/test_meshcore_text_vectors.mjs
+      - name: Signed BLE firmware package contract
+        run: node --test tools/test_package_kitsu_ble_firmware.mjs
 
   firmware-native-vectors:
     # The checked-in native-test launchers target the audited VS 2022 toolchain.
@@ -53,7 +63,7 @@ jobs:
           ..\esptool411-runtime\Scripts\esptool.exe version
       - name: Link the exact reflashable target on Windows
         run: pio run -e heltec_wifi_lora_32_V3_reflashable
-      - name: Strict native C++ protocol, security, and runtime tests
+      - name: Strict native C++ local protocol, security, and runtime tests
         shell: cmd
         run: |
           call tools\test_encounter_protocol.cmd || exit /b 1
@@ -64,58 +74,16 @@ jobs:
           call tools\test_portrait_ui_layout.cmd || exit /b 1
           call tools\test_kitsu_companion_protocol.cmd || exit /b 1
           call tools\test_kitsu_device_security.cmd || exit /b 1
+          call tools\test_kitsu_legacy_connectivity_retirement.cmd || exit /b 1
           call tools\test_mesh_discovery_journal.cmd || exit /b 1
           call tools\test_kitsu_ble_session.cmd || exit /b 1
           call tools\test_kitsu_ble_action.cmd || exit /b 1
-          call tools\test_kitsu_enrollment.cmd || exit /b 1
-          call tools\test_kitsu_gateway_enrollment_flow.cmd || exit /b 1
-          call tools\test_kitsu_connectivity.cmd || exit /b 1
-          call tools\test_kitsu_gateway_bootstrap.cmd || exit /b 1
-          call tools\test_kitsu_lan_protocol.cmd || exit /b 1
-          call tools\test_kitsu_gateway_lan_runtime.cmd || exit /b 1
-          call tools\test_kitsu_gateway_action_runtime.cmd || exit /b 1
+          call tools\test_kitsu_ble_ota.cmd || exit /b 1
       - name: Owner-reflashable and no-eFuse release audits
         shell: cmd
         run: |
           call tools\test_kitsu_reflashable_profile.cmd || exit /b 1
           call tools\test_package_kitsu_reflashable.cmd || exit /b 1
-
-  rust-services:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: kitsu_ci
-          POSTGRES_PASSWORD: kitsu_ci_only
-          POSTGRES_DB: kitsu_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U kitsu_ci -d kitsu_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      DATABASE_URL: postgres://kitsu_ci:kitsu_ci_only@127.0.0.1:5432/kitsu_ci
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
-        with:
-          components: rustfmt, clippy
-      - name: Gateway format
-        run: cargo fmt --manifest-path platform/gateway/Cargo.toml -- --check
-      - name: Gateway lint
-        run: cargo clippy --manifest-path platform/gateway/Cargo.toml --locked --all-targets -- -D warnings
-      - name: Gateway tests
-        run: cargo test --manifest-path platform/gateway/Cargo.toml --locked
-      - name: Backend format
-        run: cargo fmt --manifest-path platform/backend/Cargo.toml -- --check
-      - name: Backend lint
-        run: cargo clippy --manifest-path platform/backend/Cargo.toml --locked --all-targets --all-features -- -D warnings
-      - name: Backend unit tests
-        run: cargo test --manifest-path platform/backend/Cargo.toml --locked --all-features
 
   android:
     runs-on: ubuntu-latest
@@ -138,9 +106,6 @@ jobs:
         run: gradle --no-daemon lintDebug lintRelease
       - name: Assemble testable application artifacts
         run: gradle --no-daemon assembleDebug assembleAndroidTest
-      - name: Physical QA harness self-tests
-        shell: pwsh
-        run: ./qa/test-acceptance-harness.ps1
 
   android-instrumentation:
     # A pinned AGP-managed virtual device executes the instrumentation contract.
@@ -180,24 +145,6 @@ jobs:
             platform/mobile/android/app/build/outputs/androidTest-results/managedDevice/
           if-no-files-found: error
 
-  companion-web:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: platform/web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: platform/web/package-lock.json
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
-      - run: npm audit --omit=dev --audit-level=high
-
   web-serial-flasher:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -225,5 +172,7 @@ jobs:
           node-version: "22"
       - name: Public release and policy tests
         run: node --test platform/public-site/tests/site.test.mjs
-      - name: Cross-surface documentation and encoding tests
+      - name: Static manual contract tests
+        run: node --test platform/docs-site/tests/docs.test.mjs
+      - name: Cross-surface status, recovery, and encoding tests
         run: node --test platform/flash-site/tests/surfaces.test.mjs

@@ -145,8 +145,10 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
         }
 
         val candidate = ControllerGrant(grant.controllerIdB64, grant.rootB64, grant.deviceUid)
+        var candidateStored = false
         try {
             persistCandidate(candidate)
+            candidateStored = true
             onCandidateStored()
             val clientProof = proof(
                 root, CLIENT_PREFIX, controllerId, grant.deviceUid, clientNonce, deviceNonce,
@@ -175,7 +177,14 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
             return candidate
         } catch (failure: Throwable) {
             root.fill(0)
-            withContext(NonCancellable) { deleteCandidate() }
+            // Once pair_commit may have reached Kitsu, a missing or malformed pair_ok is
+            // not proof that the durable controller was rejected. Retain the candidate so
+            // a normal authenticated handshake can finish recovery after process/GATT loss.
+            val authoritativeRejection = (failure as? PairingException)?.code
+                ?.let(AUTHORITATIVE_REJECTIONS::contains) == true
+            if (!candidateStored || authoritativeRejection) {
+                withContext(NonCancellable) { deleteCandidate() }
+            }
             throw failure
         }
     }
@@ -237,6 +246,7 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
         private val PAIRING_ERROR_CODES = setOf(
             "pairing_closed", "controller_full", "auth_failed", "timeout",
         )
+        private val AUTHORITATIVE_REJECTIONS = PAIRING_ERROR_CODES
         const val MAX_FRAME_BYTES = 1024
         private const val RESPONSE_TIMEOUT_MILLIS = 10_000L
     }

@@ -331,9 +331,7 @@ bool parseKind(const Field* field, BleActionKind& output) {
       {"feed", BleActionKind::Feed},
       {"play", BleActionKind::Play},
       {"listen_once", BleActionKind::ListenOnce},
-      {"advertise_once", BleActionKind::AdvertiseOnce},
       {"send_message", BleActionKind::SendMessage},
-      {"share_location_once", BleActionKind::ShareLocationOnce},
   };
   for (size_t i = 0U; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
     if (spanEquals(field->value, kinds[i].name)) {
@@ -536,18 +534,6 @@ BleActionDecodeResult decodeParams(const Field* params,
       return BleActionDecodeResult::Ok;
     }
 
-    case BleActionKind::AdvertiseOnce: {
-      static const char* const schema[] = {"scope"};
-      const Field* scope = findField(fields, count, "scope");
-      if (!exactSchema(fields, count, schema, 1U) || !scope ||
-          scope->kind != ValueKind::String ||
-          !(spanEquals(scope->value, "nearby") ||
-            spanEquals(scope->value, "mesh"))) {
-        return BleActionDecodeResult::InvalidParams;
-      }
-      return BleActionDecodeResult::Ok;
-    }
-
     case BleActionKind::SendMessage: {
       static const char* const schema[] = {"route", "target_id", "text"};
       const Field* route = findField(fields, count, "route");
@@ -582,24 +568,6 @@ BleActionDecodeResult decodeParams(const Field* params,
       return BleActionDecodeResult::Ok;
     }
 
-    case BleActionKind::ShareLocationOnce: {
-      static const char* const schema[] = {"lat_e6", "lon_e6", "exposure"};
-      const Field* exposure = findField(fields, count, "exposure");
-      int64_t latitude = 0;
-      int64_t longitude = 0;
-      if (!exactSchema(fields, count, schema, 3U) || !exposure ||
-          exposure->kind != ValueKind::String ||
-          !parseInt64(findField(fields, count, "lat_e6"), latitude) ||
-          !parseInt64(findField(fields, count, "lon_e6"), longitude) ||
-          latitude < -90000000LL || latitude > 90000000LL ||
-          longitude < -180000000LL || longitude > 180000000LL ||
-          !(spanEquals(exposure->value, "nearby_advert") ||
-            spanEquals(exposure->value, "mesh_advert") ||
-            spanEquals(exposure->value, "map_card"))) {
-        return BleActionDecodeResult::InvalidParams;
-      }
-      return BleActionDecodeResult::Ok;
-    }
   }
   return BleActionDecodeResult::InvalidKind;
 }
@@ -938,9 +906,7 @@ const char* bleActionKindName(BleActionKind kind) {
     case BleActionKind::Feed: return "feed";
     case BleActionKind::Play: return "play";
     case BleActionKind::ListenOnce: return "listen_once";
-    case BleActionKind::AdvertiseOnce: return "advertise_once";
     case BleActionKind::SendMessage: return "send_message";
-    case BleActionKind::ShareLocationOnce: return "share_location_once";
   }
   return "unknown";
 }

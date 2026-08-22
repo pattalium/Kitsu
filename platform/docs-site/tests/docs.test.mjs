@@ -24,7 +24,7 @@ const pageTitles = [
   "Device controls",
   "Android app",
   "Messaging",
-  "Wi-Fi and remote access",
+  "Bluetooth and offline use",
   "Firmware updates",
   "Troubleshooting",
   "Security and privacy",
@@ -93,88 +93,98 @@ test("documentation publishes the authoritative app icon bytes", async () => {
   assert.deepEqual([...await readFile(published).then((bytes) => bytes.subarray(0, 8))], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 });
 
-test("public gateway is account-free while the optional owner guide remains complete", async () => {
+test("documents a complete Bluetooth-only product with no runtime-service controls", async () => {
   const [android, connectivity, home] = await Promise.all([
     read("android/index.html"),
     read("connectivity/index.html"),
     read("index.html"),
   ]);
-  assert.match(android, /id="owner-account"/);
-  assert.match(android, /No account needed[\s\S]*Bluetooth and public gateway/);
-  assert.match(android, /Owner account optional[\s\S]*Owner service and self-hosted gateways/);
-  assert.match(android, /no public registration button/i);
-  assert.match(android, /private bootstrap handoff/i);
-  assert.match(android, /temporary password/i);
-  assert.match(android, /first successful login requires/i);
-  assert.match(android, /delivery over an authenticated private channel/i);
-  assert.match(android, /readable only by the operator's service account/i);
-  assert.match(android, /mode <code>0600<\/code>/);
-  assert.match(android, /system browser/i);
-  assert.match(android, /no self-service email or public password reset/i);
-  assert.match(android, /operator-run recovery procedure/i);
-  assert.match(android, /invalidates the old password, terminates its existing server-side sessions, and issues a new temporary password/i);
-  assert.match(android, /Never include a password/i);
-  assert.match(connectivity, /No owner account is required/);
-  assert.match(connectivity, /Owner sign-in is not required for this local step/);
-  assert.match(home, /href="\/android\/#owner-account"/);
+  assert.match(android, /has no sign-in screen, account, gateway control, Wi-Fi setup, background relay, or Internet permission/i);
+  assert.match(connectivity, /Put the phone in airplane mode, turn Bluetooth back on/i);
+  assert.match(connectivity, /Internet permission is absent/i);
+  assert.match(home, /No account, Wi-Fi, gateway, or Internet connection is required/i);
+  assert.doesNotMatch(`${android}${connectivity}${home}`, /app\.k32\.run|owner-account|Sign in|Public gateway|Use Wi-Fi remote access/i);
 });
 
-test("Wi-Fi guide distinguishes radio association from Bluetooth-owned control", async () => {
-  const [android, connectivity] = await Promise.all([
+test("saved-device controls and controller revocation are explicit", async () => {
+  const [android, connectivity, gettingStarted] = await Promise.all([
     read("android/index.html"),
     read("connectivity/index.html"),
+    read("getting-started/index.html"),
   ]);
-  assert.match(connectivity, /keep its Wi-Fi station associated/i);
-  assert.match(connectivity, /Gateway enrollment, LAN commands, and remote actions remain stopped until Bluetooth closes/i);
-  assert.match(connectivity, /Check storage and link separately/i);
-  assert.match(connectivity, /no Wi-Fi-only erase command or supported public factory-reset flow/i);
-  assert.match(connectivity, /do not use one for Wi-Fi troubleshooting/i);
-  assert.doesNotMatch(connectivity, /release's explicitly destructive factory-reset procedure/i);
-  assert.doesNotMatch(connectivity, /keeps Wi-Fi stopped/i);
-  assert.match(android, /Use Wi-Fi remote access/);
-  assert.match(android, /explicit owner choice/i);
+  assert.match(android, /stores up to three Kitsu authorizations/i);
+  assert.match(android, /Select[\s\S]*Connect[\s\S]*Disconnect/i);
+  assert.match(android, /controller\.forget/);
+  assert.match(connectivity, /Disconnect versus Forget authorization/i);
+  assert.match(connectivity, /durably revoke this phone's controller root/i);
+  assert.match(gettingStarted, /airplane mode[\s\S]*turn Bluetooth back on/i);
 });
 
-test("troubleshooting reflects the live Wi-Fi and Bluetooth coexistence policy", async () => {
-  const troubleshooting = await read("troubleshooting/index.html");
-  assert.match(troubleshooting, /credentials stored/i);
-  assert.match(troubleshooting, /Wi-Fi connected/i);
-  assert.match(troubleshooting, /keep Direct Bluetooth open/i);
-  assert.match(troubleshooting, /keeps the Wi-Fi station warm/i);
-  assert.match(troubleshooting, /normal Connect flow prefers Direct Bluetooth/i);
-  assert.match(troubleshooting, /Use Wi-Fi remote access.*explicit owner-selected override/i);
-  assert.doesNotMatch(troubleshooting, /Do not leave an authenticated Bluetooth session open/i);
-  assert.doesNotMatch(troubleshooting, /initial grace period/i);
+test("setup instructions and messaging controls match the real device and Android labels", async () => {
+  const [home, device, gettingStarted, android, messaging, styles] = await Promise.all([
+    read("index.html"),
+    read("device/index.html"),
+    read("getting-started/index.html"),
+    read("android/index.html"),
+    read("messaging/index.html"),
+    read("styles.css"),
+  ]);
+  assert.match(home, /leave CONNECT selected and hold[\s\S]*leave BLUETOOTH selected and hold again/i);
+  assert.match(device, /<dt>CONNECT<\/dt><dd>Opens the local connection menu/);
+  assert.match(device, /<dt>BLUETOOTH<\/dt>/);
+  assert.doesNotMatch(device, /<dt>PHONE<\/dt>/);
+  assert.match(gettingStarted, /open Settings and find Pair another Kitsu/i);
+  assert.match(gettingStarted, /Pair this phone/);
+  assert.match(gettingStarted, /Connected directly over authenticated Bluetooth/);
+  assert.doesNotMatch(gettingStarted, /open More|Pair nearby Kitsu|refresh the inbox/i);
+  assert.match(android, /Settings, enter a phone label and tap Pair this phone/i);
+  assert.match(messaging, /Choose a nearby peer/);
+  assert.match(messaging, /compact key reference/);
+  assert.match(messaging, /Public · slot 0/);
+  assert.match(messaging, /Send over mesh/);
+  assert.match(messaging, /tap <strong>Refresh<\/strong> in the Connection card/i);
+  assert.match(messaging, /complete 24-message device ring/i);
+  assert.doesNotMatch(messaging, /Open the recipient selector|delivery details/i);
+  assert.doesNotMatch(styles, /account-scope|scope-label/);
 });
 
-test("operator security terms are explained without implying user configuration", async () => {
-  const security = await read("security/index.html");
-  assert.match(security, /<dt>Private CA \(PCA\)<\/dt>/);
-  assert.match(security, /issues and verifies device and gateway identities/);
-  assert.match(security, /not a public website certificate authority/);
-  assert.match(security, /<dt>Envoy<\/dt>/);
-  assert.match(security, /backend service-edge proxy/);
-  assert.match(security, /routes authenticated traffic, and enforces network policy/);
-  assert.match(security, /not an account, an Android setting, or something a normal Kitsu user configures/);
-});
-
-test("release guidance uses the signed Android release and preserves device state", async () => {
-  const [home, android, gettingStarted, updates] = await Promise.all([
+test("release guidance explains signed resumable A/B OTA and recovery", async () => {
+  const [home, android, gettingStarted, updates, troubleshooting, security] = await Promise.all([
     read("index.html"),
     read("android/index.html"),
     read("getting-started/index.html"),
     read("updates/index.html"),
+    read("troubleshooting/index.html"),
+    read("security/index.html"),
   ]);
   assert.match(home, /Download Android/);
   assert.match(home, /Install Kitsu for Android/);
-  assert.match(android, /website APK is a signed Android release/i);
-  assert.match(android, /Install the signed Android APK/i);
-  assert.match(gettingStarted, /current signed Android APK/i);
-  assert.match(updates, /NVS and companion pack<\/td><td>Preserved/);
-  assert.match(updates, /Keeps device identity, companion state, and installed visual pack/);
+  assert.match(android, /signed APK/i);
+  assert.match(gettingStarted, /eligible local-first Android APK/i);
+  assert.match(updates, /inactive application slot/i);
+  assert.match(updates, /64 KiB checkpoint/i);
+  assert.match(updates, /30 seconds/i);
+  assert.match(updates, /controller store, MeshCore state, and coredump<\/td><td>Preserved/i);
+  assert.match(gettingStarted, /physical-acceptance record bind the exact SHA-256/i);
+  assert.match(gettingStarted, /intentionally writes the reviewed rollback-enabled Kitsu bootloader/i);
+  assert.doesNotMatch(gettingStarted, /preserves the bootloader/i);
+  assert.match(updates, /one clean 4 KiB OTA-journal artifact/i);
+  assert.match(updates, /journal artifact to <code>0x33f000<\/code> and <code>0x66f000<\/code>/i);
+  assert.match(updates, /legacy-connectivity clear artifact/i);
+  assert.match(updates, /isolated retired region at <code>0x7b0000<\/code>/i);
+  assert.match(updates, /all seven regions/i);
+  assert.match(updates, /Unlike normal Bluetooth OTA, this USB bootstrap intentionally writes the bootloader and partition table/i);
+  assert.match(troubleshooting, /Reset interrupted update/i);
+  assert.match(security, /Ed25519 update authority/i);
+  assert.match(security, /A\/B update/i);
   const personalCompanionName = String.fromCharCode(70, 111, 120, 32, 71, 105, 114, 108);
   assert.equal(updates.includes(personalCompanionName), false);
-  assert.doesNotMatch(`${home}${android}${gettingStarted}${updates}`, /test APK|test build|coming soon|placeholder|logo explanation/i);
+  assert.doesNotMatch(`${home}${android}${gettingStarted}${updates}${troubleshooting}${security}`, /test APK|test build|coming soon|placeholder|logo explanation/i);
+});
+
+test("public manual contains no retired runtime-service instructions", async () => {
+  const text = (await Promise.all(pages.map(read))).join("\n");
+  assert.doesNotMatch(text, /app\.k32\.run|api\.k32\.run|auth\.k32\.run|Owner account|Public gateway|Connect to public gateway|Use Wi-Fi remote access|gateway enrollment|OIDC|PKCE|mTLS|Envoy/i);
 });
 
 test("mobile manual navigation is compact, keyboard ordered, and touch sized", async () => {

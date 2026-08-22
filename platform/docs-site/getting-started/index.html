@@ -2,10 +2,10 @@
 <html lang="en">
 <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content="Install Kitsu firmware and pair the Android app with physical confirmation." /><link rel="icon" type="image/png" href="/assets/kitsu-app-icon.png?v=4f850b55" /><link rel="stylesheet" href="/styles.css?v=c0dcc352" /><title>Getting Started · Kitsu Manual</title></head>
 <body>
-<header class="docs-header"><a class="brand" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="43" height="43" /><span>Kitsu Manual<small>K32 companion documentation</small></span></a><nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://flash.k32.run">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><a class="button" href="https://app.k32.run">Open Kitsu</a></nav></header>
+<header class="docs-header"><a class="brand" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="43" height="43" /><span>Kitsu Manual<small>K32 companion documentation</small></span></a><nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://flash.k32.run">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><a class="button" href="https://k32.run/#download">Get Android</a></nav></header>
 <main class="docs-shell">
-<details class="mobile-manual"><summary><span>Manual</span><b>Getting started</b></summary><nav aria-label="Mobile manual pages"><a href="/">Manual home</a><a aria-current="page" href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></nav></details>
-<aside class="sidebar" aria-label="Manual pages"><strong>Start here</strong><a href="/">Manual home</a><a aria-current="page" href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><strong>Use Kitsu</strong><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Wi-Fi and remote access</a><strong>Keep it working</strong><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></aside>
+<details class="mobile-manual"><summary><span>Manual</span><b>Getting started</b></summary><nav aria-label="Mobile manual pages"><a href="/">Manual home</a><a aria-current="page" href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Bluetooth and offline use</a><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></nav></details>
+<aside class="sidebar" aria-label="Manual pages"><strong>Start here</strong><a href="/">Manual home</a><a aria-current="page" href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><strong>Use Kitsu</strong><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Bluetooth and offline use</a><strong>Keep it working</strong><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></aside>
 <article class="article">
 <div class="breadcrumbs"><a href="/">Manual</a><span>/</span><span>Getting started</span></div><p class="eyebrow">FIRST-TIME SETUP</p><h1>From a Heltec board to your Kitsu.</h1><p class="lede">You need a supported Heltec WiFi LoRa 32 V3, a USB data cable, an Android phone running Android 8 or newer, and about fifteen minutes.</p>
 
@@ -13,14 +13,14 @@
 <ol class="step-list">
 <li><strong>Connect the Heltec with a USB data cable.</strong><p>A charge-only cable will power the board but cannot install firmware.</p></li>
 <li><strong>Open the <a href="https://flash.k32.run">Kitsu firmware installer</a> in a Web Serial browser.</strong><p>Use a current Chromium-based desktop browser. Mobile browsers and Firefox do not provide the required serial interface.</p></li>
-<li><strong>Select Install and choose the Heltec serial port.</strong><p>The installer checks the board type, flash size, signed release, and exact image hashes before writing.</p></li>
-<li><strong>Wait for write and read-back verification.</strong><p>Do not unplug the board. A successful install ends with a verified restart into Kitsu.</p></li>
+<li><strong>Select Install and choose the Heltec serial port.</strong><p>The installer checks the board type and flash size. Its signed manifest and physical-acceptance record bind the exact SHA-256 of the reviewed rollback bootloader, partition table, application, clean OTA-journal bytes, and legacy-connectivity clear bytes before writing.</p></li>
+<li><strong>Wait for all seven writes and read-back verification.</strong><p>Do not unplug the board. The installer writes the same accepted application into both A/B slots, the same clean 4 KiB journal bytes at the end of each slot, and an exact clear over the isolated partition that held old Wi-Fi and gateway credentials. It reads back every fixed region before restarting Kitsu.</p></li>
 </ol>
-<div class="callout warning"><strong>Do not choose a full-chip erase.</strong>The Kitsu installer performs targeted writes and preserves the bootloader, companion pack, saved state, and connectivity data. Follow the recovery guide before using any unrelated flashing tool.</div>
+<div class="callout warning"><strong>Do not choose a full-chip erase.</strong>The USB installer intentionally writes the reviewed rollback-enabled Kitsu bootloader, partition table, both application slots, both clean private OTA-journal regions, and only the isolated clear image needed to retire old connectivity secrets. It preserves OTA selection data, companion packs and state, controller records, MeshCore state, coredump, and eFuses. Follow the recovery guide before using any unrelated flashing tool.</div>
 
 <h2>2. Install Android</h2>
 <ol class="step-list">
-<li><strong>Download the current signed Android APK.</strong><p>Use the Android download on the <a href="https://k32.run/#download">Kitsu product page</a>, then allow installation from your browser when Android asks.</p></li>
+<li><strong>Download an eligible local-first Android APK.</strong><p>Use the Android card on the <a href="https://k32.run/#download">Kitsu product page</a> only when it shows a verified local-first release and enables the link, then allow installation from your browser when Android asks.</p></li>
 <li><strong>Allow installation from your browser.</strong><p>Android may ask you to allow this source. That permission can be turned off again immediately after installation.</p></li>
 <li><strong>Open Kitsu and grant nearby-device access.</strong><p>Android 12 and newer ask for Nearby devices. Android 8–11 may ask for Location because those versions tie Bluetooth scanning to that permission.</p></li>
 </ol>
@@ -28,9 +28,9 @@
 <h2>3. Put Kitsu in phone-pairing mode</h2>
 <ol class="step-list">
 <li><strong>From Home, hold PRG for at least 750 ms.</strong><p>The main menu opens.</p></li>
-<li><strong>Hold PRG while CONNECT is selected.</strong><p>The connection menu opens. If it starts on WIFI, short-press until BLUETOOTH appears.</p></li>
+<li><strong>Hold PRG while CONNECT is selected.</strong><p>The local connection menu opens with Bluetooth selected.</p></li>
 <li><strong>Hold PRG on BLUETOOTH.</strong><p>Kitsu opens the time-limited PAIR PHONE window.</p></li>
-<li><strong>In Android, open More and scroll to Pair this phone.</strong><p>Enter a phone label and tap Pair nearby Kitsu.</p></li>
+<li><strong>In Android, open Settings and find Pair another Kitsu.</strong><p>Enter a phone label and tap <strong>Pair this phone</strong>.</p></li>
 </ol>
 
 <h2>4. Compare the code and grant the phone</h2>
@@ -43,10 +43,10 @@
 <div class="callout"><strong>There are two PRG holds during phone setup.</strong>The first confirms the Bluetooth numeric comparison. The second grants the authenticated Kitsu controller. Both are intentional.</div>
 
 <h2>5. Confirm nearby control</h2>
-<ul><li>The app should show <strong>Direct Bluetooth</strong> and current companion status.</li><li>Try Pet or Feed and confirm Kitsu reacts.</li><li>Open Messages and refresh the inbox.</li><li>Tap <strong>Disconnect</strong> when finished. This closes Kitsu's connection but does not turn off the phone's Bluetooth radio.</li></ul>
+<ul><li>The app should show <strong>Connected directly over authenticated Bluetooth</strong> and current companion status.</li><li>Try Pet or Feed and confirm Kitsu reacts.</li><li>Open Messages and inspect the device-reported history.</li><li>Tap <strong>Disconnect</strong> when finished. This closes Kitsu's connection but does not turn off the phone's Bluetooth radio.</li></ul>
 
-<h2>6. Optional: connect to the public gateway</h2>
-<ol class="step-list"><li><strong>In More, tap Connect to public gateway.</strong><p>The phone creates an encrypted relay credential for this installation. No owner account is required.</p></li><li><strong>Watch Kitsu for GATEWAY / HOLD PRG / TO ENROLL.</strong><p>Hold PRG once before the countdown expires.</p></li><li><strong>Wait for Connected to public gateway.</strong><p>The phone now carries Kitsu's authenticated traffic over its own Internet connection. The Heltec does not need Wi-Fi.</p></li></ol>
+<h2>6. Confirm offline operation</h2>
+<ol class="step-list"><li><strong>Turn on airplane mode, then turn Bluetooth back on.</strong><p>This removes Wi-Fi and mobile data from the test while allowing the local radio.</p></li><li><strong>Select the saved Kitsu and tap Connect.</strong><p>The app must return to Connected directly over authenticated Bluetooth without a sign-in or service check.</p></li><li><strong>Try state, care, and messages.</strong><p>Read current needs, perform one care action, inspect peers or messages, then Disconnect and reconnect once.</p></li><li><strong>Open Settings.</strong><p>The saved-device list and signed <code>.kitsu-fw</code> picker are the complete connection and update controls. There is no gateway or Wi-Fi setup step.</p></li></ol>
 
 <nav class="next-links" aria-label="Page navigation" data-page="2 of 9"><a href="/"><span>Previous</span><b>Manual home</b></a><a href="/device/"><span>Next</span><b>Device controls</b></a></nav>
 </article></main>

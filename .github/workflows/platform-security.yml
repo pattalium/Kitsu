@@ -1,4 +1,4 @@
-name: Kitsu platform dependency security
+name: Kitsu temporary legacy dependency security
 
 on:
   pull_request:
@@ -17,6 +17,9 @@ on:
   schedule:
     - cron: "17 3 * * 1"
 
+# The connected runtime remains online only through local-first physical and
+# public-delivery acceptance. Keep auditing its frozen dependencies until the
+# coordinated retirement stops those services; remove this workflow then.
 permissions:
   contents: read
   checks: write

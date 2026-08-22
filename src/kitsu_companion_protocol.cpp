@@ -866,7 +866,7 @@ ProtocolResult decodeAndVerifyEnvelope(
                     fields[FieldSequence].bytes, candidate.sequence)) {
     return ProtocolResult::InvalidSequence;
   }
-  if (expectedSequence != 0U && candidate.sequence != expectedSequence) {
+  if (candidate.sequence != expectedSequence) {
     return ProtocolResult::UnexpectedSequence;
   }
 

@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <cstring>
-#include <new>
 #include <Preferences.h>
 #include <SSD1306Wire.h>
 #include <sys/time.h>
@@ -13,18 +12,11 @@
 #include "kitsu_chat_contract.h"
 #include "kitsu_ble_action.h"
 #include "kitsu_ble_gatt.h"
+#include "kitsu_ble_ota.h"
 #include "kitsu_ble_session.h"
-#include "kitsu_connectivity_config.h"
-#include "kitsu_connectivity_runtime.h"
 #include "kitsu_device_security.h"
-#include "kitsu_esp32_connectivity.h"
-#include "kitsu_esp32_gateway_action.h"
-#include "kitsu_esp32_gateway_tls.h"
 #include "kitsu_esp32_security.h"
-#include "kitsu_gateway_action_runtime.h"
-#include "kitsu_gateway_bootstrap.h"
-#include "kitsu_gateway_enrollment_flow.h"
-#include "kitsu_mobile_relay.h"
+#include "kitsu_legacy_connectivity_retirement.h"
 #include "kitsu_mesh_config.h"
 #include "kitsu_mesh_transport.h"
 #include "mesh_discovery_journal.h"
@@ -35,7 +27,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.11.4";
+constexpr char FIRMWARE_VERSION[] = "0.12.0";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 
@@ -66,9 +58,10 @@ constexpr uint32_t AWAKE_DISPLAY_SLEEP_MS = 2UL * 60UL * 1000UL;
 constexpr uint32_t DREAM_DISPLAY_SLEEP_MS = 20UL * 1000UL;
 constexpr uint32_t MESH_INTRODUCE_MIN_INTERVAL_MS = 1000UL;
 constexpr uint32_t DISCOVERY_JOURNAL_DEBOUNCE_MS = 5000UL;
-constexpr uint32_t GATEWAY_SNAPSHOT_INTERVAL_MS = 60UL * 1000UL;
+constexpr uint32_t BLE_REFRESH_INTERVAL_MS = 30UL * 1000UL;
+constexpr uint32_t BLE_REFRESH_RETRY_MS = 1000UL;
 static_assert(kitsu868::mesh::kMeshChannelCapacity == 4U,
-              "backend companion snapshot contract requires four slots");
+              "companion channel contract requires four slots");
 
 SSD1306Wire display(0x3c, PIN_OLED_SDA, PIN_OLED_SCL, GEOMETRY_128_64);
 Preferences preferences;
@@ -86,32 +79,10 @@ kitsu868::mesh::TransportStatus meshInitStatus =
 kitsu868::connectivity::Esp32DeviceSecurityStorage connectivityStorage;
 kitsu868::connectivity::Esp32DeviceSecurityPlatform connectivityPlatform;
 kitsu868::connectivity::KitsuDeviceSecurity deviceSecurity;
-kitsu868::connectivity::Esp32ConnectionSlotStorage connectionSlotStorage;
-kitsu868::connectivity::Esp32ConnectionStoreCrypto connectionStoreCrypto;
-kitsu868::connectivity::Esp32GatewayTrustValidator gatewayTrustValidator;
-kitsu868::connectivity::ConnectionConfigStore connectionConfigStore;
-kitsu868::connectivity::Esp32WifiRuntime wifiRuntime;
-kitsu868::connectivity::Esp32GatewayLanReplayStorage
-    gatewayLanReplayStorage;
-kitsu868::connectivity::DurableGatewayLanActionReplayStore
-    gatewayLanReplayStore;
-kitsu868::connectivity::Esp32GatewayLanTlsTransport gatewayLanTls;
-kitsu868::connectivity::KitsuDeviceSecurityLanSequenceStore
-    gatewayLanSequences(deviceSecurity);
-kitsu868::connectivity::Esp32CompanionCrypto gatewayLanCrypto;
-kitsu868::connectivity::KitsuGatewayLanRuntime gatewayLanRuntime;
-kitsu868::connectivity::GatewayLanActionDispatcher gatewayLanActions;
-kitsu868::connectivity::KitsuMobileRelay mobileRelay;
-kitsu868::connectivity::Esp32EnrollmentPlatformCrypto enrollmentCrypto;
-kitsu868::connectivity::KitsuEnrollmentRecipient enrollmentRecipient;
-kitsu868::connectivity::KitsuGatewayEnrollmentFlow gatewayEnrollmentFlow;
-kitsu868::connectivity::Esp32GatewayBootstrapTransport
-    gatewayBootstrapTransport;
-kitsu868::connectivity::KitsuGatewayBootstrap gatewayBootstrap;
-kitsu868::connectivity::GatewayBootstrapWorkspace* gatewayBootstrapWorkspace =
-    nullptr;
-kitsu868::connectivity::GatewayBootstrapResult gatewayBootstrapLastResult =
-    kitsu868::connectivity::GatewayBootstrapResult::NotActive;
+kitsu868::connectivity::Esp32LegacyConnectivityRetirementPlatform
+    legacyConnectivityRetirementPlatform;
+kitsu868::connectivity::Esp32KitsuBleOtaPlatform bleOtaPlatform;
+kitsu868::connectivity::KitsuBleOta bleOta;
 kitsu868::connectivity::BleActionReplayCache bleActionReplayCache;
 alignas(4) uint8_t bleActionReplayScratch[
     kitsu868::connectivity::kBleActionReplaySerializedBytes]{};
@@ -119,41 +90,10 @@ kitsu868::connectivity::Esp32JournalStorage discoveryStorage;
 kitsu868::connectivity::Esp32JournalCrypto discoveryCrypto;
 kitsu868::discovery::MeshDiscoveryJournal discoveryJournal;
 bool connectivitySecurityReady = false;
+bool legacyConnectivityRetirementReady = false;
+bool bleOtaReady = false;
 bool bleActionReplayReady = false;
 bool discoveryJournalReady = false;
-bool gatewayLanReplayReady = false;
-bool gatewayLanActionsReady = false;
-bool mobileRelayReady = false;
-bool gatewayLanBegun = false;
-bool gatewayLanEverConnected = false;
-uint32_t gatewayLanConfigGeneration = 0U;
-uint32_t gatewayLanNextSnapshotAt = 0U;
-uint32_t gatewayLanLastSnapshotHash = 0U;
-uint32_t gatewayLanLastObservedSnapshotHash = 0U;
-bool gatewaySnapshotDirty = true;
-kitsu868::connectivity::GatewayLanRuntimeResult gatewayLanLastResult =
-    kitsu868::connectivity::GatewayLanRuntimeResult::NotBegun;
-
-enum class GatewayLanServiceState : uint8_t {
-  ConfigUnavailable = 0,
-  ConnectivityUnavailable,
-  Unconfigured,
-  BlePriority,
-  WifiPending,
-  EnrollmentPending,
-  TimePending,
-  ReplayUnavailable,
-  Reconnecting,
-  Connected,
-};
-
-GatewayLanServiceState gatewayLanServiceState =
-    GatewayLanServiceState::ConfigUnavailable;
-GatewayLanServiceState gatewayLanReportedState =
-    GatewayLanServiceState::Connected;
-kitsu868::connectivity::GatewayLanRuntimeResult gatewayLanReportedResult =
-    kitsu868::connectivity::GatewayLanRuntimeResult::Ok;
-bool gatewayLanReportInitialized = false;
 uint32_t discoveryBootId = 0U;
 uint32_t discoveryJournalDirtyAt = 0U;
 
@@ -172,8 +112,6 @@ enum class Screen : uint8_t {
 
 enum class ConnectionAction : uint8_t {
   Bluetooth = 0,
-  Wifi,
-  Gateway,
   Back,
 };
 
@@ -323,6 +261,9 @@ uint32_t chatSession = 0;
 uint8_t unreadChatMessages = 0;
 uint8_t inboxSelection = 0;
 bool pendingChatReaction = false;
+bool companionBleRefreshDirty = true;
+uint32_t companionBleRefreshAt = 0U;
+uint32_t companionBleRefreshSequence = 0U;
 
 bool rawButton = false;
 bool stableButton = false;
@@ -336,20 +277,28 @@ __attribute__((noinline)) bool handleCompanionBleRequest(
     const kitsu868::companion::DecodedEnvelope& request,
     const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
     size_t responseCapacity, size_t& responseBytes);
-bool handleMobileRelayExchange(
-    const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
-    size_t responseCapacity, size_t& responseBytes);
-void wipeSensitive(void* memory, size_t bytes);
 bool petWisp();
 bool feedKitsu();
 bool playKitsu();
 bool startListening(uint32_t durationMs = LISTEN_TIME_MS);
+kitsu868::CompanionVitals companionVitals();
 ChatJournalEntry& appendChatJournal();
 bool commitMeshRadioSettings(const kitsu868::mesh::Settings& candidate,
                              const char*& error);
 void enterScreen(Screen next);
-bool trustedGatewayWallClock(int64_t& epoch);
-void stopGatewayLanRuntime();
+
+bool isFirmwareUpdateOperation(const char* operation) {
+  if (!operation) return false;
+  static const char* const operations[] = {
+      "firmware.update.status", "firmware.update.begin",
+      "firmware.update.write",  "firmware.update.finish",
+      "firmware.update.reboot", "firmware.update.abort",
+  };
+  for (const char* candidate : operations) {
+    if (strcmp(operation, candidate) == 0) return true;
+  }
+  return false;
+}
 
 class FirmwareBleBridge final
     : public kitsu868::connectivity::BleFrameDelegate,
@@ -397,18 +346,6 @@ class FirmwareBleBridge final
   bool confirmController(uint32_t now) {
     return begun_ && session_.confirmPendingPairing(now);
   }
-  bool sendEnrollmentEvent(
-      const kitsu868::connectivity::GatewayEnrollmentReceipt& receipt) {
-    uint8_t payload[512]{};
-    size_t payloadBytes = 0U;
-    const bool encoded =
-        kitsu868::connectivity::encodeGatewayEnrollmentEvent(
-            receipt, payload, sizeof(payload), payloadBytes);
-    const bool sent = encoded && session_.sendEvent(
-        "gateway.enroll.event", payload, payloadBytes);
-    wipeSensitive(payload, sizeof(payload));
-    return sent;
-  }
   bool ready() const { return begun_; }
   kitsu868::connectivity::BleLinkStatus linkStatus(uint32_t now) const {
     return link_.status(now);
@@ -433,8 +370,6 @@ class FirmwareBleBridge final
       case kitsu868::connectivity::BleLinkEvent::Disconnected:
       case kitsu868::connectivity::BleLinkEvent::LinkRejected:
         session_.onLinkClosed(millis());
-        gatewayEnrollmentFlow.onBleDisconnected();
-        mobileRelay.onBleDisconnected();
         break;
       default:
         break;
@@ -447,15 +382,22 @@ class FirmwareBleBridge final
   bool setBleApplicationAuthenticated(bool authenticated) override {
     return link_.setApplicationAuthenticated(authenticated);
   }
+  bool bleTransmitIdle() const override {
+    return !link_.status(millis()).requestInFlight;
+  }
+  bool sendEvent(const char* operation, const uint8_t* payload,
+                 size_t payloadBytes) {
+    return begun_ && session_.sendEvent(operation, payload, payloadBytes);
+  }
   void disconnectBle() override { link_.disconnect(); }
   bool handleBleRequest(
       const kitsu868::companion::DecodedEnvelope& request,
       const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
       size_t responseCapacity, size_t& responseBytes) override {
-    if (strcmp(request.operation, "mobile.relay.exchange") == 0) {
-      return handleMobileRelayExchange(
-          payload, payloadBytes, responsePayload, responseCapacity,
-          responseBytes);
+    if (isFirmwareUpdateOperation(request.operation)) {
+      return bleOta.handleRequest(
+          request.operation, payload, payloadBytes, responsePayload,
+          responseCapacity, responseBytes);
     }
     return handleCompanionBleRequest(request, payload, payloadBytes,
                                      responsePayload, responseCapacity,
@@ -517,31 +459,6 @@ String jsonEscaped(const String& value) {
   return escaped;
 }
 
-void wipeSensitive(void* memory, size_t bytes) {
-  volatile uint8_t* output = static_cast<volatile uint8_t*>(memory);
-  while (bytes-- != 0U) *output++ = 0U;
-}
-
-const char* gatewayLanServiceStateName(GatewayLanServiceState state) {
-  switch (state) {
-    case GatewayLanServiceState::ConfigUnavailable:
-      return "config_unavailable";
-    case GatewayLanServiceState::ConnectivityUnavailable:
-      return "connectivity_unavailable";
-    case GatewayLanServiceState::Unconfigured: return "unconfigured";
-    case GatewayLanServiceState::BlePriority: return "ble_priority";
-    case GatewayLanServiceState::WifiPending: return "wifi_pending";
-    case GatewayLanServiceState::EnrollmentPending:
-      return "enrollment_pending";
-    case GatewayLanServiceState::TimePending: return "time_pending";
-    case GatewayLanServiceState::ReplayUnavailable:
-      return "replay_unavailable";
-    case GatewayLanServiceState::Reconnecting: return "reconnecting";
-    case GatewayLanServiceState::Connected: return "connected";
-  }
-  return "config_unavailable";
-}
-
 const char* chatStateName(ChatJournalState state);
 
 namespace companion_api {
@@ -550,15 +467,6 @@ struct CursorQuery {
   bool hasAfter = false;
   uint32_t after = 0U;
   uint8_t limit = 0U;
-};
-
-// Optional structured result for the LAN adapter. BLE callers continue to
-// consume the frozen JSON receipt; both paths still enter applyAction below.
-struct ActionExecutionOutcome {
-  bool decided = false;
-  bool accepted = false;
-  const char* state = nullptr;
-  const char* errorCode = nullptr;
 };
 
 void skipWhitespace(const uint8_t* input, size_t bytes, size_t& cursor) {
@@ -689,73 +597,6 @@ bool emptyObject(const uint8_t* input, size_t bytes) {
   }
   skipWhitespace(input, bytes, cursor);
   return cursor == bytes;
-}
-
-bool parseCanonicalUuid(const uint8_t* input, size_t bytes,
-                        uint8_t output[
-                            kitsu868::connectivity::kEnrollmentUuidBytes]) {
-  if (!output) return false;
-  memset(output, 0,
-         kitsu868::connectivity::kEnrollmentUuidBytes);
-  if (!input || bytes != 36U) return false;
-  size_t written = 0U;
-  int high = -1;
-  for (size_t i = 0U; i < bytes; ++i) {
-    const bool separator = i == 8U || i == 13U || i == 18U || i == 23U;
-    if (separator) {
-      if (input[i] != '-') return false;
-      continue;
-    }
-    const uint8_t c = input[i];
-    int nibble = -1;
-    if (c >= '0' && c <= '9') {
-      nibble = c - '0';
-    } else if (c >= 'a' && c <= 'f') {
-      nibble = c - 'a' + 10;
-    }
-    if (nibble < 0) return false;
-    if (high < 0) {
-      high = nibble;
-    } else {
-      if (written >= kitsu868::connectivity::kEnrollmentUuidBytes) {
-        return false;
-      }
-      output[written++] = static_cast<uint8_t>((high << 4U) | nibble);
-      high = -1;
-    }
-  }
-  uint8_t aggregate = 0U;
-  for (size_t i = 0U;
-       i < kitsu868::connectivity::kEnrollmentUuidBytes; ++i) {
-    aggregate |= output[i];
-  }
-  return written == kitsu868::connectivity::kEnrollmentUuidBytes &&
-      high < 0 && aggregate != 0U;
-}
-
-bool parseGatewayForget(
-    const uint8_t* input, size_t bytes,
-    uint8_t gatewayId[kitsu868::connectivity::kEnrollmentUuidBytes]) {
-  if (!gatewayId) return false;
-  memset(gatewayId, 0,
-         kitsu868::connectivity::kEnrollmentUuidBytes);
-  if (!input || !kitsu868::companion::validUtf8(input, bytes)) return false;
-  size_t cursor = 0U;
-  const uint8_t* key = nullptr;
-  size_t keyBytes = 0U;
-  const uint8_t* value = nullptr;
-  size_t valueBytes = 0U;
-  if (!consume(input, bytes, cursor, '{') ||
-      !parseAsciiString(input, bytes, cursor, key, keyBytes) ||
-      !sameToken(key, keyBytes, "gateway_id") ||
-      !consume(input, bytes, cursor, ':') ||
-      !parseAsciiString(input, bytes, cursor, value, valueBytes) ||
-      !consume(input, bytes, cursor, '}')) {
-    return false;
-  }
-  skipWhitespace(input, bytes, cursor);
-  return cursor == bytes &&
-      parseCanonicalUuid(value, valueBytes, gatewayId);
 }
 
 bool parseClockSync(const uint8_t* input, size_t bytes, uint32_t& epoch) {
@@ -1057,31 +898,17 @@ bool rejectAction(const kitsu868::connectivity::BleActionCommand& command,
 }
 
 bool applyAction(const uint8_t* payload, size_t payloadBytes,
-                 uint8_t* output, size_t capacity, size_t& outputBytes,
-                 ActionExecutionOutcome* execution = nullptr) {
+                 uint8_t* output, size_t capacity, size_t& outputBytes) {
   using kitsu868::connectivity::BleActionCommand;
   using kitsu868::connectivity::BleActionDecodeResult;
   using kitsu868::connectivity::BleActionKind;
   using kitsu868::connectivity::BleActionReplayDecision;
 
   BleActionCommand command{};
-  if (execution) *execution = ActionExecutionOutcome{};
   const auto rejected = [&](const char* errorCode) -> bool {
-    if (execution) {
-      execution->decided = true;
-      execution->accepted = false;
-      execution->state = "rejected";
-      execution->errorCode = errorCode;
-    }
     return rejectAction(command, errorCode, output, capacity, outputBytes);
   };
   const auto accepted = [&](const char* state) -> bool {
-    if (execution) {
-      execution->decided = true;
-      execution->accepted = true;
-      execution->state = state;
-      execution->errorCode = nullptr;
-    }
     return kitsu868::connectivity::encodeBleActionReceipt(
         command, true, state, nullptr, output, capacity, outputBytes);
   };
@@ -1093,12 +920,6 @@ bool applyAction(const uint8_t* payload, size_t payloadBytes,
         kitsu868::connectivity::bleActionDecodeResultName(decoded);
     if (command.actionIdValid) {
       return rejected(error);
-    }
-    if (execution) {
-      execution->decided = true;
-      execution->accepted = false;
-      execution->state = "rejected";
-      execution->errorCode = error;
     }
     String response = "{\"ok\":false,\"error\":\"";
     response += error;
@@ -1189,9 +1010,6 @@ bool applyAction(const uint8_t* payload, size_t payloadBytes,
       applied = queuedMessage != nullptr;
       break;
     }
-    case BleActionKind::AdvertiseOnce:
-    case BleActionKind::ShareLocationOnce:
-      break;
   }
   if (!applied) {
     // Preconditions were checked immediately above, so this is an
@@ -1224,20 +1042,13 @@ bool buildState(const uint8_t* payload, size_t payloadBytes, String& output) {
   const kitsu868::discovery::JournalStatus journal = discoveryJournal.status();
   const kitsu868::connectivity::DeviceSecurityStatus security =
       deviceSecurity.status();
-  const kitsu868::connectivity::ConnectionConfigStatus connectivity =
-      connectionConfigStore.status();
-  const kitsu868::connectivity::ConnectivityRuntimeStatus lan =
-      wifiRuntime.status(millis());
-  const kitsu868::connectivity::GatewayLanRuntimeStatus gateway =
-      gatewayLanRuntime.status();
-  const kitsu868::connectivity::GatewayLanActionReplayStatus replay =
-      gatewayLanReplayStore.status();
-  const kitsu868::connectivity::GatewayEnrollmentFlowStatus enrollment =
-      gatewayEnrollmentFlow.status(millis());
-  const bool durablyEnrolled = connectivity.gatewayEnrolled;
-  output.reserve(1120U);
+  const kitsu868::CompanionMood mood =
+      companionBrain.mood(companionVitals());
+  output.reserve(960U);
   output = "{\"schema\":\"kitsu.state.v1\",\"device_uid\":\"";
   output += wisp.uid;
+  output += "\",\"firmware_version\":\"";
+  output += FIRMWARE_VERSION;
   output += "\",\"companion\":\"";
   output += jsonEscaped(companionName());
   output += "\",\"energy\":";
@@ -1248,6 +1059,46 @@ bool buildState(const uint8_t* payload, size_t payloadBytes, String& output) {
   output += String(wisp.affection);
   output += ",\"sleeping\":";
   output += wisp.sleeping ? "true" : "false";
+  output += ",\"listening\":";
+  output += radioListening ? "true" : "false";
+  output += ",\"mood\":\"";
+  output += kitsu868::CompanionBrain::moodLabel(mood);
+  output += "\",\"battery_percent\":";
+  if (battery.present) {
+    output += String(battery.percent);
+  } else {
+    output += "null";
+  }
+  output += ",\"battery_mv\":";
+  if (battery.present) {
+    output += String(battery.millivolts);
+  } else {
+    output += "null";
+  }
+  output += ",\"pack_ready\":";
+  output += companionPack.valid() ? "true" : "false";
+  output += ",\"pack_id\":";
+  output += String(companionPack.id());
+  output += ",\"pack_revision\":";
+  output += String(companionPack.revision());
+  output += ",\"bond_level\":";
+  output += String(companionBrain.bondLevel());
+  output += ",\"bond_xp\":";
+  output += String(companionBrain.bondXp());
+  output += ",\"bond_progress_percent\":";
+  output += String(companionBrain.bondProgressPercent());
+  output += ",\"evolution_stage\":\"";
+  output += kitsu868::CompanionBrain::stageLabel(
+      companionBrain.evolutionStage());
+  output += "\",\"appearance_variant\":";
+  output += String(companionBrain.appearanceVariant());
+  output += ",\"personality\":\"";
+  output += kitsu868::CompanionBrain::personalityLabel(
+      companionBrain.personality().kind);
+  output += "\",\"unlock_mask\":";
+  output += String(companionBrain.unlockMask());
+  output += ",\"memory_count\":";
+  output += String(companionBrain.memoryCount());
   output += ",\"mesh_rx_ready\":";
   output += meshTransport.active() ? "true" : "false";
   output += ",\"mesh_enabled\":";
@@ -1277,57 +1128,6 @@ bool buildState(const uint8_t* payload, size_t payloadBytes, String& output) {
   output += ",\"nvs_encryption\":false";
   output += ",\"hardware_root_protected\":false";
   output += ",\"application_encrypted\":true";
-  output += ",\"remote_connectivity_allowed\":";
-  output += deviceSecurity.remoteConnectivityAllowed() ? "true" : "false";
-  output += ",\"wifi_configured\":";
-  output += connectivity.wifiConfigured ? "true" : "false";
-  output += ",\"wifi_state\":\"";
-  output += kitsu868::connectivity::wifiRuntimeStateName(lan.wifiState);
-  output += "\",\"gateway_configured\":";
-  output += connectivity.gatewayConfigured ? "true" : "false";
-  output += ",\"gateway_enrolled\":";
-  output += connectivity.gatewayEnrolled ? "true" : "false";
-  output += ",\"gateway_enrollment_state\":\"";
-  output += durablyEnrolled
-      ? "enrolled"
-      : kitsu868::connectivity::gatewayEnrollmentFlowStateName(
-            enrollment.state);
-  output += "\",\"gateway_enrollment_error\":";
-  if (durablyEnrolled ||
-      enrollment.lastError ==
-          kitsu868::connectivity::GatewayEnrollmentError::None) {
-    output += "null";
-  } else {
-    output += '"';
-    output += kitsu868::connectivity::gatewayEnrollmentErrorName(
-        enrollment.lastError);
-    output += '"';
-  }
-  output += ",\"gateway_enrollment_expires_in_ms\":";
-  output += String(enrollment.expiresInMs);
-  output += ",\"lan_state\":\"";
-  // This legacy field is consumed by the native clients, so expose the
-  // authoritative steady gateway service instead of the Wi-Fi policy
-  // machine's pre-TLS placeholder. Keep gateway_lan_state as an explicit
-  // alias for newer clients and diagnostics.
-  output += gatewayLanServiceStateName(gatewayLanServiceState);
-  output += "\",\"gateway_lan_state\":\"";
-  output += gatewayLanServiceStateName(gatewayLanServiceState);
-  output += "\",\"gateway_lan_last_result\":\"";
-  output += kitsu868::connectivity::gatewayLanRuntimeResultName(
-      gatewayLanLastResult);
-  output += "\",\"gateway_lan_connected\":";
-  output += gateway.connected ? "true" : "false";
-  output += ",\"gateway_lan_ever_connected\":";
-  output += gatewayLanEverConnected ? "true" : "false";
-  output += ",\"gateway_lan_queue_depth\":";
-  output += String(gateway.queuedFrames);
-  output += ",\"gateway_lan_failures\":";
-  output += String(gateway.consecutiveFailures);
-  output += ",\"gateway_lan_replay_ready\":";
-  output += gatewayLanReplayReady ? "true" : "false";
-  output += ",\"gateway_lan_replay_records\":";
-  output += String(replay.records);
   output += '}';
   return true;
 }
@@ -1528,10 +1328,6 @@ bool syncClock(const uint8_t* payload, size_t payloadBytes, String& output) {
     output = "{\"ok\":false,\"error\":\"system_clock_failed\"}";
     return true;
   }
-  if (!wifiRuntime.noteAuthenticatedTime(epoch)) {
-    output = "{\"ok\":false,\"error\":\"clock_provenance_failed\"}";
-    return true;
-  }
   output = "{\"schema\":\"kitsu.clock.v1\",\"epoch\":";
   output += String(meshTransport.currentEpoch());
   output += '}';
@@ -1567,223 +1363,6 @@ bool configureMesh(const uint8_t* payload, size_t payloadBytes,
   return true;
 }
 
-void appendConfigurationReceipt(
-    String& output, const char* schema,
-    kitsu868::connectivity::ConfigResult result) {
-  output = "{\"schema\":\"";
-  output += schema;
-  output += "\",\"accepted\":";
-  output += result == kitsu868::connectivity::ConfigResult::Ok
-                ? "true"
-                : "false";
-  output += ",\"state\":\"";
-  output += result == kitsu868::connectivity::ConfigResult::Ok
-                ? "stored"
-                : "rejected";
-  output += "\",\"error_code\":";
-  if (result == kitsu868::connectivity::ConfigResult::Ok) {
-    output += "null";
-  } else {
-    output += '"';
-    output += kitsu868::connectivity::configResultName(result);
-    output += '"';
-  }
-  output += '}';
-}
-
-bool configureWifi(const uint8_t* payload, size_t payloadBytes,
-                   String& output) {
-  kitsu868::connectivity::WifiConfig config{};
-  kitsu868::connectivity::ConfigResult result =
-      kitsu868::connectivity::decodeWifiConfig(payload, payloadBytes,
-                                                config);
-  if (result == kitsu868::connectivity::ConfigResult::Ok) {
-    result = connectionConfigStore.commitWifi(config);
-    if (result == kitsu868::connectivity::ConfigResult::Ok) {
-      wifiRuntime.requestCredentialReload();
-      gatewaySnapshotDirty = true;
-    }
-  }
-  // The signed receipt intentionally contains no SSID or passphrase.
-  wipeSensitive(&config, sizeof(config));
-  appendConfigurationReceipt(output, "kitsu.wifi-config.v1", result);
-  return true;
-}
-
-bool retryWifi(const uint8_t* payload, size_t payloadBytes,
-               String& output) {
-  if (!emptyObject(payload, payloadBytes)) return false;
-  const kitsu868::connectivity::ConnectionConfigStatus config =
-      connectionConfigStore.status();
-  const char* error = nullptr;
-  if (!config.begun) {
-    error = "storage_unavailable";
-  } else if (!config.wifiConfigured) {
-    error = "wifi_unconfigured";
-  } else if (!deviceSecurity.remoteConnectivityAllowed()) {
-    error = "connectivity_unavailable";
-  } else {
-    stopGatewayLanRuntime();
-    wifiRuntime.requestCredentialReload();
-    gatewaySnapshotDirty = true;
-  }
-  output = "{\"schema\":\"kitsu.wifi-retry.v1\",\"accepted\":";
-  output += error ? "false" : "true";
-  output += ",\"state\":\"";
-  output += error ? "rejected" : "retrying";
-  output += "\",\"error_code\":";
-  if (error) {
-    output += '"';
-    output += error;
-    output += '"';
-  } else {
-    output += "null";
-  }
-  output += '}';
-  return true;
-}
-
-bool configureGateway(const uint8_t* payload, size_t payloadBytes,
-                       String& output) {
-  auto* config = new (std::nothrow) kitsu868::connectivity::GatewayConfig{};
-  kitsu868::connectivity::ConfigResult result =
-      kitsu868::connectivity::ConfigResult::StorageAllocationFailed;
-  if (config) {
-    result = kitsu868::connectivity::decodeGatewayConfig(
-        payload, payloadBytes, gatewayTrustValidator, *config);
-    if (result == kitsu868::connectivity::ConfigResult::Ok) {
-      result = connectionConfigStore.commitGateway(*config);
-      if (result == kitsu868::connectivity::ConfigResult::Ok) {
-        gatewayEnrollmentFlow.abort();
-        gatewaySnapshotDirty = true;
-      }
-    }
-    wipeSensitive(config, sizeof(*config));
-    delete config;
-  }
-  // Trust material, endpoint details, and pins are never echoed or logged.
-  appendConfigurationReceipt(output, "kitsu.gateway-config.v2", result);
-  return true;
-}
-
-void appendGatewayForgetReceipt(String& output, bool accepted,
-                                const char* error) {
-  output =
-      "{\"schema\":\"kitsu.gateway-forget.v1\",\"accepted\":";
-  output += accepted ? "true" : "false";
-  output += ",\"state\":\"";
-  output += accepted ? "forgotten" : "rejected";
-  output += "\",\"error_code\":";
-  if (accepted) {
-    output += "null";
-  } else {
-    output += '"';
-    output += error ? error : "storage_unavailable";
-    output += '"';
-  }
-  output += '}';
-}
-
-bool forgetGateway(const uint8_t* payload, size_t payloadBytes,
-                   String& output) {
-  uint8_t expectedGatewayId[
-      kitsu868::connectivity::kEnrollmentUuidBytes]{};
-  if (!parseGatewayForget(payload, payloadBytes, expectedGatewayId)) {
-    appendGatewayForgetReceipt(output, false, "invalid_request");
-    wipeSensitive(expectedGatewayId, sizeof(expectedGatewayId));
-    return true;
-  }
-
-  const kitsu868::connectivity::ConfigResult result =
-      connectionConfigStore.forgetMobileRelayGateway(expectedGatewayId);
-  wipeSensitive(expectedGatewayId, sizeof(expectedGatewayId));
-  if (result != kitsu868::connectivity::ConfigResult::Ok) {
-    const char* error =
-        result == kitsu868::connectivity::ConfigResult::InvalidArgument
-            ? "gateway_mode_unsupported"
-            : result ==
-                      kitsu868::connectivity::ConfigResult::InvalidGatewayId
-                  ? "gateway_mismatch"
-                  : kitsu868::connectivity::configResultName(result);
-    appendGatewayForgetReceipt(output, false, error);
-    return true;
-  }
-
-  // Commit the durable clear before resetting volatile coordinators. No pack,
-  // companion brain, controller root, BLE bond, or Wi-Fi field is touched.
-  gatewayEnrollmentFlow.abort();
-  gatewayBootstrap.cancel();
-  if (gatewayBootstrapWorkspace) {
-    wipeSensitive(gatewayBootstrapWorkspace,
-                  sizeof(*gatewayBootstrapWorkspace));
-    delete gatewayBootstrapWorkspace;
-    gatewayBootstrapWorkspace = nullptr;
-  }
-  gatewayBootstrapTransport.close();
-  gatewayBootstrapLastResult =
-      kitsu868::connectivity::GatewayBootstrapResult::NotActive;
-  stopGatewayLanRuntime();
-  mobileRelay.clearGatewayState();
-  gatewayLanNextSnapshotAt = 0U;
-  gatewayLanLastSnapshotHash = 0U;
-  gatewayLanLastObservedSnapshotHash = 0U;
-  gatewaySnapshotDirty = true;
-  appendGatewayForgetReceipt(output, true, nullptr);
-  return true;
-}
-
-kitsu868::connectivity::GatewayEnrollmentGuards gatewayEnrollmentGuards(
-    uint32_t now) {
-  const kitsu868::connectivity::ConnectionConfigStatus config =
-      connectionConfigStore.status();
-  int64_t epoch = 0;
-  kitsu868::connectivity::GatewayEnrollmentGuards guards{};
-  guards.authenticatedController =
-      companionBle.sessionStatus(now).applicationAuthenticated;
-  guards.storageReady = connectionConfigStore.ready();
-  guards.gatewayConfigured = config.gatewayConfigured;
-  guards.alreadyEnrolled = config.gatewayEnrolled;
-  guards.trustedClock = trustedGatewayWallClock(epoch);
-  guards.remoteConnectivityAllowed =
-      deviceSecurity.remoteConnectivityAllowed();
-  return guards;
-}
-
-bool beginGatewayEnrollment(const uint8_t* payload, size_t payloadBytes,
-                            uint8_t* output, size_t outputCapacity,
-                            size_t& outputBytes) {
-  const uint32_t now = millis();
-  kitsu868::connectivity::GatewayEnrollmentReceipt receipt{};
-  gatewayEnrollmentFlow.beginOperation(
-      payload, payloadBytes, gatewayEnrollmentGuards(now), now, receipt);
-  if (receipt.accepted &&
-      receipt.state == kitsu868::connectivity::
-          GatewayEnrollmentFlowState::PhysicalConfirmationRequired) {
-    enterScreen(Screen::PairPhone);
-  }
-  return kitsu868::connectivity::encodeGatewayEnrollmentReceipt(
-      receipt, output, outputCapacity, outputBytes);
-}
-
-bool finishGatewayEnrollment(const uint8_t* payload, size_t payloadBytes,
-                             uint8_t* output, size_t outputCapacity,
-                             size_t& outputBytes) {
-  const uint32_t now = millis();
-  kitsu868::connectivity::GatewayEnrollmentGuards guards =
-      gatewayEnrollmentGuards(now);
-  uint8_t gatewayId[kitsu868::connectivity::kEnrollmentUuidBytes]{};
-  const bool copiedGateway = connectionConfigStore.copyGatewayId(gatewayId);
-  guards.storageReady = guards.storageReady && copiedGateway;
-  kitsu868::connectivity::GatewayEnrollmentReceipt receipt{};
-  gatewayEnrollmentFlow.finishOperation(
-      payload, payloadBytes, guards, gatewayId, wisp.uid.c_str(),
-      wisp.uid.length(), now, gatewayLanCrypto, enrollmentCrypto,
-      enrollmentRecipient, receipt);
-  wipeSensitive(gatewayId, sizeof(gatewayId));
-  return kitsu868::connectivity::encodeGatewayEnrollmentReceipt(
-      receipt, output, outputCapacity, outputBytes);
-}
-
 bool buildMessages(const uint8_t* payload, size_t payloadBytes,
                     String& output) {
   CursorQuery query{};
@@ -1791,6 +1370,7 @@ bool buildMessages(const uint8_t* payload, size_t payloadBytes,
   output.reserve(6000U);
   output = "{\"schema\":\"kitsu.messages.v1\",\"items\":[";
   uint32_t cursor = query.after;
+  uint32_t firstReturnedId = 0U;
   bool hasCursor = query.hasAfter;
   uint8_t count = 0U;
   bool hasMore = false;
@@ -1804,6 +1384,7 @@ bool buildMessages(const uint8_t* payload, size_t payloadBytes,
       break;
     }
     if (count != 0U) output += ',';
+    if (count == 0U) firstReturnedId = entry.id;
     output += "{\"message_id\":\"";
     output += String(entry.id);
     output += "\",\"timestamp\":";
@@ -1848,305 +1429,17 @@ bool buildMessages(const uint8_t* payload, size_t payloadBytes,
   output += ",\"has_more\":";
   output += hasMore ? "true" : "false";
   output += ",\"gap\":";
-  output += chatJournalDropped != 0U ? "true" : "false";
+  uint32_t expectedFirstId = query.after + 1U;
+  if (expectedFirstId == 0U) expectedFirstId = 1U;
+  const bool gap = query.hasAfter && count != 0U &&
+      firstReturnedId != expectedFirstId;
+  output += gap ? "true" : "false";
   output += '}';
   return true;
 }
 
 }  // namespace companion_api
 
-class FirmwareMobileRelayEnrollment final
-    : public kitsu868::connectivity::MobileRelayEnrollmentDelegate {
- public:
-  bool buildMobileRelayEnrollmentRequest(
-      uint8_t* output, size_t outputCapacity,
-      size_t& outputBytes) override {
-    return enrollmentRecipient.buildRequestJson(
-               output, outputCapacity, outputBytes) ==
-        kitsu868::connectivity::EnrollmentResult::Ok;
-  }
-
-  kitsu868::connectivity::MobileRelayResult
-  installMobileRelayEnrollmentResponse(
-      const uint8_t* response, size_t responseBytes) override {
-    using kitsu868::connectivity::ConfigResult;
-    using kitsu868::connectivity::EnrollmentResult;
-    using kitsu868::connectivity::GatewayBootstrapResult;
-    using kitsu868::connectivity::MobileRelayResult;
-
-    const uint32_t now = millis();
-    const kitsu868::connectivity::GatewayEnrollmentFlowStatus attempt =
-        gatewayEnrollmentFlow.status(now);
-    if (!response || responseBytes == 0U || !attempt.hasEnrollmentId ||
-        attempt.state != kitsu868::connectivity::
-                             GatewayEnrollmentFlowState::ReadyForWifi ||
-        !enrollmentRecipient.active() ||
-        !gatewayEnrollmentFlow.markBootstrapping(now)) {
-      return MobileRelayResult::EnrollmentUnavailable;
-    }
-
-    uint8_t gatewayId[kitsu868::connectivity::kEnrollmentUuidBytes]{};
-    auto* workspace = new (std::nothrow)
-        kitsu868::connectivity::GatewayBootstrapWorkspace{};
-    MobileRelayResult result = workspace
-        ? MobileRelayResult::EnrollmentUnavailable
-        : MobileRelayResult::OutOfMemory;
-    if (workspace && connectionConfigStore.copyGatewayId(gatewayId)) {
-      kitsu868::connectivity::EnrollmentResponse decoded{};
-      const GatewayBootstrapResult decodedResult =
-          kitsu868::connectivity::decodeBackendEnrollmentResponse(
-              response, responseBytes, attempt.enrollmentId, gatewayId,
-              *workspace, decoded);
-      if (decodedResult != GatewayBootstrapResult::ReconnectSteady) {
-        result = decodedResult == GatewayBootstrapResult::BackendMalformed
-            ? MobileRelayResult::EnrollmentBackendMalformed
-            : MobileRelayResult::EnrollmentUnavailable;
-      } else {
-        const size_t maximumCompactBytes = sizeof(*workspace);
-        size_t compactBytes = decoded.certificateBytes;
-        bool compactValid = decoded.certificateDer && compactBytes != 0U &&
-            compactBytes <=
-                kitsu868::connectivity::kEnrollmentMaximumCertificateBytes &&
-            decoded.certificateChainCount != 0U &&
-            decoded.certificateChainCount <= kitsu868::connectivity::
-                kEnrollmentMaximumChainCertificates;
-        for (size_t i = 0U;
-             compactValid && i < decoded.certificateChainCount; ++i) {
-          const size_t chainBytes = decoded.certificateChainBytes[i];
-          if (!decoded.certificateChainDer[i] || chainBytes == 0U ||
-              chainBytes > kitsu868::connectivity::
-                  kEnrollmentMaximumCertificateBytes ||
-              compactBytes > maximumCompactBytes ||
-              chainBytes > maximumCompactBytes - compactBytes) {
-            compactValid = false;
-          } else {
-            compactBytes += chainBytes;
-          }
-        }
-        uint8_t* compact = compactValid
-            ? new (std::nothrow) uint8_t[compactBytes]
-            : nullptr;
-        if (!compactValid) {
-          result = MobileRelayResult::EnrollmentBackendMalformed;
-        } else if (!compact) {
-          result = MobileRelayResult::OutOfMemory;
-        } else {
-          uint8_t* cursor = compact;
-          memcpy(cursor, decoded.certificateDer, decoded.certificateBytes);
-          decoded.certificateDer = cursor;
-          cursor += decoded.certificateBytes;
-          for (size_t i = 0U; i < decoded.certificateChainCount; ++i) {
-            memcpy(cursor, decoded.certificateChainDer[i],
-                   decoded.certificateChainBytes[i]);
-            decoded.certificateChainDer[i] = cursor;
-            cursor += decoded.certificateChainBytes[i];
-          }
-
-          // Only the exact certificate material must survive through commit.
-          // Drop the fixed 20 KiB decoder workspace before the store allocates
-          // its authenticated snapshot buffers on this no-PSRAM target.
-          wipeSensitive(workspace, sizeof(*workspace));
-          delete workspace;
-          workspace = nullptr;
-
-          const EnrollmentResult finished =
-              enrollmentRecipient.finish(decoded, connectionConfigStore);
-          if (finished == EnrollmentResult::Ok) {
-            result = connectionConfigStore.status().gatewayEnrolled
-                ? MobileRelayResult::Ok
-                : MobileRelayResult::EnrollmentCommitFailed;
-          } else if (finished == EnrollmentResult::ResponseMismatch) {
-            result = MobileRelayResult::EnrollmentResponseMismatch;
-          } else if (finished == EnrollmentResult::InvalidCertificate) {
-            result = MobileRelayResult::EnrollmentInvalidCertificate;
-          } else if (finished == EnrollmentResult::DecryptionFailed) {
-            result = MobileRelayResult::EnrollmentDecryptionFailed;
-          } else if (finished == EnrollmentResult::CommitFailed) {
-            switch (connectionConfigStore.status().lastResult) {
-              case ConfigResult::EnrollmentInvalid:
-                result = MobileRelayResult::EnrollmentInvalid;
-                break;
-              case ConfigResult::EnrollmentTrustFailed:
-                result = MobileRelayResult::EnrollmentTrustFailed;
-                break;
-              case ConfigResult::StorageAllocationFailed:
-                result = MobileRelayResult::StorageAllocationFailed;
-                break;
-              case ConfigResult::StorageReadFailed:
-                result = MobileRelayResult::StorageReadFailed;
-                break;
-              case ConfigResult::StorageWriteFailed:
-                result = MobileRelayResult::StorageWriteFailed;
-                break;
-              case ConfigResult::StorageReadbackFailed:
-                result = MobileRelayResult::StorageReadbackFailed;
-                break;
-              case ConfigResult::StorageCorrupt:
-                result = MobileRelayResult::StorageCorrupt;
-                break;
-              case ConfigResult::CryptoFailed:
-                result = MobileRelayResult::CryptoFailed;
-                break;
-              default:
-                result = MobileRelayResult::EnrollmentCommitFailed;
-                break;
-            }
-          } else {
-            result = finished == EnrollmentResult::CryptoFailed
-                ? MobileRelayResult::CryptoFailed
-                : MobileRelayResult::EnrollmentUnavailable;
-          }
-          wipeSensitive(compact, compactBytes);
-          delete[] compact;
-        }
-      }
-      wipeSensitive(&decoded, sizeof(decoded));
-    }
-    const bool installed = result == MobileRelayResult::Ok;
-    gatewayEnrollmentFlow.completeBootstrap(
-        installed,
-        installed ? kitsu868::connectivity::GatewayEnrollmentError::None
-                  : kitsu868::connectivity::
-                        GatewayEnrollmentError::BootstrapFailed);
-    wipeSensitive(gatewayId, sizeof(gatewayId));
-    if (workspace) {
-      wipeSensitive(workspace, sizeof(*workspace));
-      delete workspace;
-    }
-    if (installed) gatewaySnapshotDirty = true;
-    return result;
-  }
-};
-
-FirmwareMobileRelayEnrollment mobileRelayEnrollment;
-
-__attribute__((noinline)) bool handleMobileRelayExchange(
-    const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
-    size_t responseCapacity, size_t& responseBytes) {
-  const uint32_t now = millis();
-  const kitsu868::connectivity::GatewayEnrollmentFlowStatus enrollment =
-      gatewayEnrollmentFlow.status(now);
-  kitsu868::connectivity::MobileRelayGuards guards{};
-  guards.authenticatedController =
-      companionBle.sessionStatus(now).applicationAuthenticated;
-  guards.enrollmentPrgConfirmed =
-      enrollment.state == kitsu868::connectivity::
-                              GatewayEnrollmentFlowState::ReadyForWifi;
-  guards.enrollmentActive = enrollmentRecipient.active();
-  int64_t epoch = 0;
-  const bool clockValid = trustedGatewayWallClock(epoch);
-  kitsu868::connectivity::MobileRelayExchangeOutcome outcome{};
-  const bool encoded = mobileRelay.handleExchange(
-      payload, payloadBytes, guards, epoch, clockValid, responsePayload,
-      responseCapacity, responseBytes, &outcome);
-  if (outcome.gatewayConfigurationChanged) {
-    gatewayEnrollmentFlow.abort();
-    gatewayBootstrap.cancel();
-    stopGatewayLanRuntime();
-    gatewaySnapshotDirty = true;
-  }
-  // A gateway ACK only retires the exact pending uplink. Treating every
-  // successful downlink as new snapshot truth creates an ACK -> snapshot
-  // feedback loop that bypasses GATEWAY_SNAPSHOT_INTERVAL_MS.
-  if (outcome.enrollmentCompleted) {
-    gatewaySnapshotDirty = true;
-  }
-  return encoded;
-}
-
-class FirmwareGatewayLanPayloadQueue final
-    : public kitsu868::connectivity::GatewayLanDevicePayloadQueue {
- public:
-  bool canEnqueue(size_t payloadCount,
-                  size_t worstCasePayloadBytes) const override {
-    const uint32_t now = millis();
-    const kitsu868::connectivity::ConnectionConfigStatus configured =
-        connectionConfigStore.status();
-    const bool relayActive = mobileRelayReady &&
-        companionBle.sessionStatus(now).applicationAuthenticated &&
-        configured.mobileRelayConfigured && configured.gatewayEnrolled;
-    if (relayActive) {
-      return mobileRelay.canEnqueueDevicePayloads(
-          payloadCount, worstCasePayloadBytes);
-    }
-    if (!gatewayLanBegun || payloadCount == 0U ||
-        payloadCount > kitsu868::connectivity::kGatewayLanQueueDepth) {
-      return false;
-    }
-    const kitsu868::connectivity::GatewayLanRuntimeStatus status =
-        gatewayLanRuntime.status();
-    return status.begun &&
-        status.queuedFrames + payloadCount <=
-            kitsu868::connectivity::kGatewayLanQueueDepth &&
-        status.queuedBytes <=
-            kitsu868::connectivity::kGatewayLanMaximumQueuedBytes &&
-        worstCasePayloadBytes <=
-            kitsu868::connectivity::kGatewayLanMaximumQueuedBytes -
-                status.queuedBytes;
-  }
-
-  bool enqueue(const char* payloadType, const uint8_t* payload,
-               size_t payloadBytes, int64_t issuedEpoch) override {
-    const uint32_t now = millis();
-    const kitsu868::connectivity::ConnectionConfigStatus configured =
-        connectionConfigStore.status();
-    const bool relayActive = mobileRelayReady &&
-        companionBle.sessionStatus(now).applicationAuthenticated &&
-        configured.mobileRelayConfigured && configured.gatewayEnrolled;
-    if (relayActive) {
-      return mobileRelay.enqueueDevicePayload(
-                 payloadType, payload, payloadBytes, issuedEpoch) ==
-          kitsu868::connectivity::MobileRelayResult::Ok;
-    }
-    if (!gatewayLanBegun) return false;
-    const kitsu868::connectivity::GatewayLanRuntimeResult result =
-        gatewayLanRuntime.enqueueDevicePayload(
-            payloadType, payload, payloadBytes, issuedEpoch);
-    gatewayLanLastResult = result;
-    return result == kitsu868::connectivity::GatewayLanRuntimeResult::Ok;
-  }
-};
-
-class FirmwareGatewayLanActionExecutor final
-    : public kitsu868::connectivity::GatewayLanDirectActionExecutor {
- public:
-  bool executeDirectAction(
-      const uint8_t* actionRequest, size_t actionRequestBytes,
-      kitsu868::connectivity::GatewayLanDirectActionOutcome& outcome)
-      override {
-    outcome = kitsu868::connectivity::GatewayLanDirectActionOutcome{};
-    uint8_t receipt[512]{};
-    size_t receiptBytes = 0U;
-    companion_api::ActionExecutionOutcome execution{};
-    const bool encoded = companion_api::applyAction(
-        actionRequest, actionRequestBytes, receipt, sizeof(receipt),
-        receiptBytes, &execution);
-    wipeSensitive(receipt, sizeof(receipt));
-    if (!encoded || receiptBytes == 0U || !execution.decided ||
-        !execution.state) {
-      return false;
-    }
-    const char* code = execution.accepted
-                           ? execution.state
-                           : execution.errorCode;
-    if (!code) return false;
-    const size_t codeBytes = strlen(code);
-    if (codeBytes == 0U ||
-        codeBytes >
-            kitsu868::connectivity::kGatewayLanActionResultCodeBytes) {
-      return false;
-    }
-    outcome.status = execution.accepted
-        ? kitsu868::connectivity::GatewayLanActionOutcomeStatus::Succeeded
-        : kitsu868::connectivity::GatewayLanActionOutcomeStatus::Rejected;
-    memcpy(outcome.code, code, codeBytes);
-    outcome.code[codeBytes] = '\0';
-    return true;
-  }
-};
-
-FirmwareGatewayLanPayloadQueue gatewayLanPayloadQueue;
-FirmwareGatewayLanActionExecutor gatewayLanActionExecutor;
 
 __attribute__((noinline)) bool handleCompanionBleRequest(
     const kitsu868::companion::DecodedEnvelope& request,
@@ -2155,16 +1448,6 @@ __attribute__((noinline)) bool handleCompanionBleRequest(
   if (strcmp(request.operation, "action.apply") == 0) {
     return companion_api::applyAction(payload, payloadBytes, responsePayload,
                                       responseCapacity, responseBytes);
-  }
-  if (strcmp(request.operation, "gateway.enroll.begin") == 0) {
-    return companion_api::beginGatewayEnrollment(
-        payload, payloadBytes, responsePayload, responseCapacity,
-        responseBytes);
-  }
-  if (strcmp(request.operation, "gateway.enroll.finish") == 0) {
-    return companion_api::finishGatewayEnrollment(
-        payload, payloadBytes, responsePayload, responseCapacity,
-        responseBytes);
   }
   String response;
   bool handled = false;
@@ -2182,15 +1465,6 @@ __attribute__((noinline)) bool handleCompanionBleRequest(
     handled = companion_api::syncClock(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "mesh.configure") == 0) {
     handled = companion_api::configureMesh(payload, payloadBytes, response);
-  } else if (strcmp(request.operation, "wifi.configure") == 0) {
-    handled = companion_api::configureWifi(payload, payloadBytes, response);
-  } else if (strcmp(request.operation, "wifi.retry") == 0) {
-    handled = companion_api::retryWifi(payload, payloadBytes, response);
-  } else if (strcmp(request.operation, "gateway.configure") == 0) {
-    handled = companion_api::configureGateway(payload, payloadBytes,
-                                               response);
-  } else if (strcmp(request.operation, "gateway.forget") == 0) {
-    handled = companion_api::forgetGateway(payload, payloadBytes, response);
   }
 
   if (!handled) {
@@ -2624,48 +1898,10 @@ char bleIndicator(uint32_t now) {
   return link.advertising ? '~' : '-';
 }
 
-char wifiIndicator(uint32_t now) {
-  switch (wifiRuntime.status(now).wifiState) {
-    case kitsu868::connectivity::WifiRuntimeState::Connected: return '+';
-    case kitsu868::connectivity::WifiRuntimeState::Grace:
-    case kitsu868::connectivity::WifiRuntimeState::Connecting:
-    case kitsu868::connectivity::WifiRuntimeState::Backoff:
-    case kitsu868::connectivity::WifiRuntimeState::BleActive: return '~';
-    case kitsu868::connectivity::WifiRuntimeState::Unconfigured: return '-';
-    case kitsu868::connectivity::WifiRuntimeState::StorageUnavailable:
-    case kitsu868::connectivity::WifiRuntimeState::ConnectivityUnavailable:
-      return '!';
-  }
-  return '!';
-}
-
-char gatewayIndicator() {
-  if (gatewayBootstrap.active()) return '~';
-  switch (gatewayLanServiceState) {
-    case GatewayLanServiceState::Connected: return '+';
-    case GatewayLanServiceState::Unconfigured: return '-';
-    case GatewayLanServiceState::BlePriority:
-    case GatewayLanServiceState::WifiPending:
-    case GatewayLanServiceState::EnrollmentPending:
-    case GatewayLanServiceState::TimePending:
-    case GatewayLanServiceState::Reconnecting: return '~';
-    case GatewayLanServiceState::ConfigUnavailable:
-    case GatewayLanServiceState::ConnectivityUnavailable:
-    case GatewayLanServiceState::ReplayUnavailable: return '!';
-  }
-  return '!';
-}
-
 void uiConnectionIndicators(int16_t y = 3) {
   const uint32_t now = millis();
-  const char labels[] = {'B', 'W', 'G'};
-  const char states[] = {
-      bleIndicator(now), wifiIndicator(now), gatewayIndicator()};
-  for (uint8_t index = 0U; index < 3U; ++index) {
-    const int16_t x = 2 + static_cast<int16_t>(index) * 16;
-    uiGlyph(labels[index], x, y, 1);
-    uiGlyph(states[index], x + 6, y, 1);
-  }
+  uiGlyph('B', 25, y, 1);
+  uiGlyph(bleIndicator(now), 33, y, 1);
 }
 
 const char* bluetoothStatusLabel(uint32_t now) {
@@ -2680,88 +1916,17 @@ const char* bluetoothStatusLabel(uint32_t now) {
   return link.advertising ? "READY" : "OFF";
 }
 
-String wifiStatusLabel(uint32_t now) {
-  const kitsu868::connectivity::ConnectivityRuntimeStatus status =
-      wifiRuntime.status(now);
-  switch (status.wifiState) {
-    case kitsu868::connectivity::WifiRuntimeState::Unconfigured:
-      return "SETUP NEEDED";
-    case kitsu868::connectivity::WifiRuntimeState::StorageUnavailable:
-      return "STORE ERROR";
-    case kitsu868::connectivity::WifiRuntimeState::ConnectivityUnavailable:
-      return "UNAVAILABLE";
-    case kitsu868::connectivity::WifiRuntimeState::BleActive:
-      return "BLE ACTIVE";
-    case kitsu868::connectivity::WifiRuntimeState::Grace: return "STARTING";
-    case kitsu868::connectivity::WifiRuntimeState::Connecting:
-      return "CONNECTING";
-    case kitsu868::connectivity::WifiRuntimeState::Connected:
-      return "CONNECTED";
-    case kitsu868::connectivity::WifiRuntimeState::Backoff:
-      return status.retryRemainingMs == 0U
-                 ? "RETRYING"
-                 : "RETRY " + String((status.retryRemainingMs + 999U) / 1000U) +
-                       "S";
-  }
-  return "UNAVAILABLE";
-}
-
-const char* gatewayStatusLabel(uint32_t now) {
-  if (gatewayBootstrap.active()) return "BOOTSTRAP";
-  const kitsu868::connectivity::GatewayEnrollmentFlowStatus enrollment =
-      gatewayEnrollmentFlow.status(now);
-  switch (enrollment.state) {
-    case kitsu868::connectivity::
-        GatewayEnrollmentFlowState::PhysicalConfirmationRequired:
-      return "CONFIRM";
-    case kitsu868::connectivity::GatewayEnrollmentFlowState::PhysicalConfirmed:
-      return "APP FINISH";
-    case kitsu868::connectivity::GatewayEnrollmentFlowState::ReadyForWifi:
-    case kitsu868::connectivity::GatewayEnrollmentFlowState::Bootstrapping:
-      return "BOOTSTRAP";
-    default: break;
-  }
-  switch (gatewayLanServiceState) {
-    case GatewayLanServiceState::ConfigUnavailable: return "STORE ERROR";
-    case GatewayLanServiceState::ConnectivityUnavailable:
-      return "UNAVAILABLE";
-    case GatewayLanServiceState::Unconfigured: return "SETUP NEEDED";
-    case GatewayLanServiceState::BlePriority: return "BLE ACTIVE";
-    case GatewayLanServiceState::WifiPending: return "WIFI WAIT";
-    case GatewayLanServiceState::EnrollmentPending: return "ENROLL NEEDED";
-    case GatewayLanServiceState::TimePending: return "TIME SYNC";
-    case GatewayLanServiceState::ReplayUnavailable: return "STORE ERROR";
-    case GatewayLanServiceState::Reconnecting: return "CONNECTING";
-    case GatewayLanServiceState::Connected: return "CONNECTED";
-  }
-  return "UNAVAILABLE";
-}
-
 const char* connectionActionLabel(ConnectionAction action) {
   switch (action) {
     case ConnectionAction::Bluetooth: return "BLUETOOTH";
-    case ConnectionAction::Wifi: return "WIFI";
-    case ConnectionAction::Gateway: return "GATEWAY";
     case ConnectionAction::Back: return "BACK";
   }
   return "BACK";
 }
 
 const char* connectionActionPrompt(ConnectionAction action, uint32_t now) {
-  const kitsu868::connectivity::ConnectionConfigStatus config =
-      connectionConfigStore.status();
   if (action == ConnectionAction::Bluetooth) {
     return companionBle.linkStatus(now).connected ? "HOLD VIEW" : "HOLD OPEN";
-  }
-  if (action == ConnectionAction::Wifi) {
-    return config.begun && config.wifiConfigured
-               ? "HOLD RETRY"
-               : "HOLD SETUP";
-  }
-  if (action == ConnectionAction::Gateway) {
-    return config.begun && config.gatewayConfigured && config.gatewayEnrolled
-               ? "HOLD RETRY"
-               : "HOLD SETUP";
   }
   return "HOLD BACK";
 }
@@ -3051,18 +2216,12 @@ void renderConnect() {
     case ConnectionAction::Bluetooth:
       uiTextCentered(bluetoothStatusLabel(now), 54);
       break;
-    case ConnectionAction::Wifi:
-      uiTextCentered(wifiStatusLabel(now), 54);
-      break;
-    case ConnectionAction::Gateway:
-      uiTextCentered(gatewayStatusLabel(now), 54);
-      break;
     case ConnectionAction::Back:
       uiTextCentered("RETURN", 54);
       break;
   }
   uiTextCentered(connectionActionPrompt(connectionAction, now), 76);
-  uiMenuDots(static_cast<uint8_t>(connectionAction), 4, 94);
+  uiMenuDots(static_cast<uint8_t>(connectionAction), 2, 94);
   uiTextCentered("TAP NEXT", 108);
 }
 
@@ -3262,29 +2421,7 @@ void renderPairPhone() {
       companionBle.linkStatus(now);
   const kitsu868::connectivity::BleSessionStatus session =
       companionBle.sessionStatus(now);
-  const kitsu868::connectivity::GatewayEnrollmentFlowStatus enrollment =
-      gatewayEnrollmentFlow.status(now);
-  if (enrollment.state == kitsu868::connectivity::
-          GatewayEnrollmentFlowState::PhysicalConfirmationRequired) {
-    const uint32_t seconds = (enrollment.expiresInMs + 999U) / 1000U;
-    uiTextCentered("GATEWAY", 21);
-    uiTextCentered("HOLD", 42, 2);
-    uiTextCentered("PRG", 60, 2);
-    uiTextCentered("TO ENROLL", 83);
-    uiTextCentered(String(seconds) + "S", 105);
-  } else if (enrollment.state == kitsu868::connectivity::
-                 GatewayEnrollmentFlowState::PhysicalConfirmed) {
-    uiTextCentered("CONFIRMED", 28);
-    uiTextCentered("APP", 50, 2);
-    uiTextCentered("FINISH", 69, 2);
-    uiTextCentered("TAP CANCEL", 105);
-  } else if (enrollment.state == kitsu868::connectivity::
-                 GatewayEnrollmentFlowState::ReadyForWifi) {
-    uiTextCentered("ENROLL READY", 27);
-    uiTextCentered("DISCONNECT", 52);
-    uiTextCentered("WIFI NEXT", 76);
-    uiTextCentered("APP CONTROLS", 105);
-  } else if (link.numericComparisonPending) {
+  if (link.numericComparisonPending) {
     char passkey[7]{};
     snprintf(passkey, sizeof(passkey), "%06lu",
              static_cast<unsigned long>(link.numericComparison));
@@ -3626,21 +2763,6 @@ void executeMenuItem() {
   switch (menuIndex) {
     case 0:
       connectionAction = ConnectionAction::Bluetooth;
-      if (connectionConfigStore.status().begun) {
-        const kitsu868::connectivity::ConnectionConfigStatus config =
-            connectionConfigStore.status();
-        const kitsu868::connectivity::ConnectivityRuntimeStatus wifi =
-            wifiRuntime.status(millis());
-        if (!config.wifiConfigured ||
-            wifi.wifiState !=
-                kitsu868::connectivity::WifiRuntimeState::Connected) {
-          connectionAction = ConnectionAction::Wifi;
-        } else if (!config.gatewayConfigured || !config.gatewayEnrolled ||
-                   gatewayLanServiceState !=
-                       GatewayLanServiceState::Connected) {
-          connectionAction = ConnectionAction::Gateway;
-        }
-      }
       enterScreen(Screen::Connect);
       break;
     case 1:
@@ -3688,8 +2810,6 @@ bool openBluetoothControl(uint32_t now) {
 
 void executeConnectionAction() {
   const uint32_t now = millis();
-  const kitsu868::connectivity::ConnectionConfigStatus config =
-      connectionConfigStore.status();
   if (connectionAction == ConnectionAction::Back) {
     enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
     return;
@@ -3698,42 +2818,7 @@ void executeConnectionAction() {
     const bool opened = openBluetoothControl(now);
     Serial.printf("KITSU_CONNECT_ACTION action=bluetooth result=%s\n",
                   opened ? "opened" : "unavailable");
-    return;
   }
-  const bool needsSetup = !config.begun ||
-      (connectionAction == ConnectionAction::Wifi
-           ? !config.wifiConfigured
-           : !config.gatewayConfigured || !config.gatewayEnrolled);
-  if (needsSetup) {
-    const bool opened = openBluetoothControl(now);
-    Serial.printf("KITSU_CONNECT_ACTION action=%s result=%s\n",
-                  connectionAction == ConnectionAction::Wifi
-                      ? "wifi_setup"
-                      : "gateway_setup",
-                  opened ? "opened" : "unavailable");
-    return;
-  }
-  if (!deviceSecurity.remoteConnectivityAllowed()) {
-    Serial.printf("KITSU_CONNECT_ACTION action=%s result=unavailable\n",
-                  connectionAction == ConnectionAction::Wifi
-                      ? "wifi_retry"
-                      : "gateway_retry");
-    lastRenderAt = 0U;
-    return;
-  }
-  stopGatewayLanRuntime();
-  if (connectionAction == ConnectionAction::Wifi ||
-      wifiRuntime.status(now).wifiState !=
-          kitsu868::connectivity::WifiRuntimeState::Connected) {
-    wifiRuntime.requestCredentialReload();
-  }
-  gatewaySnapshotDirty = true;
-  Serial.printf("KITSU_CONNECT_ACTION action=%s result=retrying\n",
-                connectionAction == ConnectionAction::Wifi
-                    ? "wifi_retry"
-                    : "gateway_retry");
-  screenEnteredAt = now;
-  lastRenderAt = 0U;
 }
 
 void executeGameMenuItem() {
@@ -3751,7 +2836,7 @@ void handleShortPress(uint32_t actionAt) {
       break;
     case Screen::Connect:
       connectionAction = static_cast<ConnectionAction>(
-          (static_cast<uint8_t>(connectionAction) + 1U) % 4U);
+          (static_cast<uint8_t>(connectionAction) + 1U) % 2U);
       screenEnteredAt = millis();
       break;
     case Screen::Inbox:
@@ -3785,7 +2870,6 @@ void handleShortPress(uint32_t actionAt) {
       screenEnteredAt = millis();
       break;
     case Screen::PairPhone:
-      gatewayEnrollmentFlow.abort();
       companionBle.closePairing();
       enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
       break;
@@ -3818,17 +2902,7 @@ void handleLongPress() {
       const kitsu868::connectivity::BleSessionStatus session =
           companionBle.sessionStatus(now);
       bool accepted = false;
-      const kitsu868::connectivity::GatewayEnrollmentFlowStatus enrollment =
-          gatewayEnrollmentFlow.status(now);
-      if (enrollment.state == kitsu868::connectivity::
-              GatewayEnrollmentFlowState::PhysicalConfirmationRequired &&
-          session.applicationAuthenticated) {
-        kitsu868::connectivity::GatewayEnrollmentReceipt event{};
-        accepted = gatewayEnrollmentFlow.confirmPhysical(now, event);
-        if (accepted && !companionBle.sendEnrollmentEvent(event)) {
-          Serial.println("KITSU_ENROLL event=send_failed state=confirmed");
-        }
-      } else if (link.numericComparisonPending) {
+      if (link.numericComparisonPending) {
         accepted = companionBle.confirmNumeric();
       } else if (session.physicalConfirmationPending) {
         accepted = companionBle.confirmController(now);
@@ -4080,6 +3154,7 @@ ChatJournalEntry* findPendingChannelJournal(uint8_t channelSlot) {
 
 void emitChatEvent(const char* event, const ChatJournalEntry& entry,
                    const char* state = nullptr, int32_t roundTripMs = -1) {
+  companionBleRefreshDirty = true;
   Serial.printf(
       "KITSU_CHAT_EVENT {\"protocol\":1,\"event\":\"%s\"," 
       "\"message_id\":%lu,\"state\":",
@@ -4090,6 +3165,40 @@ void emitChatEvent(const char* event, const ChatJournalEntry& entry,
   if (roundTripMs >= 0) Serial.print(roundTripMs);
   else Serial.print("null");
   Serial.println("}");
+}
+
+void serviceCompanionBleRefresh(uint32_t now) {
+  const kitsu868::connectivity::BleOtaState otaState = bleOta.status().state;
+  if (otaState == kitsu868::connectivity::BleOtaState::Receiving ||
+      otaState == kitsu868::connectivity::BleOtaState::ReadyToReboot) {
+    return;
+  }
+  const kitsu868::connectivity::BleSessionStatus status =
+      companionBle.sessionStatus(now);
+  if (!status.applicationAuthenticated) return;
+  const bool periodicDue = companionBleRefreshAt == 0U ||
+      static_cast<int32_t>(now - companionBleRefreshAt) >= 0;
+  if ((!companionBleRefreshDirty && !periodicDue) ||
+      !companionBle.bleTransmitIdle()) {
+    return;
+  }
+
+  uint32_t sequence = ++companionBleRefreshSequence;
+  if (sequence == 0U) sequence = ++companionBleRefreshSequence;
+  char payload[112]{};
+  const int written = snprintf(
+      payload, sizeof(payload),
+      "{\"v\":1,\"cursor\":\"ble:%lu\",\"kind\":\"refresh\",\"body\":{}}",
+      static_cast<unsigned long>(sequence));
+  if (written <= 0 || static_cast<size_t>(written) >= sizeof(payload) ||
+      !companionBle.sendEvent(
+          "companion.refresh", reinterpret_cast<const uint8_t*>(payload),
+          static_cast<size_t>(written))) {
+    companionBleRefreshAt = now + BLE_REFRESH_RETRY_MS;
+    return;
+  }
+  companionBleRefreshDirty = false;
+  companionBleRefreshAt = now + BLE_REFRESH_INTERVAL_MS;
 }
 
 void processMeshMessages() {
@@ -4324,7 +3433,7 @@ void printSelfTest() {
       "\"trait_mask\":%u,\"gift_mask\":%u,"
       "\"trait_count\":%u,\"gift_count\":%u,"
       "\"sync_protocol\":1,\"sync_transport\":\"serial\","
-      "\"remote_available\":false,\"mesh_protocol\":1,"
+      "\"mesh_protocol\":1,"
       "\"meshcore_version\":\"1.17.1\",\"mesh_enabled\":%s,"
       "\"mesh_rx_ready\":%s,\"mesh_time_valid\":%s,"
       "\"mesh_tx_unlocked\":%s,\"mesh_profile\":\"%s\","
@@ -4359,7 +3468,7 @@ void printSync() {
       "\"affection\":%u,\"sleeping\":%s,\"listening\":%s,"
       "\"mood\":\"%s\",\"bond\":%u,\"bond_xp\":%u,"
       "\"stage\":%u,\"battery_pct\":%d,\"memory_seq\":%u,"
-      "\"memory_event\":%u,\"remote\":false,"
+      "\"memory_event\":%u,"
       "\"mesh_protocol\":1,\"mesh_enabled\":%s,"
       "\"mesh_rx_ready\":%s,\"chat_protocol\":1,"
       "\"chat_messages\":%u,\"chat_unread\":%u}\n",
@@ -5178,9 +4287,6 @@ void executeChatCommand(const kitsu868::chat::Command& command) {
       const kitsu868::mesh::TransportStatus status =
           meshTransport.setChannel(command.channelIndex, command.name, secret);
       memset(secret, 0, sizeof(secret));
-      if (status == kitsu868::mesh::TransportStatus::Ok) {
-        gatewaySnapshotDirty = true;
-      }
       printChatResult("channel_set",
                       status == kitsu868::mesh::TransportStatus::Ok
                           ? "ok"
@@ -5193,9 +4299,6 @@ void executeChatCommand(const kitsu868::chat::Command& command) {
     case CommandKind::ClearChannel: {
       const kitsu868::mesh::TransportStatus status =
           meshTransport.clearChannel(command.channelIndex);
-      if (status == kitsu868::mesh::TransportStatus::Ok) {
-        gatewaySnapshotDirty = true;
-      }
       printChatResult("channel_clear",
                       status == kitsu868::mesh::TransportStatus::Ok
                           ? "ok"
@@ -5418,38 +4521,9 @@ void initDisplay() {
   display.display();
 }
 
-void initConnectivityStorage() {
-  gatewayEnrollmentFlow.abort();
-  gatewayBootstrap.cancel();
-  if (gatewayBootstrapWorkspace) {
-    wipeSensitive(gatewayBootstrapWorkspace,
-                  sizeof(*gatewayBootstrapWorkspace));
-    delete gatewayBootstrapWorkspace;
-    gatewayBootstrapWorkspace = nullptr;
-  }
-  gatewayBootstrapTransport.close();
-  gatewayBootstrapLastResult =
-      kitsu868::connectivity::GatewayBootstrapResult::NotActive;
-  gatewayLanRuntime.stop();
-  mobileRelay.stop();
-  gatewayLanActions.stop();
-  gatewayLanReplayStore.stop();
-  gatewayLanReplayStorage.end();
+void initLocalSecurityStorage() {
   connectivitySecurityReady = false;
   discoveryJournalReady = false;
-  gatewayLanReplayReady = false;
-  gatewayLanActionsReady = false;
-  mobileRelayReady = false;
-  gatewayLanBegun = false;
-  gatewayLanEverConnected = false;
-  gatewayLanNextSnapshotAt = 0U;
-  gatewayLanLastSnapshotHash = 0U;
-  gatewayLanLastObservedSnapshotHash = 0U;
-  gatewaySnapshotDirty = true;
-  gatewayLanLastResult =
-      kitsu868::connectivity::GatewayLanRuntimeResult::NotBegun;
-  gatewayLanServiceState = GatewayLanServiceState::ConfigUnavailable;
-  gatewayLanReportInitialized = false;
   discoveryBootId = esp_random();
   if (discoveryBootId == 0U) discoveryBootId = 1U;
 
@@ -5468,83 +4542,19 @@ void initConnectivityStorage() {
   const kitsu868::connectivity::DeviceSecurityStatus securityStatus =
       deviceSecurity.status();
   Serial.printf(
-      "KITSU_CONNECTIVITY_SECURITY status=%s security_mode=%s "
+      "KITSU_LOCAL_SECURITY status=%s security_mode=%s "
       "application_encrypted=%s hardware_root_protected=%s "
-      "remote_allowed=%s controllers=%u\n",
+      "controllers=%u\n",
       kitsu868::connectivity::securityResultName(security),
       kitsu868::connectivity::kSelectedSecurityModeName,
       securityStatus.applicationEncrypted ? "true" : "false",
       securityStatus.hardwareRootProtected ? "true" : "false",
-      deviceSecurity.remoteConnectivityAllowed() ? "true" : "false",
       securityStatus.controllerCount);
   if (!connectivitySecurityReady) return;
   Serial.println(
       "KITSU_REFLASHABLE secure_boot=false flash_encryption=false "
       "nvs_encryption=false application_encrypted=true "
       "owner_repurpose_allowed=true");
-
-  uint8_t connectionKey[kitsu868::connectivity::kKitsuSecretBytes]{};
-  const kitsu868::connectivity::SecurityResult connectionKeyResult =
-      deviceSecurity.deriveConnectionStoreKey(connectionKey);
-  const bool connectionPartitionReady = connectionSlotStorage.begin();
-  const bool connectionCryptoReady =
-      connectionKeyResult == kitsu868::connectivity::SecurityResult::Ok &&
-      connectionStoreCrypto.setKey(connectionKey);
-  wipeSensitive(connectionKey, sizeof(connectionKey));
-  kitsu868::connectivity::ConfigResult configStoreResult =
-      kitsu868::connectivity::ConfigResult::StorageUnavailable;
-  if (connectionPartitionReady && connectionCryptoReady) {
-    configStoreResult = connectionConfigStore.begin(
-        connectionSlotStorage, connectionStoreCrypto, gatewayTrustValidator);
-  } else if (!connectionCryptoReady) {
-    configStoreResult =
-        kitsu868::connectivity::ConfigResult::SecurityUnavailable;
-  }
-  connectionConfigStore.setRemoteConnectivityAllowed(
-      deviceSecurity.remoteConnectivityAllowed());
-  const bool lanReplayStorageReady = gatewayLanReplayStorage.begin();
-  gatewayLanReplayReady = lanReplayStorageReady &&
-      gatewayLanReplayStore.begin(gatewayLanReplayStorage);
-  gatewayLanActionsReady = gatewayLanReplayReady &&
-      gatewayLanActions.begin(gatewayLanReplayStore,
-                              gatewayLanActionExecutor,
-                              gatewayLanPayloadQueue);
-  mobileRelayReady = connectionConfigStore.ready() &&
-      gatewayLanActionsReady &&
-      mobileRelay.begin(connectionConfigStore, gatewayLanSequences,
-                        gatewayLanCrypto, gatewayLanReplayStore,
-                        gatewayLanActions, connectionConfigStore,
-                        mobileRelayEnrollment);
-  const kitsu868::connectivity::GatewayLanActionReplayStatus replayStatus =
-      gatewayLanReplayStore.status();
-  Serial.printf(
-      "KITSU_GATEWAY_REPLAY storage=%s ledger=%s dispatcher=%s "
-      "relay=%s records=%u generation=%lu\n",
-      lanReplayStorageReady ? "ready" : "blocked",
-      gatewayLanReplayReady ? "ready" : "blocked",
-      gatewayLanActionsReady ? "ready" : "blocked",
-      mobileRelayReady ? "ready" : "blocked",
-      static_cast<unsigned>(replayStatus.records),
-      static_cast<unsigned long>(replayStatus.generation));
-  char wifiHostname[33]{};
-  snprintf(wifiHostname, sizeof(wifiHostname), "kitsu-%s",
-           wisp.uid.c_str());
-  const bool wifiManagerReady = wifiRuntime.begin(
-      connectionConfigStore, deviceSecurity.remoteConnectivityAllowed(),
-      wifiHostname);
-  memset(wifiHostname, 0, sizeof(wifiHostname));
-  const kitsu868::connectivity::ConnectionConfigStatus configStatus =
-      connectionConfigStore.status();
-  Serial.printf(
-      "KITSU_CONNECTIVITY_CONFIG status=%s partition=%s store=%s "
-      "wifi=%s gateway=%s enrolled=%s runtime=%s\n",
-      kitsu868::connectivity::configResultName(configStoreResult),
-      connectionPartitionReady ? "ready" : "missing",
-      configStatus.begun ? "ready" : "blocked",
-      configStatus.wifiConfigured ? "configured" : "unconfigured",
-      configStatus.gatewayConfigured ? "configured" : "unconfigured",
-      configStatus.gatewayEnrolled ? "true" : "false",
-      wifiManagerReady ? "ready" : "blocked");
 
   uint8_t journalKey[kitsu868::connectivity::kKitsuSecretBytes]{};
   const kitsu868::connectivity::SecurityResult derived =
@@ -5569,398 +4579,6 @@ void initConnectivityStorage() {
                 discoveryJournalReady ? "true" : "false");
 }
 
-bool trustedGatewayWallClock(int64_t& epoch) {
-  return kitsu868::connectivity::trustedWallClock(epoch);
-}
-
-void serviceGatewayEnrollment(uint32_t now, bool authenticatedBleSession) {
-  if (gatewayBootstrap.active()) {
-    const kitsu868::connectivity::ConnectivityRuntimeStatus wifi =
-        wifiRuntime.status(now);
-    int64_t epoch = 0;
-    if (authenticatedBleSession ||
-        wifi.wifiState !=
-            kitsu868::connectivity::WifiRuntimeState::Connected ||
-        !trustedGatewayWallClock(epoch) ||
-        !deviceSecurity.remoteConnectivityAllowed()) {
-      gatewayBootstrap.cancel();
-      gatewayBootstrapLastResult = authenticatedBleSession
-          ? kitsu868::connectivity::GatewayBootstrapResult::NotActive
-          : !deviceSecurity.remoteConnectivityAllowed()
-                ? kitsu868::connectivity::GatewayBootstrapResult::
-                      RemoteConnectivityUnavailable
-                : !trustedGatewayWallClock(epoch)
-                      ? kitsu868::connectivity::GatewayBootstrapResult::
-                            TimeUnavailable
-                      : kitsu868::connectivity::GatewayBootstrapResult::
-                            TransportFailed;
-      gatewayEnrollmentFlow.completeBootstrap(false);
-    } else {
-      gatewayBootstrapLastResult =
-          gatewayBootstrap.pollExchangeAndInstall();
-      if (gatewayBootstrapLastResult ==
-          kitsu868::connectivity::GatewayBootstrapResult::InProgress) {
-        return;
-      }
-      const bool installed = gatewayBootstrapLastResult ==
-              kitsu868::connectivity::GatewayBootstrapResult::
-                  ReconnectSteady &&
-          connectionConfigStore.status().gatewayEnrolled;
-      gatewayEnrollmentFlow.completeBootstrap(installed);
-      Serial.printf(
-          "KITSU_ENROLL state=%s result=%s secrets_logged=false\n",
-          installed ? "enrolled" : "failed",
-          kitsu868::connectivity::gatewayBootstrapResultName(
-              gatewayBootstrapLastResult));
-    }
-    if (gatewayBootstrapWorkspace) {
-      wipeSensitive(gatewayBootstrapWorkspace,
-                    sizeof(*gatewayBootstrapWorkspace));
-      delete gatewayBootstrapWorkspace;
-      gatewayBootstrapWorkspace = nullptr;
-    }
-    return;
-  }
-
-  const kitsu868::connectivity::GatewayEnrollmentFlowStatus attempt =
-      gatewayEnrollmentFlow.status(now);
-  if (attempt.state !=
-          kitsu868::connectivity::GatewayEnrollmentFlowState::ReadyForWifi ||
-      authenticatedBleSession) {
-    return;
-  }
-  // A logical mobile relay deliberately has no LAN bootstrap endpoint. Its
-  // exact issuer response is installed only through mobile.relay.exchange.
-  if (connectionConfigStore.status().mobileRelayConfigured) return;
-  const kitsu868::connectivity::ConnectivityRuntimeStatus wifi =
-      wifiRuntime.status(now);
-  int64_t epoch = 0;
-  if (wifi.wifiState !=
-          kitsu868::connectivity::WifiRuntimeState::Connected ||
-      !trustedGatewayWallClock(epoch) ||
-      !deviceSecurity.remoteConnectivityAllowed()) {
-    return;
-  }
-
-  auto* config =
-      new (std::nothrow) kitsu868::connectivity::GatewayConfig{};
-  gatewayBootstrapWorkspace = new (std::nothrow)
-      kitsu868::connectivity::GatewayBootstrapWorkspace{};
-  if (!config || !gatewayBootstrapWorkspace ||
-      !connectionConfigStore.copyGateway(*config)) {
-    if (gatewayBootstrapWorkspace) {
-      wipeSensitive(gatewayBootstrapWorkspace,
-                    sizeof(*gatewayBootstrapWorkspace));
-      delete gatewayBootstrapWorkspace;
-      gatewayBootstrapWorkspace = nullptr;
-    }
-    if (config) {
-      wipeSensitive(config, sizeof(*config));
-      delete config;
-    }
-    gatewayEnrollmentFlow.completeBootstrap(
-        false, kitsu868::connectivity::GatewayEnrollmentError::StorageFailed);
-    gatewayBootstrapLastResult =
-        kitsu868::connectivity::GatewayBootstrapResult::TransportFailed;
-    Serial.println(
-        "KITSU_ENROLL state=failed error=storage_failed secrets_logged=false");
-    return;
-  }
-  if (!gatewayEnrollmentFlow.markBootstrapping(now)) {
-    wipeSensitive(gatewayBootstrapWorkspace,
-                  sizeof(*gatewayBootstrapWorkspace));
-    wipeSensitive(config, sizeof(*config));
-    delete gatewayBootstrapWorkspace;
-    gatewayBootstrapWorkspace = nullptr;
-    delete config;
-    return;
-  }
-
-  kitsu868::connectivity::GatewayBootstrapTrust trust{};
-  trust.host = config->host;
-  trust.serverName = config->serverName;
-  trust.port = config->bootstrapPort;
-  trust.caCertificateDer = config->caCertificateDer;
-  trust.caCertificateBytes = config->caCertificateBytes;
-  memcpy(trust.spkiSha256, config->spkiSha256,
-         sizeof(trust.spkiSha256));
-  memcpy(trust.gatewayUuid, config->gatewayId,
-         sizeof(trust.gatewayUuid));
-  gatewayBootstrapLastResult = gatewayBootstrap.beginExchangeAndInstall(
-      attempt.enrollmentId, deviceSecurity.remoteConnectivityAllowed(),
-      trust, enrollmentRecipient, gatewayBootstrapTransport,
-      connectionConfigStore, *gatewayBootstrapWorkspace);
-  wipeSensitive(&trust, sizeof(trust));
-  wipeSensitive(config, sizeof(*config));
-  delete config;
-  if (gatewayBootstrapLastResult ==
-      kitsu868::connectivity::GatewayBootstrapResult::InProgress) {
-    return;
-  }
-  const bool installed = gatewayBootstrapLastResult ==
-          kitsu868::connectivity::GatewayBootstrapResult::ReconnectSteady &&
-      connectionConfigStore.status().gatewayEnrolled;
-  gatewayEnrollmentFlow.completeBootstrap(installed);
-  wipeSensitive(gatewayBootstrapWorkspace,
-                sizeof(*gatewayBootstrapWorkspace));
-  delete gatewayBootstrapWorkspace;
-  gatewayBootstrapWorkspace = nullptr;
-  Serial.printf(
-      "KITSU_ENROLL state=%s result=%s secrets_logged=false\n",
-      installed ? "enrolled" : "failed",
-      kitsu868::connectivity::gatewayBootstrapResultName(
-          gatewayBootstrapLastResult));
-}
-
-void stopGatewayLanRuntime() {
-  if (!gatewayLanBegun) return;
-  gatewayLanRuntime.stop();
-  gatewayLanBegun = false;
-  gatewayLanNextSnapshotAt = 0U;
-  gatewaySnapshotDirty = true;
-}
-
-uint32_t gatewaySnapshotHashUpdate(uint32_t hash, const uint8_t* input,
-                                   size_t bytes) {
-  for (size_t i = 0U; i < bytes; ++i) {
-    hash ^= input[i];
-    hash *= 16777619UL;
-  }
-  return hash;
-}
-
-uint32_t gatewaySnapshotHash(const uint8_t* input, size_t bytes) {
-  uint32_t hash = gatewaySnapshotHashUpdate(
-      2166136261UL, input, bytes);
-  return hash == 0U ? 1U : hash;
-}
-
-uint32_t gatewaySnapshotTruthHash(uint32_t now) {
-  const kitsu868::connectivity::ConnectionConfigStatus config =
-      connectionConfigStore.status();
-  const kitsu868::connectivity::ConnectivityRuntimeStatus wifi =
-      wifiRuntime.status(now);
-  const uint8_t facts[] = {
-      static_cast<uint8_t>(deviceSecurity.remoteConnectivityAllowed()),
-      static_cast<uint8_t>(config.wifiConfigured),
-      static_cast<uint8_t>(wifi.wifiState),
-      static_cast<uint8_t>(config.gatewayConfigured),
-      static_cast<uint8_t>(config.gatewayEnrolled),
-      static_cast<uint8_t>(gatewayLanServiceState),
-  };
-  uint32_t hash = gatewaySnapshotHashUpdate(
-      2166136261UL, facts, sizeof(facts));
-  for (uint8_t slot = 0U;
-       slot < kitsu868::mesh::kMeshChannelCapacity; ++slot) {
-    kitsu868::mesh::ChannelRecord channel{};
-    const bool configured =
-        meshTransport.channelAt(slot, channel) && channel.configured;
-    const uint8_t record[] = {
-        slot, static_cast<uint8_t>(configured),
-    };
-    hash = gatewaySnapshotHashUpdate(hash, record, sizeof(record));
-    if (configured) {
-      const size_t nameBytes = strnlen(channel.name, sizeof(channel.name));
-      hash = gatewaySnapshotHashUpdate(
-          hash, reinterpret_cast<const uint8_t*>(channel.name), nameBytes);
-    }
-  }
-  return hash == 0U ? 1U : hash;
-}
-
-bool buildGatewaySnapshot(String& output, uint32_t now) {
-  const kitsu868::connectivity::ConnectionConfigStatus config =
-      connectionConfigStore.status();
-  const kitsu868::connectivity::ConnectivityRuntimeStatus wifi =
-      wifiRuntime.status(now);
-  output.reserve(768U);
-  output = "{\"schema\":\"kitsu.companion-snapshot.v1\",";
-  output += "\"firmware_version\":\"";
-  output += FIRMWARE_VERSION;
-  output += "\",\"remote_connectivity_allowed\":";
-  output += deviceSecurity.remoteConnectivityAllowed() ? "true" : "false";
-  output += ",\"wifi\":{\"configured\":";
-  output += config.wifiConfigured ? "true" : "false";
-  output += ",\"state\":\"";
-  output += kitsu868::connectivity::wifiRuntimeStateName(wifi.wifiState);
-  output += "\"},\"gateway\":{\"configured\":";
-  output += config.gatewayConfigured ? "true" : "false";
-  output += ",\"enrolled\":";
-  output += config.gatewayEnrolled ? "true" : "false";
-  output += ",\"lan_state\":\"";
-  output += gatewayLanServiceStateName(gatewayLanServiceState);
-  output += "\"},\"channels\":[";
-  for (uint8_t slot = 0U;
-       slot < kitsu868::mesh::kMeshChannelCapacity; ++slot) {
-    if (slot != 0U) output += ',';
-    kitsu868::mesh::ChannelRecord channel{};
-    const bool available = meshTransport.channelAt(slot, channel);
-    const bool configured = available && channel.configured;
-    output += "{\"slot\":";
-    output += String(slot);
-    output += ",\"configured\":";
-    output += configured ? "true" : "false";
-    if (configured) {
-      output += ",\"name\":\"";
-      output += jsonEscaped(String(channel.name));
-      output += '"';
-    }
-    output += ",\"max_utf8_bytes\":128}";
-  }
-  output += "]}";
-  return output.length() != 0U &&
-      output.length() <= kitsu868::connectivity::kLanMaximumDevicePayloadBytes;
-}
-
-void reportGatewayLanStatus() {
-  if (gatewayLanReportInitialized &&
-      gatewayLanReportedState == gatewayLanServiceState &&
-      gatewayLanReportedResult == gatewayLanLastResult) {
-    return;
-  }
-  gatewayLanReportInitialized = true;
-  gatewayLanReportedState = gatewayLanServiceState;
-  gatewayLanReportedResult = gatewayLanLastResult;
-  gatewaySnapshotDirty = true;
-  const kitsu868::connectivity::GatewayLanRuntimeStatus status =
-      gatewayLanRuntime.status();
-  Serial.printf(
-      "KITSU_GATEWAY_LAN state=%s result=%s connected=%s queued=%u "
-      "failures=%lu generation=%lu\n",
-      gatewayLanServiceStateName(gatewayLanServiceState),
-      kitsu868::connectivity::gatewayLanRuntimeResultName(
-          gatewayLanLastResult),
-      status.connected ? "true" : "false",
-      static_cast<unsigned>(status.queuedFrames),
-      static_cast<unsigned long>(status.consecutiveFailures),
-      static_cast<unsigned long>(gatewayLanConfigGeneration));
-}
-
-void serviceGatewayLan(uint32_t now, bool authenticatedBleSession) {
-  const kitsu868::connectivity::ConnectionConfigStatus configured =
-      connectionConfigStore.status();
-  const kitsu868::connectivity::ConnectivityRuntimeStatus wifi =
-      wifiRuntime.status(now);
-  int64_t epoch = 0;
-  const bool timeValid = trustedGatewayWallClock(epoch);
-
-  if (configured.generation != gatewayLanConfigGeneration) {
-    const bool changed = gatewayLanConfigGeneration != 0U;
-    stopGatewayLanRuntime();
-    gatewayLanConfigGeneration = configured.generation;
-    if (changed) {
-      gatewayLanLastResult =
-          kitsu868::connectivity::GatewayLanRuntimeResult::CredentialChanged;
-    }
-  }
-
-  if (!configured.begun) {
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::ConfigUnavailable;
-    gatewayLanLastResult =
-        kitsu868::connectivity::GatewayLanRuntimeResult::NotBegun;
-  } else if (!configured.gatewayConfigured) {
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::Unconfigured;
-    gatewayLanLastResult =
-        kitsu868::connectivity::GatewayLanRuntimeResult::NotBegun;
-  } else if (!configured.gatewayEnrolled) {
-    // No claim token or enrollment material is synthesized here. The owner
-    // flow must complete authenticated+PRG enrollment before steady mTLS.
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::EnrollmentPending;
-    gatewayLanLastResult =
-        kitsu868::connectivity::GatewayLanRuntimeResult::NotBegun;
-  } else if (!deviceSecurity.remoteConnectivityAllowed()) {
-    stopGatewayLanRuntime();
-    gatewayLanServiceState =
-        GatewayLanServiceState::ConnectivityUnavailable;
-    gatewayLanLastResult = kitsu868::connectivity::
-        GatewayLanRuntimeResult::RemoteConnectivityUnavailable;
-  } else if (!gatewayLanReplayReady || !gatewayLanActionsReady) {
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::ReplayUnavailable;
-    gatewayLanLastResult =
-        kitsu868::connectivity::GatewayLanRuntimeResult::ActionStoreFailed;
-  } else if (authenticatedBleSession) {
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::BlePriority;
-  } else if (!configured.gatewayLanConfigured) {
-    // Mobile relay credentials are valid without inventing a LAN endpoint.
-    // They become active only inside an authenticated BLE owner session.
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::Unconfigured;
-    gatewayLanLastResult =
-        kitsu868::connectivity::GatewayLanRuntimeResult::NotBegun;
-  } else if (wifi.wifiState !=
-             kitsu868::connectivity::WifiRuntimeState::Connected) {
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::WifiPending;
-  } else if (!timeValid) {
-    stopGatewayLanRuntime();
-    gatewayLanServiceState = GatewayLanServiceState::TimePending;
-    gatewayLanLastResult =
-        kitsu868::connectivity::GatewayLanRuntimeResult::TimeUnavailable;
-  } else {
-    if (!gatewayLanBegun) {
-      gatewayLanLastResult = gatewayLanRuntime.begin(
-          connectionConfigStore, gatewayLanSequences, gatewayLanCrypto,
-          gatewayLanReplayStore, gatewayLanActions, gatewayLanTls);
-      gatewayLanBegun = gatewayLanLastResult ==
-          kitsu868::connectivity::GatewayLanRuntimeResult::Ok;
-      gatewayLanNextSnapshotAt = now;
-    }
-    if (gatewayLanBegun) {
-      gatewayLanLastResult = gatewayLanRuntime.poll(now, epoch, true);
-      const kitsu868::connectivity::GatewayLanRuntimeStatus status =
-          gatewayLanRuntime.status();
-      gatewayLanEverConnected = gatewayLanEverConnected || status.connected;
-      gatewayLanServiceState = status.connected
-          ? GatewayLanServiceState::Connected
-          : GatewayLanServiceState::Reconnecting;
-
-    } else {
-      gatewayLanServiceState = GatewayLanServiceState::Reconnecting;
-    }
-  }
-
-  // Detect every projected truth change without allocating/building JSON on
-  // every loop. This includes Wi-Fi state changes that can occur while the
-  // coarser gateway service state remains wifi_pending.
-  const uint32_t observedSnapshotHash = gatewaySnapshotTruthHash(now);
-  if (observedSnapshotHash != gatewayLanLastObservedSnapshotHash) {
-    gatewayLanLastObservedSnapshotHash = observedSnapshotHash;
-    gatewaySnapshotDirty = true;
-  }
-  const kitsu868::connectivity::GatewayLanRuntimeStatus lanStatus =
-      gatewayLanRuntime.status();
-  const bool relayActive = mobileRelayReady && authenticatedBleSession &&
-      configured.mobileRelayConfigured && configured.gatewayEnrolled;
-  const bool uplinkTransportReady = relayActive ||
-      (gatewayLanBegun && lanStatus.connected && timeValid);
-  const bool snapshotDue = gatewayLanNextSnapshotAt == 0U ||
-      static_cast<int32_t>(now - gatewayLanNextSnapshotAt) >= 0;
-  if (uplinkTransportReady && (snapshotDue || gatewaySnapshotDirty)) {
-    String snapshot;
-    if (buildGatewaySnapshot(snapshot, now)) {
-      const uint8_t* bytes =
-          reinterpret_cast<const uint8_t*>(snapshot.c_str());
-      const size_t byteCount = snapshot.length();
-      const uint32_t hash = gatewaySnapshotHash(bytes, byteCount);
-      const bool changed = hash != gatewayLanLastSnapshotHash;
-      if ((snapshotDue || changed || gatewaySnapshotDirty) &&
-          gatewayLanPayloadQueue.canEnqueue(1U, byteCount) &&
-          gatewayLanPayloadQueue.enqueue(
-              "companion.snapshot", bytes, byteCount,
-              timeValid ? epoch : 0)) {
-        gatewayLanLastSnapshotHash = hash;
-        gatewayLanNextSnapshotAt = now + GATEWAY_SNAPSHOT_INTERVAL_MS;
-        gatewaySnapshotDirty = false;
-      }
-    }
-  }
-  reportGatewayLanStatus();
-}
 
 void initMesh() {
   meshSettings = kitsu868::mesh::defaultSettings();
@@ -6017,8 +4635,26 @@ void setup() {
   analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_2_5db);
 
   initDisplay();
+  const kitsu868::connectivity::LegacyConnectivityRetirementResult
+      legacyRetirement =
+          kitsu868::connectivity::KitsuLegacyConnectivityRetirement::run(
+              legacyConnectivityRetirementPlatform);
+  legacyConnectivityRetirementReady =
+      kitsu868::connectivity::legacyConnectivityRetirementSucceeded(
+          legacyRetirement);
+  Serial.printf("KITSU_LEGACY_CONNECTIVITY_RETIREMENT status=%s ready=%s\n",
+                kitsu868::connectivity::
+                    legacyConnectivityRetirementResultName(legacyRetirement),
+                legacyConnectivityRetirementReady ? "true" : "false");
   loadState();
-  initConnectivityStorage();
+  initLocalSecurityStorage();
+  bleOtaReady = bleOta.begin(bleOtaPlatform, FIRMWARE_VERSION);
+  const kitsu868::connectivity::BleOtaStatus otaBootStatus = bleOta.status();
+  Serial.printf("KITSU_BLE_OTA ready=%s state=%s error=%s\n",
+                bleOtaReady ? "true" : "false",
+                kitsu868::connectivity::KitsuBleOta::stateName(
+                    otaBootStatus.state),
+                otaBootStatus.error ? otaBootStatus.error : "none");
   companionPack.begin();
   if (companionPack.valid() && collectiblePackId != companionPack.id()) {
     const bool replacingCompanion = collectiblePackId != 0;
@@ -6046,7 +4682,8 @@ void setup() {
                        companionPack.valid() ? companionPack.id() : 0);
   companionBrain.syncSleeping(wisp.sleeping);
   initMesh();
-  const bool bleReady = companionBle.begin();
+  const bool bleReady = legacyConnectivityRetirementReady &&
+      companionBle.begin();
   Serial.printf("KITSU_BLE_COMPANION ready=%s service=%s\n",
                 bleReady ? "true" : "false",
                 kitsu868::connectivity::kKitsuGattServiceUuid);
@@ -6065,12 +4702,27 @@ void setup() {
                   ? Screen::Sleep
                   : Screen::Pet);
   printSelfTest();
-  Serial.printf("KITSU_READY uid=%s companion=\"%s\" pack_valid=%s "
-                "meshcore=1.17.1 profile=UK_EU_NARROW rx_ready=%s "
-                "tx_unlocked=false\n",
-                wisp.uid.c_str(), companionName().c_str(),
-                companionPack.valid() ? "true" : "false",
-                meshTransport.active() ? "true" : "false");
+  const bool criticalHealth = legacyConnectivityRetirementReady &&
+      connectivitySecurityReady && bleReady;
+  const bool otaInitializationAccepted = bleOtaReady &&
+      bleOta.finishCriticalInitialization(criticalHealth, millis());
+  Serial.printf("KITSU_BLE_OTA_HEALTH critical=%s accepted=%s\n",
+                criticalHealth ? "true" : "false",
+                otaInitializationAccepted ? "true" : "false");
+  if (criticalHealth && otaInitializationAccepted) {
+    Serial.printf("KITSU_READY uid=%s companion=\"%s\" pack_valid=%s "
+                  "meshcore=1.17.1 profile=UK_EU_NARROW rx_ready=%s "
+                  "tx_unlocked=false\n",
+                  wisp.uid.c_str(), companionName().c_str(),
+                  companionPack.valid() ? "true" : "false",
+                  meshTransport.active() ? "true" : "false");
+  } else {
+    Serial.printf("KITSU_BLOCKED retirement=%s security=%s ble=%s ota=%s\n",
+                  legacyConnectivityRetirementReady ? "true" : "false",
+                  connectivitySecurityReady ? "true" : "false",
+                  bleReady ? "true" : "false",
+                  otaInitializationAccepted ? "true" : "false");
+  }
 }
 
 void loop() {
@@ -6078,27 +4730,13 @@ void loop() {
   pollSerial();
   const uint32_t now = millis();
   companionBle.loop(now);
-  kitsu868::connectivity::GatewayEnrollmentReceipt enrollmentTransition{};
-  if (gatewayEnrollmentFlow.poll(now, &enrollmentTransition)) {
-    (void)companionBle.sendEnrollmentEvent(enrollmentTransition);
-  }
-  const kitsu868::connectivity::BleSessionStatus bleSession =
-      companionBle.sessionStatus(now);
-  // An authenticated owner session has strict command/LAN priority, while the
-  // ESP32-S3 keeps its STA association warm for observable provisioning and a
-  // prompt BLE -> gateway handoff. MeshCore remains independent below.
-  wifiRuntime.loop(now, bleSession.applicationAuthenticated);
-  int64_t trustedEpoch = 0;
-  if (!meshTransport.timeValid() &&
-      trustedGatewayWallClock(trustedEpoch) && trustedEpoch > 0 &&
-      trustedEpoch <= UINT32_MAX) {
-    (void)meshTransport.setEpoch(static_cast<uint32_t>(trustedEpoch));
-  }
-  serviceGatewayEnrollment(now, bleSession.applicationAuthenticated);
-  serviceGatewayLan(now, bleSession.applicationAuthenticated);
+  bleOta.loop(now, legacyConnectivityRetirementReady &&
+                       connectivitySecurityReady && companionBle.ready(),
+              companionBle.bleTransmitIdle());
   meshTransport.loop();
   processMeshAdvert();
   processMeshMessages();
+  serviceCompanionBleRefresh(now);
   tickCreature();
   tickProgression();
   tickGame();

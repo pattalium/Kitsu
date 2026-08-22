@@ -127,14 +127,14 @@ async function connect() {
 async function checkRelease() {
   busy = true;
   verifiedRelease = undefined;
-  releaseDetail.textContent = "Checking the Ed25519 manifest authority and both firmware artifacts...";
+  releaseDetail.textContent = "Checking the Ed25519 manifest authority and every bootstrap artifact...";
   updateControls();
   try {
     const release = await fetchVerifiedRelease();
     verifiedRelease = release;
     const totalBytes = release.artifacts.reduce((total, artifact) => total + artifact.bytes.byteLength, 0);
-    releaseDetail.textContent = `Kitsu ${release.manifest.firmware_version} is signed, physically accepted, and byte-verified (${totalBytes.toLocaleString()} bytes).`;
-    append(`Release gate passed: ${release.manifest.release_id}; exact manifest signature and two SHA-256 artifacts verified.`);
+    releaseDetail.textContent = `Kitsu ${release.manifest.firmware_version} is signed, physically accepted, and ready for seven bounded writes (${totalBytes.toLocaleString()} bytes).`;
+    append(`Release gate passed: ${release.manifest.release_id}; exact manifest signature and all seven SHA-256 write images verified.`);
   } catch (error) {
     releaseDetail.textContent = "No installable production release passed every signature, schema, acceptance, and artifact gate.";
     append(`Release gate closed: ${errorMessage(error)}`);
@@ -145,14 +145,17 @@ async function checkRelease() {
 }
 
 async function verifyReadback(artifact, index) {
-  const base = index === 0 ? 70 : 78;
-  const span = index === 0 ? 8 : 20;
+  const totalBytes = verifiedRelease.artifacts.reduce((total, item) => total + item.record.bytes, 0);
+  const precedingBytes = verifiedRelease.artifacts
+    .slice(0, index)
+    .reduce((total, item) => total + item.record.bytes, 0);
   const readback = await loader.readFlash(
     artifact.record.offset,
     artifact.record.bytes,
     (_packet, received, total) => {
       const ratio = Math.min(1, received / total);
-      setProgress(base + ratio * span, `Reading back ${artifact.record.role}: ${received.toLocaleString()} / ${total.toLocaleString()} bytes`);
+      const completedBytes = precedingBytes + (artifact.record.bytes * ratio);
+      setProgress(65 + (completedBytes / totalBytes) * 34, `Reading back ${artifact.record.role}: ${received.toLocaleString()} / ${total.toLocaleString()} bytes`);
     },
   );
   if (readback.byteLength !== artifact.record.bytes) {
@@ -169,8 +172,8 @@ async function install() {
   const confirmed = window.confirm(
     "Install the latest signed Kitsu release now?\n\n"
     + "The installer will check the update service again immediately before writing. "
-    + "This writes only the partition table at 0x008000 and application at 0x010000, then reads both back. "
-    + "It does not call full-chip erase or write the bootloader, OTA data, NVS, companion pack, connectivity state, or eFuses.",
+    + "This writes the reviewed rollback-enabled bootloader, partition table, the same application in app0 and app1, an empty OTA journal at the end of each application slot, and an exact clear image over the retired connectivity partition. Every region is read back. "
+    + "It does not call full-chip erase or write OTA data, companion state or packs, controller records, MeshCore state, coredump, or eFuses. The local-only firmware also removes only the retired LAN-action NVS namespace after boot.",
   );
   if (!confirmed) {
     append("Install cancelled. Nothing was written.");
@@ -194,10 +197,13 @@ async function install() {
     verifiedRelease = latestRelease;
     releaseDetail.textContent = `Kitsu ${verifiedRelease.manifest.firmware_version} is the latest signed, physically accepted, byte-verified release.`;
     await reverifyArtifacts(verifiedRelease);
-    setProgress(4, "Latest release verified; starting two bounded writes");
-    append(`Install authorized for latest release ${verifiedRelease.manifest.release_id}. Starting exactly two bounded writes; erase-all remains disabled.`);
+    setProgress(4, "Latest release verified; starting seven bounded writes");
+    append(`Install authorized for latest release ${verifiedRelease.manifest.release_id}. Starting exactly seven bounded writes; erase-all remains disabled.`);
 
-    const writeWeights = [8, 58];
+    const totalWriteBytes = verifiedRelease.artifacts.reduce((total, artifact) => total + artifact.record.bytes, 0);
+    const precedingWriteBytes = verifiedRelease.artifacts.map((_, index) => verifiedRelease.artifacts
+      .slice(0, index)
+      .reduce((total, artifact) => total + artifact.record.bytes, 0));
     await loader.writeFlash({
       fileArray: verifiedRelease.artifacts.map((artifact) => ({
         data: artifact.bytes,
@@ -209,11 +215,10 @@ async function install() {
       eraseAll: false,
       compress: true,
       reportProgress(fileIndex, written, total) {
-        const start = writeWeights[fileIndex];
-        const end = fileIndex === 0 ? writeWeights[1] : 70;
         const ratio = total === 0 ? 0 : Math.min(1, written / total);
-        const role = verifiedRelease.artifacts[fileIndex].record.role;
-        setProgress(start + ratio * (end - start), `Writing ${role}: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
+        const artifact = verifiedRelease.artifacts[fileIndex];
+        const completedBytes = precedingWriteBytes[fileIndex] + (artifact.record.bytes * ratio);
+        setProgress(4 + (completedBytes / totalWriteBytes) * 61, `Writing ${artifact.record.role}: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
       },
     });
 

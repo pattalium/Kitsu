@@ -82,7 +82,7 @@ class ControllerPairingProtocolTest {
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    @Test fun mockGattChannelRollsBackCandidateWhenPairOkIsInvalid() = runTest {
+    @Test fun invalidPairOkRetainsCandidateForAuthenticatedRecovery() = runTest {
         var stored: ControllerGrant? = null
         var deleted = false
         val channel = MockDeviceChannel(candidateStored = { stored != null }, corruptOK = true)
@@ -96,12 +96,12 @@ class ControllerPairingProtocolTest {
             )
         }.exceptionOrNull() as PairingException
         assertEquals("pairing_failed", failure.code)
-        assertNull(stored)
-        assertTrue(deleted)
+        assertNotNull(stored)
+        assertFalse(deleted)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    @Test fun cancellationAfterCommitWriteRollsBackCandidate() = runTest {
+    @Test fun processLikeCancellationAfterCommitRetainsCandidate() = runTest {
         var stored: ControllerGrant? = null
         var deleted = false
         val channel = MockDeviceChannel(candidateStored = { stored != null }, withholdOK = true)
@@ -119,6 +119,47 @@ class ControllerPairingProtocolTest {
         operation.cancel()
         operation.join()
 
+        assertNotNull(stored)
+        assertFalse(deleted)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun lostPairOkRetainsCandidateAcrossTimeout() = runTest {
+        var stored: ControllerGrant? = null
+        var deleted = false
+        val channel = MockDeviceChannel(candidateStored = { stored != null }, withholdOK = true)
+        val failure = runCatching {
+            ControllerPairingProtocol().pair(
+                label = "Owner phone",
+                channel = channel,
+                persistCandidate = { stored = it },
+                deleteCandidate = { stored = null; deleted = true },
+            )
+        }.exceptionOrNull() as PairingException
+
+        assertEquals("pairing_timeout", failure.code)
+        assertNotNull(stored)
+        assertFalse(deleted)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun explicitCommitRejectionDeletesCandidate() = runTest {
+        var stored: ControllerGrant? = null
+        var deleted = false
+        val channel = MockDeviceChannel(
+            candidateStored = { stored != null },
+            commitError = "auth_failed",
+        )
+        val failure = runCatching {
+            ControllerPairingProtocol().pair(
+                label = "Owner phone",
+                channel = channel,
+                persistCandidate = { stored = it },
+                deleteCandidate = { stored = null; deleted = true },
+            )
+        }.exceptionOrNull() as PairingException
+
+        assertEquals("auth_failed", failure.code)
         assertNull(stored)
         assertTrue(deleted)
     }
@@ -162,6 +203,7 @@ class ControllerPairingProtocolTest {
         private val withholdOK: Boolean = false,
         private val withholdGrant: Boolean = false,
         private val controlError: String? = null,
+        private val commitError: String? = null,
     ) : PairingChannel {
         private val json = Json
         private val replies = Channel<ByteArray>(Channel.UNLIMITED)
@@ -240,7 +282,15 @@ class ControllerPairingProtocolTest {
                     commitVerified = MessageDigest.isEqual(actual, expected)
                     assertTrue(commitVerified)
                     commitSeen.complete(Unit)
-                    if (!withholdOK) {
+                    if (commitError != null) {
+                        replies.send(
+                            buildJsonObject {
+                                put("v", 1)
+                                put("type", "error")
+                                put("code", commitError)
+                            }.toString().toByteArray(),
+                        )
+                    } else if (!withholdOK) {
                         val ok = if (corruptOK) ByteArray(32) else ControllerPairingProtocol.proof(
                             root,
                             ControllerPairingProtocol.OK_PREFIX,

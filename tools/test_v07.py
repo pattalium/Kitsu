@@ -288,7 +288,6 @@ def validate_selftest(state: dict[str, Any], args: argparse.Namespace) -> None:
             "encounter_protocol": 1,
             "sync_protocol": 1,
             "sync_transport": "serial",
-            "remote_available": False,
         },
         "self-test",
     )
@@ -350,7 +349,6 @@ def validate_sync(sync: dict[str, Any], state: dict[str, Any], args: argparse.Na
             "bond_xp": state["bond_xp"],
             "stage": state["evolution_stage"],
             "battery_pct": state["battery_pct"],
-            "remote": False,
         },
         "sync",
     )

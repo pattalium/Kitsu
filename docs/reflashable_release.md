@@ -1,228 +1,268 @@
-# Kitsu owner-reflashable release contract
+# Kitsu local-first owner-reflashable release contract
 
-This is the authoritative physical-device security and release contract for
-Kitsu868. Kitsu deliberately remains eraseable, serial-reflashable, and
-repurposable like a stock MeshCore board. No release, installer, signing
-ceremony, or operator is authorized to burn an eFuse or disable an owner
-recovery/debug interface.
+This is the authoritative firmware security, update, and physical-acceptance
+contract for Kitsu868 0.12.x and later local-first releases. Kitsu deliberately
+remains erasable, serial-reflashable, and repurposable like a stock MeshCore
+board. No release, installer, signer, or operator is authorized to burn an
+eFuse or disable an owner recovery/debug interface.
 
 The withdrawn Secure Boot/Flash Encryption ceremony is retained only for
 forensic history in [production_provisioning.md](production_provisioning.md).
 Its artifacts are not Kitsu releases and its commands must not be executed.
 
-## Security boundary
+## Product boundary
 
-The reflashable image reports these exact device facts:
+The supported runtime has two local radios:
+
+- authenticated Bluetooth between the Android controller and nearby Kitsu;
+- MeshCore over LoRa for the device's configured regional radio profile.
+
+The Android application and shipped firmware do not require or expose a Kitsu
+account, HTTP API, identity provider, public or self-hosted gateway, mobile
+relay, Wi-Fi provisioning, LAN control, TLS client, or server certificate.
+Historical server source may be retained for a bounded rollback/archive period,
+but it is excluded from the product build. Stored connectivity generations are
+not retained: the local-only firmware and USB bootstrap both erase and verify
+the isolated legacy connectivity partition, and firmware removes only the
+retired LAN-action NVS namespace.
+
+The active authenticated Bluetooth operation allowlist is:
+
+```text
+state.get
+history.get
+peers.get
+messages.get
+channels.get
+clock.sync
+mesh.configure
+action.apply
+controller.forget
+firmware.update.status
+firmware.update.begin
+firmware.update.write
+firmware.update.finish
+firmware.update.reboot
+firmware.update.abort
+```
+
+No other control operation may be added without a matching Android UI,
+firmware implementation, focused contract test, and physical-user acceptance.
+
+## Reflashable security boundary
+
+The application reports these facts truthfully:
 
 | Field | Required value | Meaning |
 |---|---:|---|
-| `security_mode` | `"reflashable"` | Owner recovery and repurposing are intentional product behavior. |
+| `security_mode` | `"reflashable"` | Owner recovery and repurposing are intentional. |
 | `secure_boot` | `false` | ROM does not enforce a Kitsu signing key. |
 | `flash_encryption` | `false` | Raw flash is not confidential against physical access. |
 | `nvs_encryption` | `false` | There is no hardware-backed encrypted-NVS boundary. |
 | `hardware_root_protected` | `false` | Application secrets have no irreversible hardware root. |
-| `application_encrypted` | `true` | `kitsu_conn` records use application-layer authenticated encryption and rotation. |
-| `remote_connectivity_allowed` | boolean | Becomes true after the application security store initializes; it is never inferred from eFuse state. |
-
-`application_encrypted:true` is not a physical-security claim. The wrapping
-material is available to reflashable software. An operator or attacker with
-physical flash, UART, USB, or JTAG access can extract state, replace firmware,
-erase identity, or make replacement firmware use or bypass application keys.
+| `application_encrypted` | `true` | Controller records use authenticated application-layer generations. |
 
 The following remain enabled and unburned:
 
 - ROM serial download and ordinary `esptool` write/verify operations;
 - deliberate whole-chip erase and clean reflash;
 - UART and USB download/recovery paths;
-- JTAG/debug capability provided by the unmodified board/chip state; and
+- the unmodified board's JTAG/debug capability; and
 - all Secure Boot, Flash Encryption, anti-rollback, HMAC-root,
   download-mode-lock, JTAG-lock, UART-lock, and USB-lock eFuses.
 
-No Kitsu release may claim verified boot, anti-rollback, flash
-confidentiality, malicious-reflash resistance, or physical-tamper resistance.
+Kitsu does not claim verified boot, physical-tamper resistance, flash
+confidentiality, or resistance to malicious firmware installed by someone
+holding the board. Signed Bluetooth OTA authenticates a normal update; it does
+not remove the owner's serial recovery right.
 
 ## Protections that remain mandatory
 
-Reflashability does not weaken the normal network/application boundary. The
-release must retain:
-
-- Bluetooth LE Secure Connections, numeric comparison, physical PRG consent,
-  authenticated controller sessions, sequence/replay checks, and bounded
-  framing;
-- authenticated BLE for Wi-Fi, gateway trust, and one-use owner enrollment;
-- TLS 1.2 or newer with CA, hostname/SNI, SPKI, ALPN, and time validation;
-- device mTLS with certificate/key binding and canonical companion URI SAN;
-- backend owner authorization, certificate-bound gateway identity, signed
-  remote actions, expiry, durable replay protection, and strict ACK handling;
-  and
-- application-layer authenticated encryption, CRC/readback verification,
-  generation rotation, and power-loss recovery for `kitsu_conn`.
-
-These controls protect normal Bluetooth, LAN, and Internet use. Replacement
-firmware installed through physical access can bypass them; that is the
-explicit tradeoff for owner repurposability.
+- Bluetooth LE Secure Connections and numeric comparison;
+- an explicit physical PRG confirmation before granting a controller;
+- a device-issued controller root stored in Android Keystore-backed encrypted
+  storage;
+- fresh application-session keys, authenticated envelopes, bounded framing,
+  sequence checks, and replay protection;
+- durable `controller.forget` on the device before Android removes its copy;
+- encrypted bounded Android cache with Android backup disabled;
+- no Android `INTERNET` or foreground-service permission;
+- signed Android distribution with the established application certificate;
+- signed canonical `.kitsu-fw` manifests, exact image hashes, inactive-slot
+  writes, readback, and bootloader rollback; and
+- no eFuse, bootloader, arbitrary-partition, NVS, pack, controller-store,
+  MeshCore-state, or coredump write through the BLE OTA protocol.
 
 ## Build profile
 
-The default owner image is:
+The owner image is:
 
 ```text
 PlatformIO environment: heltec_wifi_lora_32_V3_reflashable
 compile marker:          KITSU_SECURITY_MODE_REFLASHABLE=1
 partition layout:        partitions_kitsu_8MB.csv
+firmware version:        0.12.0
 ```
 
-The image must not enable Secure Boot signing/padding, Flash Encryption,
-encrypted NVS, anti-rollback, first-boot eFuse mutation, or interface locks.
-The withdrawn `heltec_wifi_lora_32_V3_production` environment and its
-`partitions_kitsu_production_8MB.csv` layout are forensic inputs only and are
-not release profiles.
+`platformio.ini` must exclude the legacy connectivity, enrollment, gateway,
+LAN, and mobile-relay source units from the normal product build. The linked
+ELF/map and final application image must be audited to prove that those product
+operations, URLs, certificates, and runtime symbols are absent.
 
-## Machine-readable release manifest
+The withdrawn `heltec_wifi_lora_32_V3_production` environment and its old
+partition layout are forensic inputs only and are not release profiles.
 
-`tools/package_kitsu_reflashable.py` creates the strict
-`kitsu.firmware-reflashable-release.v1` manifest. Its exact top-level fields
-are:
+## Partition and A/B update contract
+
+The supported 8 MiB layout includes:
 
 ```text
-schema
-created_at
-artifact_status
-firmware_version
-release_channel
-device_class
-checksum_index
-build_profile
-partition_layout
-security_profile
-network_security
-release_requirements
-flash_artifacts
-serial_flash
-warnings
+otadata     0x00e000  0x002000
+app0        0x010000  0x330000  ota_0
+app1        0x340000  0x330000  ota_1
+pack        0x670000
+retired     0x7b0000  0x40000   legacy connectivity region, cleared
+coredump    0x7f0000
 ```
 
-Before physical hardware QA, the only valid publication state is:
+BLE OTA accepts only the inactive `ota_0` or `ota_1` partition whose exact
+size is `0x330000`. Application bytes are limited to `0x32f000`; the final
+4 KiB sector is a private, readback-verified, append-only resume journal.
+Only the inactive application slot and, after complete verification, normal
+OTA selection metadata may change.
+
+The first boot of a new slot remains `PENDING_VERIFY`. Kitsu requires successful
+legacy-connectivity retirement, critical controller storage, BLE initialization,
+valid OTA image/journal binding, and a live main loop for 30 continuous seconds
+before calling `esp_ota_mark_app_valid_cancel_rollback()`. A missing or corrupt
+running-slot journal, critical-init failure, crash, watchdog reset, or power
+interruption before confirmation rolls back to the prior application.
+
+The public USB/Web Serial bootstrap is the trust anchor for that rollback
+behavior, including on a stock Heltec. Its signed v2 release manifest permits
+exactly seven readback-verified writes: the reviewed rollback-enabled Kitsu
+bootloader at `0x000000`, the partition table at `0x008000`, the same accepted
+application in app0 and app1, a 4 KiB all-`0xff` journal clear at `0x33f000`
+and `0x66f000`, and a 256 KiB all-`0xff` retirement image at `0x7b0000`.
+The final isolated write removes historical Wi-Fi, gateway, mTLS, and backend
+secrets. It preserves OTA selection data, companion state and packs, controller
+records, MeshCore state, and coredump. Firmware also erases the retired
+`kitsu_lan_act` namespace without clearing unrelated NVS. A physical-acceptance
+authorization v2 binds the bootloader, partition table, application,
+journal-clear, and legacy-connectivity-clear SHA-256 values. A stock or unknown
+bootloader must never be treated as proof that rollback is enabled.
+
+## Offline `.kitsu-fw` package
+
+`tools/package_kitsu_ble_firmware.mjs` owns the public offline container. The
+20-byte header is:
 
 ```text
-artifact_status: release-candidate-owner-reflashable
-release_channel: candidate
+0..7    ASCII KITSUFW1
+8..11   manifest byte length, u32 big-endian, 1..1024
+12..13  signature byte length, u16 big-endian, exactly 64
+14..15  flags, u16 big-endian, exactly 0
+16..19  application byte length, u32 big-endian, 1..0x32f000
 ```
 
-The manifest contains no device ID or device-specific secret. Its
-`security_profile` states:
+It is followed by exact canonical manifest bytes, a raw 64-byte Ed25519
+signature over those bytes, one raw ESP32-S3 application image, and exact EOF.
+The canonical manifest has this exact field order:
 
 ```json
-{
-  "mode": "reflashable",
-  "secure_boot": false,
-  "flash_encryption": false,
-  "nvs_encryption": false,
-  "hardware_root_protected": false,
-  "firmware_images_encrypted": false,
-  "application_layer_encryption": true,
-  "efuse_writes": false,
-  "efuse_locks": false,
-  "jtag_disabled": false,
-  "uart_download_disabled": false,
-  "usb_download_disabled": false,
-  "serial_erase_reflash_available": true,
-  "full_chip_erase_available": true,
-  "stock_meshcore_restore_available": true,
-  "physical_extraction_reflash_can_bypass": true
-}
+{"schema":"kitsu.ble-firmware.v1","release_id":"...","firmware_version":"...","device_class":"heltec-wifi-lora-32-v3-esp32s3-8mb","image_format":"esp32s3-app","image_bytes":0,"image_sha256":"...","partition_bytes":3342336,"chunk_bytes":4096,"rollback":true}
 ```
 
-`release_requirements` must set device-specific XTS/HMAC secrets, Secure Boot
-signing/recovery/rotation keys, and all eFuse operations to false. Every flash
-artifact records its exact role, file, address, byte count, and SHA-256. ESP
-images are structurally validated where applicable; every artifact states
-`secure_boot_signed:false` and `encrypted:false`. `SHA256SUMS.txt` covers the
-complete immutable output.
+The existing offline update authority remains pinned by its Ed25519 SPKI
+SHA-256:
 
-After a clean build, create the candidate bundle with the checked-in wrapper
-(the output directory must be new or empty):
+```text
+df530766fbc4fc93e82cdbd354ebe4a17a453c83e9bb7fe2af30ca2d202494ab
+```
+
+The private key never enters the repository, Android package, firmware image,
+public host, or ordinary build environment. Protected signing receives only
+the exact canonical manifest and returns only its raw detached signature.
+
+The public packager and both clients independently validate the ESP image
+header, ESP32-S3 chip ID, segment count and bounds, ROM checksum placement and
+value, appended-hash flag, appended SHA-256, declared image hash/size, and exact
+EOF.
+
+## Candidate build and local package checks
+
+Build and test the exact target:
+
+```powershell
+pio run -e heltec_wifi_lora_32_V3_reflashable
+cmd /c tools\test_kitsu_ble_ota.cmd
+node --test tools/test_package_kitsu_ble_firmware.mjs
+cmd /c tools\test_kitsu_reflashable_profile.cmd
+```
+
+The generic serial candidate packager remains candidate-only. Pass the current
+version explicitly and use a new/empty destination:
 
 ```powershell
 tools\package_kitsu_reflashable.cmd `
-  dist\kitsu-0.11.1-owner-reflashable `
-  0.11.1
+  dist\kitsu-0.12.0-owner-reflashable-candidate `
+  0.12.0
 ```
 
-The wrapper fixes the project root, the
-`.pio\build\heltec_wifi_lora_32_V3_reflashable` input, and the repository's
-validated `esptool` implementation. The packager has no device-ID, private-key,
-signing-stage, XTS, HMAC, or eFuse option.
+The checked stable/public packager remains frozen to the last accepted release
+until a new exact binary passes physical acceptance. Do not relabel an older
+authorization/evidence digest or edit the stable pins speculatively.
 
-Audit both the selected profile and the packager's positive/negative contract
-before using an artifact:
+## Two-record physical and delivery acceptance
 
-```powershell
-tools\test_kitsu_reflashable_profile.cmd
-tools\test_package_kitsu_reflashable.cmd
-```
+Acceptance deliberately uses two retained records so no evidence digest is
+self-referential. Use supported Heltec hardware, ordinary Android phones, and
+only visible owner controls. ADB, Docker, and direct database repair are not
+part of acceptance.
 
-The former production packager, staged signer, readiness audit, and production
-build guard entry points terminate with
-`KITSU_WITHDRAWN_NOT_AUTHORIZED`. Their helper source remains available only
-for forensic review and negative tests; it is not a second release path.
+Record 1 is the prepublication candidate/hardware record. It binds the frozen
+source and site builds, production-signed Android candidate, signed
+`.kitsu-fw`, and the five unique USB artifact byte sequences. Before any final
+Web Serial manifest exists, it must prove all seven bounded USB writes/readbacks,
+local pairing and lost-receipt recovery, airplane-mode controls and messages,
+stable GATT, per-device Disconnect/Forget, BLE OTA resume/cancel/reboot,
+pending verification, rollback, and USB recovery. The 30-second OTA health gate
+includes successful legacy-connectivity and LAN-action retirement, controller
+storage, BLE initialization, OTA image/journal binding, and the live loop.
+Record 1 must not contain the downstream final manifest, signature, or public
+URL. Its frozen SHA-256 becomes `physical_acceptance.evidence_sha256` in the
+final signed v2 manifest.
 
-The manifest carries exactly these stable warnings:
+Record 2 is the public-delivery smoke. After record 1 passes, create and sign
+the final manifest, stage the coordinated release behind an atomic rollback,
+then use the actual public HTTPS pages as an ordinary owner: perform all seven
+Web Serial writes/readbacks, install Android fresh, pair, use local controls and
+messages in airplane mode, Disconnect/reconnect, install the public
+`.kitsu-fw`, confirm the new slot, Forget/re-pair, and run public USB recovery.
+Record 2 binds the exact final manifest/signature and public artifacts, but its
+digest is never fed back into that manifest. Failure restores the prior public
+release and remains retained as a failure.
 
-- `PHYSICAL_ACCESS_CAN_REPLACE_FIRMWARE`
-- `NO_VERIFIED_BOOT_CHAIN`
-- `APPLICATION_ENCRYPTION_NOT_HARDWARE_ROOTED`
-- `SERIAL_RECOVERY_INTENTIONALLY_PRESERVED`
-- `NETWORK_AUTH_RETAINED`
+The external final promotion decision binds both evidence digests, exact Android
+APK/version/certificate, firmware and `.kitsu-fw` hashes, final Web Serial
+manifest/signature, source commit, timestamps, device class, and PASS/FAIL. It
+is not embedded into the manifest. Do not collect controller secrets, private
+keys, full flash dumps, message text, precise location, or third-party traffic.
 
-A detached release signature can authenticate distribution metadata to the
-owner, but the ESP32-S3 boot path deliberately does not enforce it. The owner
-can always choose and serial-flash different firmware.
+The authoritative numbered cases and evidence fields are in
+`platform/mobile/android/qa/PHYSICAL-RELEASE-ACCEPTANCE.md`. Both records must
+pass; a single circular evidence document may not authorize itself.
 
-## Release and hardware QA gates
+## Promotion and recovery
 
-A candidate is acceptable for controlled hardware testing only after:
+Only record-1-accepted bytes may be bound into the signed BLE package and Web
+Serial publication manifest. Only after the separate record-2 public-delivery
+smoke passes may that coordinated Android/site/docs/status/Web Serial/raw-update
+release be declared stable. Keep the atomic rollback available throughout.
 
-1. a clean build of `heltec_wifi_lora_32_V3_reflashable` succeeds;
-2. host suites for device-security reporting, encrypted connectivity storage,
-   authenticated enrollment, bootstrap, steady TLS/LAN, replay, and remote
-   actions pass;
-3. the reflashable packager validates the exact PlatformIO flash arguments,
-   partition table, image headers, offsets, sizes, and checksums;
-4. static scans find no eFuse burn, first-boot encryption, secure-download
-   lock, JTAG/UART/USB disable, Secure Boot, or Flash Encryption behavior in
-   the active reflashable profile;
-5. a pre-flash full backup is captured and verified when preserving the
-   current board state matters; and
-6. the owner explicitly authorizes the reversible serial write to the named
-   port and exact artifact set.
-
-Hardware acceptance then verifies:
-
-- the exact security projection above;
-- authenticated BLE and explicit Disconnect behavior;
-- Wi-Fi/gateway configuration, PRG-confirmed enrollment, bootstrap, steady
-  mTLS, queue/ACK/replay, and signed remote actions;
-- companion pack and retained-state behavior across an ordinary update; and
-- ROM serial recovery remains available.
-
-A deliberate whole-chip erase/reflash recovery drill is destructive and must
-use a disposable board or separate explicit owner authorization. It is never
-implied by a build or test command. Passing a recovery drill proves
-repurposability, not confidentiality or verified boot.
-
-Promotion from `candidate` requires recorded physical-device results and a new
-manifest/release decision. It never requires an eFuse, signing-custody, XTS,
-HMAC, or irreversible provisioning ceremony.
-
-## Owner recovery
-
-An ordinary matching-layout update should preserve NVS, `kitsu_conn`, and the
-pack partition. A whole-chip erase intentionally destroys them. Before an
-erase, export anything the owner wants to retain; after an erase, the owner can
-flash stock MeshCore or any other compatible image. Kitsu-specific identity,
-controller authorization, Wi-Fi, gateway enrollment, progression, and packs
-must then be restored or recreated deliberately.
-
-No recovery instruction may imply that application encryption makes a raw
-physical backup secret-safe. Handle backups as sensitive owner data.
+After the one-time local-only retirement of the legacy LAN-action namespace, an
+ordinary matching-layout update preserves the remaining NVS, companion state,
+packs, controller authorization, MeshCore configuration, and coredump. A
+whole-chip erase intentionally destroys them and requires separate explicit
+owner authorization. Raw backups are sensitive because this reflashable design
+does not provide physical flash confidentiality.

@@ -7,8 +7,11 @@ internal data class OwnerCursorNamespace(
     val deviceId: String,
 )
 
-/** Keeps unrelated backend/device cursor spaces from crossing transports. */
+/** Keeps unrelated Kitsu cursor spaces from crossing saved-device selections. */
 internal object OwnerCursorPolicy {
+    /** Message IDs are stable while their delivery state mutates; always read the 24-row ring. */
+    fun messagesAfter(): String? = null
+
     fun resume(
         cursor: String?,
         previous: OwnerCursorNamespace?,

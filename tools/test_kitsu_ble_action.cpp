@@ -127,14 +127,14 @@ void testExactKindParams() {
          BleActionDecodeResult::InvalidParams);
 }
 
-void testTxActionsAndUnavailableActionsValidate() {
+void testTxActionsAndWithdrawnActionsFailClosed() {
   BleActionCommand command{};
-  assert(decode(body("advertise_once", "{\"scope\":\"nearby\"}"),
-                command) == BleActionDecodeResult::Ok);
-  assert(command.kind == BleActionKind::AdvertiseOnce);
-  assert(!kitsu868::connectivity::bleActionKindAvailable(command.kind));
-  expect(body("advertise_once", "{\"scope\":\"world\"}"),
-         BleActionDecodeResult::InvalidParams);
+  expect(body("advertise_once", "{\"scope\":\"nearby\"}"),
+         BleActionDecodeResult::InvalidKind);
+  expect(body("share_location_once",
+              "{\"lat_e6\":0,\"lon_e6\":0,\"exposure\":\"map_card\"}"),
+         BleActionDecodeResult::InvalidKind);
+  assert(static_cast<uint8_t>(BleActionKind::SendMessage) == 6U);
 
   const std::string directHello =
       messageParams("direct", kPeerKey, "hello \\u263a");
@@ -198,16 +198,6 @@ void testTxActionsAndUnavailableActionsValidate() {
                            "\"text\":\"") + longText + "\"}").c_str()),
          BleActionDecodeResult::InvalidParams);
 
-  assert(decode(body("share_location_once",
-                     "{\"lat_e6\":-90000000,\"lon_e6\":180000000,"
-                     "\"exposure\":\"map_card\"}"),
-                command) == BleActionDecodeResult::Ok);
-  assert(command.kind == BleActionKind::ShareLocationOnce);
-  assert(!kitsu868::connectivity::bleActionKindAvailable(command.kind));
-  expect(body("share_location_once",
-              "{\"lat_e6\":-90000001,\"lon_e6\":0,"
-              "\"exposure\":\"map_card\"}"),
-         BleActionDecodeResult::InvalidParams);
 }
 
 void testDirectReceipt() {
@@ -540,7 +530,7 @@ int main() {
   testSafeActionContract();
   testStrictOuterSchemaAndBounds();
   testExactKindParams();
-  testTxActionsAndUnavailableActionsValidate();
+  testTxActionsAndWithdrawnActionsFailClosed();
   testDirectReceipt();
   testCommandDigestAndNoPlaintextPersistence();
   testExpiryAndTrustedClockContract();

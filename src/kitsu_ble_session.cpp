@@ -9,6 +9,7 @@ namespace {
 
 constexpr size_t kMaximumControlFields = 10U;
 constexpr uint32_t kCloseDelayMs = 250UL;
+constexpr uint32_t kTransmitDrainTimeoutMs = 2000UL;
 
 void secureZero(void* memory, size_t bytes) {
   volatile uint8_t* output = static_cast<volatile uint8_t*>(memory);
@@ -317,11 +318,10 @@ bool operationAllowed(const char* operation) {
   static const char* const operations[] = {
       "state.get",          "history.get",       "peers.get",
       "messages.get",       "channels.get",      "clock.sync",
-      "mesh.configure",     "action.apply",      "wifi.configure",
-      "wifi.retry",         "gateway.configure",  "gateway.forget",
-      "gateway.enroll.begin",
-      "gateway.enroll.finish",
-      "mobile.relay.exchange",
+      "mesh.configure",     "action.apply",      "controller.forget",
+      "firmware.update.status", "firmware.update.begin",
+      "firmware.update.write",  "firmware.update.finish",
+      "firmware.update.reboot", "firmware.update.abort",
   };
   for (size_t i = 0U; i < sizeof(operations) / sizeof(operations[0]); ++i) {
     if (strcmp(operation, operations[i]) == 0) return true;
@@ -383,6 +383,7 @@ void KitsuBleSession::resetForSecureLink(uint32_t nowMillis) {
   state_ = BleSessionState::AwaitingHello;
   stateDeadline_ = nowMillis + kBleHandshakeTotalTimeoutMs;
   closeAt_ = 0U;
+  closeAfterTransmit_ = false;
 }
 
 void KitsuBleSession::onSecureLinkEstablished(
@@ -419,6 +420,7 @@ void KitsuBleSession::onLinkClosed(uint32_t) {
   pairingWindowDeadline_ = 0U;
   stateDeadline_ = 0U;
   closeAt_ = 0U;
+  closeAfterTransmit_ = false;
   state_ = backoffUntil_ == 0U ? BleSessionState::Disconnected
                               : BleSessionState::Backoff;
 }
@@ -457,6 +459,7 @@ void KitsuBleSession::failProof(uint32_t nowMillis) {
     backoffUntil_ = nowMillis + kBleControllerBackoffMs;
     state_ = BleSessionState::Closing;
     closeAt_ = nowMillis + kCloseDelayMs;
+    closeAfterTransmit_ = false;
   } else {
     state_ = BleSessionState::AwaitingHello;
   }
@@ -468,6 +471,7 @@ void KitsuBleSession::failAndClose(uint32_t nowMillis) {
   transport_->setBleApplicationAuthenticated(false);
   state_ = BleSessionState::Closing;
   closeAt_ = nowMillis + kCloseDelayMs;
+  closeAfterTransmit_ = false;
 }
 
 bool KitsuBleSession::handleClientHello(const uint8_t* json,
@@ -866,6 +870,43 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
     return false;
   }
   ++expectedClientSequence_;
+  if (strcmp(request.operation, "controller.forget") == 0) {
+    static const uint8_t emptyObject[] = {'{', '}'};
+    const bool validPayload = request.payloadBytes == sizeof(emptyObject) &&
+        memcmp(payloadScratch_, emptyObject, sizeof(emptyObject)) == 0;
+    const SecurityResult revoked = validPayload
+        ? security_->revokeAuthenticatedController(controllerId_)
+        : SecurityResult::InvalidArgument;
+    uint8_t retainedRoot[kKitsuSecretBytes]{};
+    const bool controllerStillAuthorized =
+        security_->findControllerRoot(controllerId_, retainedRoot);
+    secureZero(retainedRoot, sizeof(retainedRoot));
+    static const uint8_t accepted[] =
+        "{\"schema\":\"kitsu.controller-forget.v1\",\"accepted\":true}";
+    static const uint8_t rejected[] =
+        "{\"schema\":\"kitsu.controller-forget.v1\",\"accepted\":false,"
+        "\"error\":\"storage_failed\"}";
+    const uint8_t* response = revoked == SecurityResult::Ok
+        ? accepted
+        : rejected;
+    const size_t responseBytes = revoked == SecurityResult::Ok
+        ? sizeof(accepted) - 1U
+        : sizeof(rejected) - 1U;
+    if (!sendAuthenticated(companion::EnvelopeChannel::Response,
+                           request.requestId, request.operation,
+                           response, responseBytes)) {
+      failAndClose(nowMillis);
+      return false;
+    }
+    if (revoked == SecurityResult::Ok || !controllerStillAuthorized) {
+      transport_->setBleApplicationAuthenticated(false);
+      clearSessionSecrets();
+      state_ = BleSessionState::Closing;
+      closeAfterTransmit_ = true;
+      closeAt_ = nowMillis + kTransmitDrainTimeoutMs;
+    }
+    return true;
+  }
   size_t responseBytes = 0U;
   if (!operations_->handleBleRequest(
           request, payloadScratch_, request.payloadBytes, responseScratch_,
@@ -954,9 +995,15 @@ void KitsuBleSession::loop(uint32_t nowMillis) {
     sendControlError("timeout");
     failAndClose(nowMillis);
   }
-  if (state_ == BleSessionState::Closing && closeAt_ != 0U &&
-      deadlineReached(nowMillis, closeAt_)) {
+  if (state_ == BleSessionState::Closing && closeAfterTransmit_ &&
+      transport_->bleTransmitIdle()) {
     closeAt_ = 0U;
+    closeAfterTransmit_ = false;
+    transport_->disconnectBle();
+  } else if (state_ == BleSessionState::Closing && closeAt_ != 0U &&
+             deadlineReached(nowMillis, closeAt_)) {
+    closeAt_ = 0U;
+    closeAfterTransmit_ = false;
     transport_->disconnectBle();
   }
   if (state_ == BleSessionState::Backoff && backoffUntil_ != 0U &&

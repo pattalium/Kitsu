@@ -17,10 +17,14 @@ data class ControllerPairingProgress(
     val detail: String,
 )
 
-/** Native first-run controller issuance. It never falls back to the backend. */
+/** Native first-run controller issuance over authenticated Bluetooth. */
 interface ControllerPairingService {
     suspend fun pairController(
         label: String,
+        onProgress: (ControllerPairingProgress) -> Unit,
+    ): BondedCompanion
+
+    suspend fun finishPendingPairing(
         onProgress: (ControllerPairingProgress) -> Unit,
     ): BondedCompanion
 

@@ -16,10 +16,6 @@ fun configured(name: String, fallback: String): String =
 
 fun quoted(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
-val redirectUri = configured("KITSU_OIDC_REDIRECT_URI", "app.kitsu.mobile:/oauth2redirect")
-val redirectScheme = redirectUri.substringBefore(':')
-val oidcIssuerFallback = "https://auth.k32.run/realms/kitsu"
-val configuredOidcIssuer = configured("KITSU_OIDC_ISSUER", oidcIssuerFallback)
 val appIconSource = rootProject.layout.projectDirectory.file("../../../assets/brand/kitsu-app-icon.png")
 val generatedAppIconResources = layout.buildDirectory.dir("generated/kitsuAppIcon/res")
 val releaseStorePath = providers.environmentVariable("KITSU_ANDROID_KEYSTORE_PATH")
@@ -153,10 +149,9 @@ val generateSourceProvenance = tasks.register("generateSourceProvenance") {
                 appendLine("  \"schema\": \"kitsu.android-source-provenance.v1\",")
                 appendLine("  \"generated_at_utc\": \"${Instant.now()}\",")
                 appendLine("  \"application_id\": \"app.kitsu.mobile\",")
-                appendLine("  \"version_code\": 12,")
-                appendLine("  \"version_name\": \"1.1.6\",")
-                appendLine("  \"backend_url\": \"${escaped(configured("KITSU_BACKEND_URL", "https://api.k32.run"))}\",")
-                appendLine("  \"oidc_issuer\": \"${escaped(configuredOidcIssuer)}\",")
+                appendLine("  \"version_code\": 13,")
+                appendLine("  \"version_name\": \"2.0.0\",")
+                appendLine("  \"transport\": \"authenticated_ble_only\",")
                 appendLine(
                     "  \"source_archive_sha256\": " +
                         (sourceArchiveSha256?.let { "\"${escaped(it)}\"" } ?: "null") + ",",
@@ -185,17 +180,12 @@ android {
         applicationId = "app.kitsu.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.1.6"
+        versionCode = 13
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        manifestPlaceholders["appAuthRedirectScheme"] = redirectScheme
         manifestPlaceholders["kitsuSourceArchiveSha256"] = sourceArchiveSha256 ?: "unbound"
 
-        buildConfigField("String", "KITSU_BACKEND_URL", quoted(configured("KITSU_BACKEND_URL", "https://api.k32.run")))
-        buildConfigField("String", "KITSU_OIDC_ISSUER", quoted(configuredOidcIssuer))
-        buildConfigField("String", "KITSU_OIDC_CLIENT_ID", quoted(configured("KITSU_OIDC_CLIENT_ID", "kitsu-native")))
-        buildConfigField("String", "KITSU_OIDC_REDIRECT_URI", quoted(redirectUri))
         buildConfigField(
             "String",
             "KITSU_SOURCE_ARCHIVE_SHA256",
@@ -284,9 +274,6 @@ tasks.matching { task ->
         require(sourceArchiveSha256?.matches(Regex("^[0-9a-f]{64}$")) == true) {
             "Release provenance requires -PKITSU_SOURCE_ARCHIVE_SHA256=<64 lowercase hex>"
         }
-        require(configuredOidcIssuer == oidcIssuerFallback) {
-            "Official release requires OIDC issuer $oidcIssuerFallback"
-        }
     }
 }
 
@@ -307,8 +294,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("net.openid:appauth:0.11.1")
+    implementation("net.i2p.crypto:eddsa:0.3.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

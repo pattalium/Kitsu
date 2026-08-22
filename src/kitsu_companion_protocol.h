@@ -138,9 +138,7 @@ ProtocolResult encodeEnvelope(
     const uint8_t key[kEnvelopeKeyBytes], CompanionCrypto& crypto,
     uint8_t* outputJson, size_t outputCapacity, size_t& outputBytes);
 
-// expectedSequence == 0 disables the exact-sequence check (used by LAN before
-// consulting its durable high-water mark).  BLE always supplies the next
-// per-direction sequence, starting at one after device_ok.
+// The caller supplies the exact next per-direction sequence, starting at one.
 ProtocolResult decodeAndVerifyEnvelope(
     const uint8_t* json, size_t jsonBytes,
     const uint8_t key[kEnvelopeKeyBytes], EnvelopeChannel expectedChannel,

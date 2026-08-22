@@ -15,10 +15,22 @@ export const RELEASE_ENDPOINTS = Object.freeze({
 export const FLASH_PLAN = Object.freeze({
   chip: "esp32s3",
   flashSize: "8MB",
+  bootloaderOffset: 0x000000,
+  bootloaderBytes: 15104,
+  bootloaderSha256: "1776e4dd896a69d0a5c2e79957b0e2a88aa4129b1381d6478683515a1f6af343",
   partitionOffset: 0x008000,
   partitionBytes: 3072,
   partitionSha256: "f9b22e16fcfb701520dd6c7e0791582ececbbd44c317c8d519e3d6b2b9ce8b7a",
-  applicationOffset: 0x010000,
+  app0Offset: 0x010000,
+  app1Offset: 0x340000,
+  applicationSlotBytes: 0x330000,
+  otaJournalBytes: 0x001000,
+  app0JournalOffset: 0x33f000,
+  app1JournalOffset: 0x66f000,
+  otaJournalSha256: "f47a8ec3e9aff2318d896942282ad4fe37d6391c82914f54a5da8a37de1300c6",
+  legacyConnectivityOffset: 0x7b0000,
+  legacyConnectivityBytes: 0x040000,
+  legacyConnectivitySha256: "3b874d3ba46c638fc3094f8e92fb744ca974893873f8885f54e23760f9b6311b",
   applicationBytes: 1380288,
   applicationSha256: "106ecd2f2013f13997bfb1994a4ba4589b3e9fa9bbf07153ccf7ce3611ee6d67",
 });
@@ -113,14 +125,19 @@ function exactArtifactPath(value, releaseId, filename, label) {
 /** Validate the exact safety-bearing firmware update schema. */
 export function validateReleaseManifest(value) {
   exactKeys(value, TOP_LEVEL_KEYS, "manifest");
-  if (value.schema !== "kitsu.firmware-update.v1") fail("manifest schema is not supported");
+  if (value.schema !== "kitsu.firmware-update.v2") fail("manifest schema is not supported");
   const releaseId = boundedText(
     value.release_id,
     /^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/,
     "manifest.release_id",
     64,
   );
-  boundedText(value.firmware_version, /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/, "manifest.firmware_version", 64);
+  boundedText(
+    value.firmware_version,
+    /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?$/,
+    "manifest.firmware_version",
+    64,
+  );
   if (value.release_channel !== "stable") fail("manifest release channel is not stable");
   if (value.artifact_status !== "available") fail("manifest artifacts are not available");
   utcTimestamp(value.published_at, "manifest.published_at");
@@ -131,26 +148,64 @@ export function validateReleaseManifest(value) {
 
   exactKeys(
     value.physical_acceptance,
-    ["schema", "status", "evidence_sha256", "accepted_at", "application_sha256", "partition_table_sha256"],
+    [
+      "schema",
+      "status",
+      "evidence_sha256",
+      "accepted_at",
+      "bootloader_sha256",
+      "application_sha256",
+      "partition_table_sha256",
+      "ota_journal_clear_sha256",
+      "legacy_connectivity_clear_sha256",
+    ],
     "manifest.physical_acceptance",
   );
-  if (value.physical_acceptance.schema !== "kitsu.firmware-publication-authorization.v1") {
+  if (value.physical_acceptance.schema !== "kitsu.firmware-publication-authorization.v2") {
     fail("physical acceptance schema is not supported");
   }
   if (value.physical_acceptance.status !== "passed") fail("physical acceptance has not passed");
   sha256Text(value.physical_acceptance.evidence_sha256, "physical acceptance evidence digest");
   utcTimestamp(value.physical_acceptance.accepted_at, "physical acceptance timestamp");
+  if (value.physical_acceptance.bootloader_sha256 !== FLASH_PLAN.bootloaderSha256) {
+    fail("physical acceptance does not bind the reviewed rollback bootloader");
+  }
   if (value.physical_acceptance.partition_table_sha256 !== FLASH_PLAN.partitionSha256) {
     fail("physical acceptance does not bind the reviewed partition table");
   }
   if (value.physical_acceptance.application_sha256 !== FLASH_PLAN.applicationSha256) {
     fail("physical acceptance does not bind the reviewed application");
   }
-
-  if (!Array.isArray(value.writes) || value.writes.length !== 2) {
-    fail("manifest must contain exactly two flash writes");
+  if (value.physical_acceptance.ota_journal_clear_sha256 !== FLASH_PLAN.otaJournalSha256) {
+    fail("physical acceptance does not bind the erased OTA journals");
   }
-  const [partition, application] = value.writes;
+  if (
+    value.physical_acceptance.legacy_connectivity_clear_sha256
+    !== FLASH_PLAN.legacyConnectivitySha256
+  ) {
+    fail("physical acceptance does not bind retirement of legacy connectivity secrets");
+  }
+
+  if (!Array.isArray(value.writes) || value.writes.length !== 7) {
+    fail("manifest must contain exactly seven flash writes");
+  }
+  const [bootloader, partition, app0, app0Journal, app1, app1Journal, legacyConnectivity] = value.writes;
+  exactWriteKeys(bootloader, "bootloader write");
+  if (
+    bootloader.role !== "bootloader"
+    || bootloader.offset !== FLASH_PLAN.bootloaderOffset
+    || bootloader.bytes !== FLASH_PLAN.bootloaderBytes
+    || bootloader.sha256 !== FLASH_PLAN.bootloaderSha256
+  ) {
+    fail("bootloader write does not match the reviewed rollback-enabled Kitsu bootloader");
+  }
+  const bootloaderUrl = exactArtifactPath(
+    bootloader.path,
+    releaseId,
+    "kitsu868-bootloader.bin",
+    "bootloader write path",
+  );
+
   exactWriteKeys(partition, "partition write");
   if (
     partition.role !== "partition_table"
@@ -167,27 +222,117 @@ export function validateReleaseManifest(value) {
     "partition write path",
   );
 
-  exactWriteKeys(application, "application write");
+  exactWriteKeys(app0, "app0 write");
   if (
-    application.role !== "application"
-    || application.offset !== FLASH_PLAN.applicationOffset
-    || application.bytes !== FLASH_PLAN.applicationBytes
-    || application.sha256 !== FLASH_PLAN.applicationSha256
+    app0.role !== "application_app0"
+    || app0.offset !== FLASH_PLAN.app0Offset
+    || app0.bytes !== FLASH_PLAN.applicationBytes
+    || app0.sha256 !== FLASH_PLAN.applicationSha256
   ) {
-    fail("application write is outside the reviewed Kitsu app0 slot");
+    fail("app0 write does not match the reviewed Kitsu application");
   }
-  const applicationUrl = exactArtifactPath(
-    application.path,
+  const app0Url = exactArtifactPath(
+    app0.path,
     releaseId,
     "kitsu868-app.bin",
-    "application write path",
+    "app0 write path",
   );
 
-  exactKeys(value.operations, ["erase_flash"], "manifest.operations");
+  if (FLASH_PLAN.applicationBytes > FLASH_PLAN.applicationSlotBytes - FLASH_PLAN.otaJournalBytes) {
+    fail("reviewed application overlaps its private OTA journal");
+  }
+  exactWriteKeys(app0Journal, "app0 journal write");
+  if (
+    app0Journal.role !== "ota_journal_app0_clear"
+    || app0Journal.offset !== FLASH_PLAN.app0JournalOffset
+    || app0Journal.bytes !== FLASH_PLAN.otaJournalBytes
+    || app0Journal.sha256 !== FLASH_PLAN.otaJournalSha256
+  ) {
+    fail("app0 journal write is not the reviewed erased OTA journal");
+  }
+  const app0JournalUrl = exactArtifactPath(
+    app0Journal.path,
+    releaseId,
+    "kitsu868-ota-journal-clear.bin",
+    "app0 journal write path",
+  );
+
+  exactWriteKeys(app1, "app1 write");
+  if (
+    app1.role !== "application_app1"
+    || app1.offset !== FLASH_PLAN.app1Offset
+    || app1.bytes !== FLASH_PLAN.applicationBytes
+    || app1.sha256 !== FLASH_PLAN.applicationSha256
+    || app1.path !== app0.path
+  ) {
+    fail("app1 write must install the exact reviewed app0 application in the fixed app1 slot");
+  }
+  const app1Url = exactArtifactPath(
+    app1.path,
+    releaseId,
+    "kitsu868-app.bin",
+    "app1 write path",
+  );
+
+  exactWriteKeys(app1Journal, "app1 journal write");
+  if (
+    app1Journal.role !== "ota_journal_app1_clear"
+    || app1Journal.offset !== FLASH_PLAN.app1JournalOffset
+    || app1Journal.bytes !== FLASH_PLAN.otaJournalBytes
+    || app1Journal.sha256 !== FLASH_PLAN.otaJournalSha256
+    || app1Journal.path !== app0Journal.path
+  ) {
+    fail("app1 journal write must use the exact reviewed clear bytes in the fixed app1 journal");
+  }
+  const app1JournalUrl = exactArtifactPath(
+    app1Journal.path,
+    releaseId,
+    "kitsu868-ota-journal-clear.bin",
+    "app1 journal write path",
+  );
+
+  exactWriteKeys(legacyConnectivity, "legacy connectivity retirement write");
+  if (
+    legacyConnectivity.role !== "legacy_connectivity_clear"
+    || legacyConnectivity.offset !== FLASH_PLAN.legacyConnectivityOffset
+    || legacyConnectivity.bytes !== FLASH_PLAN.legacyConnectivityBytes
+    || legacyConnectivity.sha256 !== FLASH_PLAN.legacyConnectivitySha256
+  ) {
+    fail("legacy connectivity retirement does not exactly clear the isolated retired partition");
+  }
+  const legacyConnectivityUrl = exactArtifactPath(
+    legacyConnectivity.path,
+    releaseId,
+    "kitsu868-legacy-connectivity-clear.bin",
+    "legacy connectivity retirement write path",
+  );
+
+  exactKeys(
+    value.operations,
+    ["erase_flash", "retire_legacy_connectivity", "retire_legacy_lan_action_state"],
+    "manifest.operations",
+  );
   exactBoolean(value.operations.erase_flash, false, "manifest.operations.erase_flash");
+  exactBoolean(
+    value.operations.retire_legacy_connectivity,
+    true,
+    "manifest.operations.retire_legacy_connectivity",
+  );
+  exactBoolean(
+    value.operations.retire_legacy_lan_action_state,
+    true,
+    "manifest.operations.retire_legacy_lan_action_state",
+  );
   exactKeys(
     value.preserves,
-    ["bootloader", "ota_data", "nvs", "companion_pack", "kitsu_connectivity"],
+    [
+      "ota_data",
+      "companion_state",
+      "companion_pack",
+      "controller_store",
+      "meshcore_state",
+      "coredump",
+    ],
     "manifest.preserves",
   );
   for (const key of Object.keys(value.preserves)) {
@@ -195,10 +340,11 @@ export function validateReleaseManifest(value) {
   }
   exactKeys(
     value.capabilities,
-    ["full_chip_erase_available", "stock_meshcore_restore_available"],
+    ["full_chip_erase_available", "rollback_bootloader", "stock_meshcore_restore_available"],
     "manifest.capabilities",
   );
   exactBoolean(value.capabilities.full_chip_erase_available, true, "full-chip recovery capability");
+  exactBoolean(value.capabilities.rollback_bootloader, true, "rollback bootloader capability");
   exactBoolean(value.capabilities.stock_meshcore_restore_available, true, "stock MeshCore recovery capability");
   exactKeys(
     value.security,
@@ -222,8 +368,13 @@ export function validateReleaseManifest(value) {
   return Object.freeze({
     manifest: value,
     artifacts: Object.freeze([
+      Object.freeze({ ...bootloader, url: bootloaderUrl }),
       Object.freeze({ ...partition, url: partitionUrl }),
-      Object.freeze({ ...application, url: applicationUrl }),
+      Object.freeze({ ...app0, url: app0Url }),
+      Object.freeze({ ...app0Journal, url: app0JournalUrl }),
+      Object.freeze({ ...app1, url: app1Url }),
+      Object.freeze({ ...app1Journal, url: app1JournalUrl }),
+      Object.freeze({ ...legacyConnectivity, url: legacyConnectivityUrl }),
     ]),
   });
 }
@@ -317,8 +468,13 @@ export async function fetchVerifiedRelease() {
   ]);
   const publicKeyPem = new TextDecoder("utf-8", { fatal: true }).decode(publicKeyBytes);
   const release = await verifyReleaseEnvelope(manifestBytes, signatureBytes, publicKeyPem);
+  const downloads = new Map();
   const artifacts = await Promise.all(release.artifacts.map(async (record) => {
-    const bytes = await requiredResponse(record.url, `${record.role} artifact`, record.bytes);
+    const cacheKey = `${record.url}\u0000${record.bytes}\u0000${record.sha256}`;
+    if (!downloads.has(cacheKey)) {
+      downloads.set(cacheKey, requiredResponse(record.url, `${record.role} artifact`, record.bytes));
+    }
+    const bytes = await downloads.get(cacheKey);
     if (bytes.byteLength !== record.bytes) fail(`${record.role} artifact size does not match its signed manifest`);
     if (await sha256Hex(bytes) !== record.sha256) {
       fail(`${record.role} artifact hash does not match its signed manifest`);
@@ -329,7 +485,7 @@ export async function fetchVerifiedRelease() {
 }
 
 export async function reverifyArtifacts(release) {
-  if (!release || !Array.isArray(release.artifacts) || release.artifacts.length !== 2) {
+  if (!release || !Array.isArray(release.artifacts) || release.artifacts.length !== 7) {
     fail("verified release is not loaded");
   }
   for (const artifact of release.artifacts) {

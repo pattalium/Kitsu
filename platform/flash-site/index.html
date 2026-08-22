@@ -16,7 +16,7 @@
       <section class="hero">
         <p class="eyebrow">WEB SERIAL · HELTEC V3 · ESP32-S3</p>
         <h1>Install Kitsu safely.</h1>
-        <p>Connect a Heltec over USB and install only a release whose exact manifest and two firmware artifacts pass the Kitsu Ed25519 authority and SHA-256 gates.</p>
+        <p>Connect a Heltec over USB and install only a release whose exact manifest and firmware artifacts pass the Kitsu Ed25519 authority and SHA-256 gates.</p>
       </section>
 
       <section class="grid" aria-label="Flashing workflow">
@@ -38,7 +38,7 @@
         <article>
           <span class="step">03</span>
           <h2>Write and read back</h2>
-          <p>Install unlocks only for an ESP32-S3 with 8 MiB flash and exactly two verified writes: the partition table at <code>0x008000</code> and app at <code>0x010000</code>.</p>
+          <p>Install unlocks only for an ESP32-S3 with 8 MiB flash and seven verified writes: the rollback-enabled Kitsu bootloader, partition table, the same accepted app in app0 and app1, a clean private OTA journal in each slot, and one exact clear over the isolated retired connectivity partition.</p>
           <button id="install" type="button" disabled>Install unavailable</button>
           <progress id="progress" max="100" value="0" aria-label="Install progress" hidden></progress>
           <small id="progress-detail" aria-live="polite"></small>
@@ -52,7 +52,7 @@
 
       <aside class="notice">
         <strong>Owner-reflashable by design.</strong>
-        <span>This installer never calls full-chip erase and never writes the bootloader, OTA data, NVS, companion pack, connectivity state, or eFuses. Ordinary serial recovery and restoration of stock MeshCore remain available.</span>
+        <span>This installer writes the reviewed Kitsu bootloader so Bluetooth updates can roll back safely and clears only the retired partition that held legacy Wi-Fi, gateway, and server credentials. It never calls full-chip erase and never writes OTA data, companion state, controller records, MeshCore state, coredump, or eFuses. Ordinary serial recovery and restoration of stock MeshCore remain available.</span>
       </aside>
     </main>
     <footer><span>K32 · Kitsu</span><span>Signed stable channel · fail closed</span></footer>

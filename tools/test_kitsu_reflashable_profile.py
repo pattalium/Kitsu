@@ -193,7 +193,7 @@ def test_runtime_contains_no_efuse_or_silicon_lock_api() -> None:
     assert not re.search(r"\bREQUIRES\b[^\n]*\befuse\b", cmake)
 
 
-def test_truthful_state_and_remote_path() -> None:
+def test_truthful_local_only_state_and_supported_build_path() -> None:
     main = read("src/main.cpp")
     for field in (
         '"security_mode"',
@@ -202,17 +202,59 @@ def test_truthful_state_and_remote_path() -> None:
         '"nvs_encryption"',
         '"hardware_root_protected"',
         '"application_encrypted"',
-        '"remote_connectivity_allowed"',
     ):
         assert field.replace('"', '\\"') in main, field
+    for forbidden in (
+        "remote_connectivity_allowed",
+        "WiFi.begin(",
+        "wifi.configure",
+        "gateway.configure",
+        "gateway.enroll",
+        "mobile.relay",
+    ):
+        assert forbidden not in main, forbidden
+
     security = read("src/kitsu_device_security.cpp")
     assert "SecurityMode::Reflashable" in security
-    assert "material_.reflashableMaterial" in security
     assert "status_.begun" in security
     assert "status_.productionReady" not in security
-    runtime = read("src/kitsu_connectivity_runtime.cpp")
-    assert "prerequisites.remoteConnectivityAllowed" in runtime
-    assert "WiFi.begin(" in runtime
+
+    # Root CMake deliberately makes direct ESP-IDF/mixed-framework builds
+    # unreachable. src/CMakeLists.txt is archival metadata; the sole supported
+    # product graph is the pinned PlatformIO environment below.
+    root_cmake = read("CMakeLists.txt")
+    assert "message(FATAL_ERROR" in root_cmake
+    assert "Direct ESP-IDF builds are unsupported" in root_cmake
+    assert "heltec_wifi_lora_32_V3_reflashable" in root_cmake
+    assert "add_subdirectory" not in root_cmake
+
+    profile = read("platformio.ini")
+    legacy_sources = (
+        "kitsu_connectivity_config.cpp",
+        "kitsu_connectivity_runtime.cpp",
+        "kitsu_enrollment.cpp",
+        "kitsu_esp32_connectivity.cpp",
+        "kitsu_esp32_gateway_action.cpp",
+        "kitsu_esp32_gateway_tls.cpp",
+        "kitsu_gateway_action_runtime.cpp",
+        "kitsu_gateway_bootstrap.cpp",
+        "kitsu_gateway_enrollment_flow.cpp",
+        "kitsu_gateway_lan_runtime.cpp",
+        "kitsu_lan_protocol.cpp",
+        "kitsu_mobile_relay.cpp",
+    )
+    for source in legacy_sources:
+        assert f"-<{source}>" in profile, source
+    for active in (
+        "kitsu_ble_action.cpp",
+        "kitsu_ble_gatt.cpp",
+        "kitsu_ble_session.cpp",
+        "kitsu_ble_ota.cpp",
+        "kitsu_device_security.cpp",
+        "kitsu_esp32_security.cpp",
+        "kitsu_legacy_connectivity_retirement.cpp",
+    ):
+        assert f"-<{active}>" not in profile, active
 
 
 def main() -> None:
@@ -222,7 +264,7 @@ def main() -> None:
     test_compile_guard_rejects_one_way_features()
     test_compile_guard_executes_for_every_forbidden_configuration()
     test_runtime_contains_no_efuse_or_silicon_lock_api()
-    test_truthful_state_and_remote_path()
+    test_truthful_local_only_state_and_supported_build_path()
     print("Kitsu reflashable profile audit: PASS")
 
 

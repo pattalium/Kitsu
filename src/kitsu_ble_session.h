@@ -43,6 +43,7 @@ class BleSessionTransport {
   virtual ~BleSessionTransport() = default;
   virtual bool sendBleJson(const uint8_t* json, size_t jsonBytes) = 0;
   virtual bool setBleApplicationAuthenticated(bool authenticated) = 0;
+  virtual bool bleTransmitIdle() const = 0;
   virtual void disconnectBle() = 0;
 };
 
@@ -132,6 +133,7 @@ class KitsuBleSession {
   uint32_t stateDeadline_ = 0U;
   uint32_t pairingWindowDeadline_ = 0U;
   uint32_t closeAt_ = 0U;
+  bool closeAfterTransmit_ = false;
   uint32_t backoffUntil_ = 0U;
   uint64_t expectedClientSequence_ = 1U;
   uint64_t nextDeviceSequence_ = 1U;

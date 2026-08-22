@@ -11,14 +11,16 @@ class OwnerCursorPolicyTest {
     private val direct = OwnerCursorNamespace(ConnectionMode.DIRECT_BLE, "KTDEAD")
 
     @Test fun firstLiveReadNeverUsesDisplayCacheCursor() {
-        assertNull(OwnerCursorPolicy.resume("backend:opaque", null, direct))
+        assertNull(OwnerCursorPolicy.resume("cached:opaque", null, direct))
         assertTrue(OwnerCursorPolicy.shouldReplace(null, direct, cursorExpired = false))
     }
 
-    @Test fun transportOrDeviceTransitionResetsCursor() {
-        val remote = OwnerCursorNamespace(ConnectionMode.REMOTE_BACKEND, "KTDEAD")
+    @Test fun messageRefreshAlwaysReadsTheFullMutableRing() {
+        assertNull(OwnerCursorPolicy.messagesAfter())
+    }
+
+    @Test fun deviceTransitionResetsCursor() {
         val otherDevice = OwnerCursorNamespace(ConnectionMode.DIRECT_BLE, "KTBEEF")
-        assertNull(OwnerCursorPolicy.resume("92", remote, direct))
         assertNull(OwnerCursorPolicy.resume("92", otherDevice, direct))
     }
 

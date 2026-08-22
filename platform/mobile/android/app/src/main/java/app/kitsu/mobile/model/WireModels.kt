@@ -23,7 +23,6 @@ data class NeedLevels(
 data class MeshState(
     val enabled: Boolean = false,
     val rxReady: Boolean = false,
-    val txReady: Boolean = false,
     val timeValid: Boolean = false,
     val oneShotReady: Boolean = false,
 )
@@ -31,9 +30,7 @@ data class MeshState(
 @Serializable
 data class MeshChannel(
     val slot: Int,
-    /** Null means the backend has no authenticated device snapshot for this field. */
-    val configured: Boolean? = null,
-    /** Null means unknown. Clients must not invent a configured channel name. */
+    val configured: Boolean,
     val name: String? = null,
 )
 
@@ -45,35 +42,27 @@ data class MeshConfigurationReceipt(
 )
 
 @Serializable
-data class LanState(
-    val wifiConfigured: Boolean? = null,
-    val wifiState: String = "unknown",
-    val gatewayConfigured: Boolean? = null,
-    val gatewayEnrolled: Boolean? = null,
-    val lanState: String = "unknown",
-    val gatewayEnrollmentState: String = "idle",
-    val gatewayEnrollmentError: String? = null,
-    val gatewayEnrollmentExpiresInMs: Int = 0,
-    /** Device-reported application-security readiness; never inferred from eFuses. */
-    val remoteConnectivityAllowed: Boolean? = null,
-    /** Backend projection truth. Null on BLE and when the signed snapshot omitted it. */
-    val online: Boolean? = null,
-    val provenance: String? = null,
-    val gatewayId: String? = null,
-    val lastSeenAt: String? = null,
-)
-
-@Serializable
 data class KitsuStatus(
-    val protocol: Int = WIRE_VERSION,
     val deviceId: String,
-    val displayName: String,
-    val companionName: String? = null,
+    val companionName: String,
+    val firmwareVersion: String? = null,
+    val listening: Boolean = false,
     val mood: String = "UNKNOWN",
     val batteryPercent: Int? = null,
+    val batteryMillivolts: Int? = null,
+    val packReady: Boolean = false,
+    val packId: String? = null,
+    val packRevision: Long? = null,
+    val bondLevel: Int = 0,
+    val bondExperience: Int = 0,
+    val bondProgressPercent: Int = 0,
+    val evolutionStage: String? = null,
+    val appearanceVariant: String? = null,
+    val personality: String? = null,
+    val unlockMask: Long = 0,
+    val memoryCount: Int = 0,
     val needs: NeedLevels = NeedLevels(),
     val mesh: MeshState = MeshState(),
-    val lan: LanState = LanState(),
     val cursor: String? = null,
     val updatedAt: Long,
 )
@@ -133,14 +122,10 @@ enum class ActionKind {
     @SerialName("feed") FEED,
     @SerialName("play") PLAY,
     @SerialName("listen_once") LISTEN_ONCE,
-    @SerialName("advertise_once") ADVERTISE_ONCE,
     @SerialName("send_message") SEND_MESSAGE,
-    @SerialName("share_location_once") SHARE_LOCATION_ONCE,
 }
 
 @Serializable enum class MessageRoute { DIRECT, CHANNEL }
-@Serializable enum class AdvertiseScope { NEARBY, MESH }
-@Serializable enum class LocationExposure { NEARBY_ADVERT, MESH_ADVERT, MAP_CARD }
 
 @Serializable
 data class ActionCommand(
@@ -149,109 +134,23 @@ data class ActionCommand(
     val expiresInMs: Int = 30_000,
     val targetId: String? = null,
     val text: String? = null,
-    val latE6: Int? = null,
-    val lonE6: Int? = null,
     val durationMs: Int? = null,
     val messageRoute: MessageRoute? = null,
-    val advertiseScope: AdvertiseScope? = null,
-    val locationExposure: LocationExposure? = null,
 )
 
 @Serializable
 data class ActionReceipt(
-    @SerialName("action_id")
-    val clientRequestId: String,
+    @SerialName("action_id") val clientRequestId: String,
     val accepted: Boolean,
     val state: String,
     @SerialName("error_code") val errorCode: String? = null,
 )
 
 @Serializable
-data class WifiProvisioning(
-    val ssid: String,
-    val password: String,
-    val security: WifiSecurity = WifiSecurity.WPA2_WPA3,
-)
-
-@Serializable
-enum class WifiSecurity {
-    @SerialName("wpa2") WPA2,
-    @SerialName("wpa2_wpa3") WPA2_WPA3,
-    @SerialName("wpa3") WPA3,
-}
-
-@Serializable
-data class WifiConfigureBody(
-    @SerialName("ssid_b64") val ssidB64: String,
-    val security: WifiSecurity,
-    val passphrase: String,
-)
-
-@Serializable
-data class GatewayConfiguration(
-    @SerialName("gateway_id") val gatewayId: String,
-    val host: String,
-    @SerialName("bootstrap_port") val bootstrapPort: Int,
-    /** Steady-state private mTLS listener. */
-    val port: Int,
-    @SerialName("server_name") val serverName: String,
-    @SerialName("ca_cert_der_b64") val caCertificateDerB64: String,
-    @SerialName("spki_sha256_b64") val spkiSha256B64: String,
-)
-
-@Serializable
-data class GatewayConfigurationReceipt(
-    val accepted: Boolean,
-    val state: String,
-    @SerialName("error_code") val errorCode: String? = null,
-)
-
-@Serializable
-data class OwnerEnrollmentView(
-    val id: String,
-    @SerialName("hardware_uid") val hardwareUid: String,
-    @SerialName("display_name") val displayName: String,
-    val status: String,
-    @SerialName("expires_at") val expiresAt: String,
-)
-
-/** The claim token is one-use and must remain in-memory only for this handoff. */
-data class OwnerEnrollmentChallenge(
-    val enrollment: OwnerEnrollmentView,
-    val claimToken: String,
-)
-
-@Serializable
-data class GatewayEnrollmentBeginBody(
-    val schema: String = "kitsu.gateway-enrollment.begin.v1",
-    @SerialName("enrollment_id") val enrollmentId: String,
-    @SerialName("claim_token") val claimToken: String,
-)
-
-@Serializable
-data class GatewayEnrollmentFinishBody(
-    val schema: String = "kitsu.gateway-enrollment.finish.v1",
-    @SerialName("enrollment_id") val enrollmentId: String,
-)
-
-@Serializable
-data class GatewayEnrollmentReceipt(
+data class ControllerForgetReceipt(
     val schema: String,
     val accepted: Boolean,
-    val state: String,
-    @SerialName("enrollment_id") val enrollmentId: String,
-    @SerialName("expires_in_ms") val expiresInMs: Int? = null,
-    @SerialName("error_code") val errorCode: String? = null,
-)
-
-@Serializable
-data class GatewayEnrollmentEvent(
-    val schema: String,
-    val accepted: Boolean,
-    val state: String,
-    @SerialName("enrollment_id") val enrollmentId: String?,
-    @SerialName("expires_in_ms") val expiresInMs: Int,
-    @SerialName("error_code") val errorCode: String? = null,
+    val error: String? = null,
 )
 
 @Serializable
@@ -260,20 +159,6 @@ data class ActionApplyBody(
     val kind: String,
     @SerialName("expires_at_epoch") val expiresAtEpoch: Long,
     val params: JsonObject,
-)
-
-@Serializable
-data class ProvisioningReceipt(
-    val accepted: Boolean,
-    val state: String,
-    @SerialName("error_code") val errorCode: String? = null,
-)
-
-@Serializable
-data class WifiRetryReceipt(
-    val accepted: Boolean,
-    val state: String,
-    @SerialName("error_code") val errorCode: String? = null,
 )
 
 @Serializable
@@ -291,49 +176,33 @@ object ActionPolicy {
         if (runCatching { UUID.fromString(command.clientRequestId) }.isFailure) return "invalid_action_id"
         if (command.expiresInMs !in 1..120_000) return "invalid_expiry"
         return when (command.kind) {
-        ActionKind.SEND_MESSAGE -> when {
-            command.targetId.isNullOrBlank() -> "target_required"
-            command.messageRoute == MessageRoute.DIRECT &&
-                !MeshPeerKeyPolicy.isCanonicalBase64Url(command.targetId) -> "invalid_peer_public_key"
-            command.messageRoute == MessageRoute.CHANNEL &&
-                !meshChannelSlot.matches(command.targetId) -> "invalid_channel_slot"
-            command.text.isNullOrBlank() -> "text_required"
-            command.text.toByteArray(Charsets.UTF_8).size > MAX_MESSAGE_BYTES -> "text_too_long"
-            command.messageRoute == null -> "route_required"
-            command.latE6 != null || command.lonE6 != null -> "unexpected_location"
-            command.durationMs != null || command.advertiseScope != null || command.locationExposure != null -> "unexpected_arguments"
-            else -> null
-        }
-        ActionKind.SHARE_LOCATION_ONCE -> when {
-            command.latE6 == null || command.lonE6 == null -> "location_required"
-            command.latE6 !in -90_000_000..90_000_000 -> "latitude_out_of_range"
-            command.lonE6 !in -180_000_000..180_000_000 -> "longitude_out_of_range"
-            command.locationExposure == null -> "exposure_required"
-            command.targetId != null || command.text != null -> "unexpected_message"
-            command.durationMs != null || command.messageRoute != null || command.advertiseScope != null -> "unexpected_arguments"
-            else -> null
-        }
-        ActionKind.LISTEN_ONCE -> when {
-            command.durationMs == null || command.durationMs !in 1_000..60_000 -> "invalid_duration"
-            command.hasAnyExcept("duration") -> "unexpected_arguments"
-            else -> null
-        }
-        ActionKind.ADVERTISE_ONCE -> when {
-            command.advertiseScope == null -> "scope_required"
-            command.hasAnyExcept("scope") -> "unexpected_arguments"
-            else -> null
-        }
-        else -> if (command.hasAnyExcept("none")) "unexpected_arguments" else null
+            ActionKind.SEND_MESSAGE -> when {
+                command.targetId.isNullOrBlank() -> "target_required"
+                command.messageRoute == MessageRoute.DIRECT &&
+                    !MeshPeerKeyPolicy.isCanonicalBase64Url(command.targetId) -> "invalid_peer_public_key"
+                command.messageRoute == MessageRoute.CHANNEL &&
+                    !meshChannelSlot.matches(command.targetId) -> "invalid_channel_slot"
+                command.text.isNullOrBlank() -> "text_required"
+                command.text.toByteArray(Charsets.UTF_8).size > MAX_MESSAGE_BYTES -> "text_too_long"
+                command.messageRoute == null -> "route_required"
+                command.durationMs != null -> "unexpected_arguments"
+                else -> null
+            }
+            ActionKind.LISTEN_ONCE -> when {
+                command.durationMs == null || command.durationMs !in 1_000..60_000 -> "invalid_duration"
+                command.targetId != null || command.text != null || command.messageRoute != null ->
+                    "unexpected_arguments"
+                else -> null
+            }
+            else -> if (command.targetId != null || command.text != null || command.durationMs != null ||
+                command.messageRoute != null
+            ) "unexpected_arguments" else null
         }
     }
 }
 
-/** Frozen MeshCore public-key representation used by firmware and backend.
- * Runtime/composer paths accept only canonical 32-byte unpadded base64url.
- * The 64-hex helper exists solely for explicitly labelled backend migration. */
 object MeshPeerKeyPolicy {
     private val base64Url = Regex("^[A-Za-z0-9_-]{43}$")
-    private val legacyHex = Regex("^[0-9A-Fa-f]{64}$")
 
     fun canonicalBase64Url(value: String): String? {
         if (!base64Url.matches(value)) return null
@@ -344,22 +213,7 @@ object MeshPeerKeyPolicy {
     }
 
     fun isCanonicalBase64Url(value: String): Boolean = canonicalBase64Url(value) != null
-
-    fun migrateLegacyHex(value: String): String? {
-        if (!legacyHex.matches(value)) return null
-        val decoded = ByteArray(32) { index ->
-            value.substring(index * 2, index * 2 + 2).toInt(16).toByte()
-        }
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(decoded)
-    }
 }
-
-private fun ActionCommand.hasAnyExcept(allowed: String): Boolean =
-    (targetId != null || text != null || latE6 != null || lonE6 != null ||
-        (durationMs != null && allowed != "duration") ||
-        (messageRoute != null) ||
-        (advertiseScope != null && allowed != "scope") ||
-        locationExposure != null)
 
 fun ActionCommand.toDirectApplyBody(nowEpochSeconds: Long): ActionApplyBody {
     require(nowEpochSeconds in 1..UINT32_MAX) { "invalid_clock" }
@@ -367,45 +221,22 @@ fun ActionCommand.toDirectApplyBody(nowEpochSeconds: Long): ActionApplyBody {
     val deadline = nowEpochSeconds + ttlSeconds
     require(deadline in 1..UINT32_MAX) { "invalid_expiry" }
     return ActionApplyBody(
-    actionId = clientRequestId,
-    kind = when (kind) {
-        ActionKind.PET -> "pet"
-        ActionKind.FEED -> "feed"
-        ActionKind.PLAY -> "play"
-        ActionKind.LISTEN_ONCE -> "listen_once"
-        ActionKind.ADVERTISE_ONCE -> "advertise_once"
-        ActionKind.SEND_MESSAGE -> "send_message"
-        ActionKind.SHARE_LOCATION_ONCE -> "share_location_once"
-    },
-    expiresAtEpoch = deadline,
-    params = toApplyParameters(),
+        actionId = clientRequestId,
+        kind = when (kind) {
+            ActionKind.PET -> "pet"
+            ActionKind.FEED -> "feed"
+            ActionKind.PLAY -> "play"
+            ActionKind.LISTEN_ONCE -> "listen_once"
+            ActionKind.SEND_MESSAGE -> "send_message"
+        },
+        expiresAtEpoch = deadline,
+        params = buildJsonObject {
+            durationMs?.let { put("duration_ms", it) }
+            messageRoute?.let { put("route", if (it == MessageRoute.DIRECT) "direct" else "channel") }
+            targetId?.let { put("target_id", it) }
+            text?.let { put("text", it) }
+        },
     )
 }
-
-fun ActionCommand.toApplyParameters(): JsonObject = buildJsonObject {
-        durationMs?.let { put("duration_ms", it) }
-        advertiseScope?.let { put("scope", if (it == AdvertiseScope.NEARBY) "nearby" else "mesh") }
-        messageRoute?.let { put("route", if (it == MessageRoute.DIRECT) "direct" else "channel") }
-        targetId?.let { put("target_id", it) }
-        text?.let { put("text", it) }
-        latE6?.let { put("lat_e6", it) }
-        lonE6?.let { put("lon_e6", it) }
-        locationExposure?.let {
-            put(
-                "exposure",
-                when (it) {
-                    LocationExposure.NEARBY_ADVERT -> "nearby_advert"
-                    LocationExposure.MESH_ADVERT -> "mesh_advert"
-                    LocationExposure.MAP_CARD -> "map_card"
-                },
-            )
-        }
-    }
-
-fun WifiProvisioning.toConfigureBody(): WifiConfigureBody = WifiConfigureBody(
-    ssidB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(ssid.toByteArray(Charsets.UTF_8)),
-    security = security,
-    passphrase = password,
-)
 
 private const val UINT32_MAX = 4_294_967_295L

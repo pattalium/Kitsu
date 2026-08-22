@@ -8,6 +8,7 @@ import app.kitsu.mobile.model.ActionPolicy
 import app.kitsu.mobile.model.HistoryEntry
 import app.kitsu.mobile.model.MessageRoute
 import app.kitsu.mobile.security.SafeLog
+import app.kitsu.mobile.ui.locationSettingsActionState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -50,15 +51,15 @@ class PolicyAndStorageTest {
             "event",
             mapOf(
                 "access_token" to "raw",
-                "wifiPassword" to "hunter2",
-                "ssid" to "private-network",
-                "passphrase" to "correct horse battery staple",
+                "privateKey" to "hunter2",
+                "pairingDevice" to "private-device",
+                "secret" to "correct horse battery staple",
                 "count" to 2,
             ),
         )
         assertFalse(rendered.contains("raw"))
         assertFalse(rendered.contains("hunter2"))
-        assertFalse(rendered.contains("private-network"))
+        assertFalse(rendered.contains("private-device"))
         assertFalse(rendered.contains("correct horse battery staple"))
         assertTrue(rendered.contains("count=2"))
     }
@@ -70,5 +71,21 @@ class PolicyAndStorageTest {
         val bounded = CachePolicy.bounded(CacheSnapshot(history = entries, writtenAt = 1))
         assertEquals(CachePolicy.MAX_HISTORY, bounded.history.size)
         assertEquals("45", bounded.history.first().id)
+    }
+
+    @Test fun legacyBleLocationFailuresExposeOtaLockedRecovery() {
+        val disabled = locationSettingsActionState("location_services_disabled", null, updateBusy = false)
+        assertTrue(disabled.visible)
+        assertTrue(disabled.enabled)
+
+        val unavailable = locationSettingsActionState("disconnected", "location_services_unavailable", updateBusy = false)
+        assertTrue(unavailable.visible)
+        assertTrue(unavailable.enabled)
+
+        val updating = locationSettingsActionState("location_services_disabled", null, updateBusy = true)
+        assertTrue(updating.visible)
+        assertFalse(updating.enabled)
+
+        assertFalse(locationSettingsActionState("bluetooth_disabled", null, updateBusy = false).visible)
     }
 }

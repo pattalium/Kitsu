@@ -9,115 +9,82 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.kitsu.mobile.ui.KitsuOwnerApp
-import kotlinx.coroutines.launch
+import app.kitsu.mobile.update.locksCompanionControls
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
-    private enum class BlePermissionContinuation {
-        CONNECT,
-        ENABLE_BLUETOOTH,
-        PAIR_CONTROLLER,
-        PUBLIC_GATEWAY,
-    }
+    private enum class BleContinuation { CONNECT, PAIR_CONTROLLER, FINISH_PAIRING }
 
-    private var blePermissionContinuation = BlePermissionContinuation.CONNECT
-    private var bluetoothEnableContinuation = BlePermissionContinuation.CONNECT
+    private var permissionContinuation = BleContinuation.CONNECT
+    private var bluetoothContinuation = BleContinuation.CONNECT
     private var pendingPairingLabel: String? = null
-    private var pendingMobileRelayAddress: String? = null
 
     private val bluetoothEnableLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
-        val continuation = bluetoothEnableContinuation
-        bluetoothEnableContinuation = BlePermissionContinuation.CONNECT
-        when (continuation) {
-            BlePermissionContinuation.PAIR_CONTROLLER -> {
-                pendingPairingLabel?.let(viewModel::pairController)
-                pendingPairingLabel = null
-            }
-            BlePermissionContinuation.CONNECT,
-            BlePermissionContinuation.ENABLE_BLUETOOTH -> viewModel.reconnectBluetooth()
-            BlePermissionContinuation.PUBLIC_GATEWAY -> {
-                pendingMobileRelayAddress?.let(viewModel::connectMobileRelayDevice)
-                pendingMobileRelayAddress = null
-            }
-        }
+        continueWithBluetoothReady(bluetoothContinuation)
+    }
+
+    private val locationSettingsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        viewModel.reconnectBluetooth()
     }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
-        val continuation = blePermissionContinuation
-        blePermissionContinuation = BlePermissionContinuation.CONNECT
-        if (requiredBlePermissions().all {
-                ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        if (requiredBlePermissions().all { permission ->
+                ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
             }
-        ) {
-            continueAfterBlePermission(continuation)
-        } else {
-            when (continuation) {
-                BlePermissionContinuation.PAIR_CONTROLLER -> {
-                    pendingPairingLabel?.let(viewModel::pairController)
-                    pendingPairingLabel = null
-                }
-                BlePermissionContinuation.PUBLIC_GATEWAY -> {
-                    pendingMobileRelayAddress?.let(viewModel::connectMobileRelayDevice)
-                    pendingMobileRelayAddress = null
-                }
-                else -> {
-                    // Let the transport publish PERMISSION_REQUIRED again so the UI remains truthful.
-                    viewModel.reconnectBluetooth()
-                }
-            }
-        }
+        ) continueAfterPermission(permissionContinuation)
+        else viewModel.reconnectBluetooth()
     }
 
-    private val authLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        lifecycleScope.launch {
-            val data = result.data ?: Intent()
-            val accepted = applicationServices.oidc.completeAuthorization(data)
-            if (accepted) {
-                viewModel.markOwnerSignedIn()
-                viewModel.reconnectIfAllowed()
-            } else {
-                viewModel.refreshOwnerAccountStatus()
-            }
-        }
-    }
-
-    private val applicationServices: AppServices
-        get() = (application as KitsuApplication).services
+    private val firmwarePackageLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(viewModel::importFirmware) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
+            val firmware by viewModel.firmware.collectAsStateWithLifecycle()
+            val updateActive = firmware.progress.stage.locksCompanionControls
+            LaunchedEffect(updateActive) {
+                if (updateActive) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
             KitsuOwnerApp(
                 viewModel = viewModel,
-                onRequestBlePermissions = {
-                    requestBlePermissions(BlePermissionContinuation.CONNECT)
-                },
-                onEnableBluetooth = {
-                    requestBlePermissions(BlePermissionContinuation.ENABLE_BLUETOOTH)
-                },
-                onPrepareMobileRelayBluetooth = { deviceAddress ->
-                    pendingMobileRelayAddress = deviceAddress
-                    requestBlePermissions(BlePermissionContinuation.PUBLIC_GATEWAY)
+                onRequestBlePermissions = { requestBlePermissions(BleContinuation.CONNECT) },
+                onEnableBluetooth = { requestBlePermissions(BleContinuation.CONNECT) },
+                onOpenLocationSettings = {
+                    locationSettingsLauncher.launch(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
                 },
                 onPairController = { label ->
                     pendingPairingLabel = label
-                    requestBlePermissions(BlePermissionContinuation.PAIR_CONTROLLER)
+                    requestBlePermissions(BleContinuation.PAIR_CONTROLLER)
+                },
+                onFinishPairing = {
+                    requestBlePermissions(BleContinuation.FINISH_PAIRING)
+                },
+                onOpenFirmwarePackage = {
+                    // File providers do not agree on a MIME type for `.kitsu-fw`; the strict
+                    // signed container reader is the authority after the user selects one URI.
+                    firmwarePackageLauncher.launch(arrayOf("*/*"))
                 },
                 onOpenAppSettings = {
                     startActivity(
@@ -127,36 +94,20 @@ class MainActivity : ComponentActivity() {
                         ),
                     )
                 },
-                onSignIn = {
-                    lifecycleScope.launch {
-                        runCatching { applicationServices.oidc.authorizationIntent() }
-                            .onSuccess(authLauncher::launch)
-                    }
-                },
-                onSignOut = {
-                    lifecycleScope.launch {
-                        applicationServices.ownerRepository.handleSignedOut()
-                        viewModel.markOwnerSignedOut()
-                        applicationServices.oidc.signOut()
-                        if (!applicationServices.mobileRelayController.state.value.enabled) {
-                            viewModel.reconnectIfAllowed()
-                        }
-                    }
-                },
             )
         }
     }
 
-    private fun requestBlePermissions(continuation: BlePermissionContinuation) {
+    private fun requestBlePermissions(continuation: BleContinuation) {
         val permissions = requiredBlePermissions()
         if (permissions.all {
                 ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
             }
         ) {
-            continueAfterBlePermission(continuation)
+            continueAfterPermission(continuation)
             return
         }
-        blePermissionContinuation = continuation
+        permissionContinuation = continuation
         permissionLauncher.launch(permissions)
     }
 
@@ -166,32 +117,24 @@ class MainActivity : ComponentActivity() {
         arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
     }
 
-    private fun continueAfterBlePermission(continuation: BlePermissionContinuation) {
+    private fun continueAfterPermission(continuation: BleContinuation) {
         val adapter = getSystemService(BluetoothManager::class.java)?.adapter
         if (adapter == null || adapter.isEnabled) {
             continueWithBluetoothReady(continuation)
             return
         }
-        bluetoothEnableContinuation = continuation
-        launchBluetoothEnablePrompt()
+        bluetoothContinuation = continuation
+        bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
     }
 
-    private fun continueWithBluetoothReady(continuation: BlePermissionContinuation) {
+    private fun continueWithBluetoothReady(continuation: BleContinuation) {
         when (continuation) {
-            BlePermissionContinuation.PAIR_CONTROLLER -> {
+            BleContinuation.CONNECT -> viewModel.reconnectBluetooth()
+            BleContinuation.PAIR_CONTROLLER -> {
                 pendingPairingLabel?.let(viewModel::pairController)
                 pendingPairingLabel = null
             }
-            BlePermissionContinuation.CONNECT,
-            BlePermissionContinuation.ENABLE_BLUETOOTH -> viewModel.reconnectBluetooth()
-            BlePermissionContinuation.PUBLIC_GATEWAY -> {
-                pendingMobileRelayAddress?.let(viewModel::connectMobileRelayDevice)
-                pendingMobileRelayAddress = null
-            }
+            BleContinuation.FINISH_PAIRING -> viewModel.finishPendingPairing()
         }
-    }
-
-    private fun launchBluetoothEnablePrompt() {
-        bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
     }
 }

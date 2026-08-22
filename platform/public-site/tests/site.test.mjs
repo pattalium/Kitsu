@@ -34,24 +34,40 @@ test("publishes a complete product surface with real destinations", async () => 
   assert.match(html, /https:\/\/docs\.k32\.run/);
   assert.match(html, /https:\/\/docs\.k32\.run\/connectivity\//);
   assert.match(html, /https:\/\/flash\.k32\.run/);
-  assert.match(html, /https:\/\/app\.k32\.run/);
   assert.match(html, /https:\/\/github\.com\/pattalium\/Kitsu/);
+  assert.match(html, /does not need an account, gateway, or Internet connection/i);
+  assert.match(html, /reviewed rollback bootloader, partition table, both A\/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition/i);
+  assert.doesNotMatch(html, /https:\/\/(?:app|api|auth|gateway)\.k32\.run/i);
   assert.equal(config.repositoryUrl, "https://github.com/pattalium/Kitsu");
   assert.doesNotMatch(html, /link pending|verification pending|not exposed prematurely|placeholder/i);
   assert.doesNotMatch(html, /private machine|private address/i);
 });
 
-test("publishes the signed Android release without placeholder distribution copy", async () => {
+test("source landing instructions match the local-only device controls", async () => {
+  const readme = await readFile(path.join(projectRoot, "README.md"), "utf8");
+  assert.match(readme, /has no Internet permission/i);
+  assert.match(readme, /hold PRG from Home[\s\S]*CONNECT[\s\S]*BLUETOOTH[\s\S]*PAIR PHONE/i);
+  assert.match(readme, /Pair this phone/);
+  assert.match(readme, /no online service is involved/i);
+  assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
+});
+
+test("fails closed until an accepted local-first Android release is promoted", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /current signed Android APK/i);
+  assert.match(html, /Local-first Android 2\.0\.0 or newer/i);
+  assert.match(html, /eligible local-first manifest/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
-  assert.match(readme, /APK on the website is the signed Android release/i);
+  assert.match(script, /MIN_LOCAL_FIRST_VERSION_CODE = 13/);
+  assert.match(script, /MIN_LOCAL_FIRST_MAJOR_VERSION = 2/);
+  assert.match(script, /showReleaseNotPromoted/);
+  assert.match(readme, /refuses to link any build older than Android 2\.0\.0/i);
+  assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /test APK|test build|coming soon|placeholder/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
 });
@@ -64,7 +80,7 @@ test("keeps device companion packs out of the static website", async () => {
   assert.deepEqual(publicFiles.filter((file) => file.toLowerCase().endsWith(".k868")), []);
 });
 
-test("publishes the detached-signature-verified Android 1.1.6 release", async () => {
+test("retains the byte-exact signed Android 1.1.6 artifact without promoting it", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -99,6 +115,9 @@ test("publishes the detached-signature-verified Android 1.1.6 release", async ()
   assert.match(script, /release\.packageId !== "app\.kitsu\.mobile"/);
   assert.match(script, /url\.origin !== window\.location\.origin/);
   assert.match(script, /ANDROID_SIGNING_CERTIFICATE_SHA256/);
+  assert.match(script, /release\.versionCode < MIN_LOCAL_FIRST_VERSION_CODE/);
+  assert.match(script, /majorVersion < MIN_LOCAL_FIRST_MAJOR_VERSION/);
+  assert.match(script, /predates the local-first release/i);
   assert.match(script, /showReleaseFailure/);
 
   const apk = path.join(root, release.url.slice(1));
@@ -117,7 +136,6 @@ test("ships every referenced local release asset", async () => {
   const files = [
     "styles.css",
     "site.js",
-    "policy.js",
     "config.json",
     "assets/kitsu-app-icon.png",
     "assets/kitsu-k32-social-card-v1.png",
@@ -129,25 +147,56 @@ test("ships every referenced local release asset", async () => {
   await Promise.all(files.map((file) => access(path.join(root, file))));
 });
 
-test("publishes factual policies without private deployment identifiers", async () => {
-  const [home, privacy, terms, security, contact, policyScript] = await Promise.all([
+test("publishes factual local-first policies without a runtime-service form", async () => {
+  const [home, privacy, terms, security, contact] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "privacy", "index.html"), "utf8"),
     readFile(path.join(root, "terms", "index.html"), "utf8"),
     readFile(path.join(root, "security", "index.html"), "utf8"),
     readFile(path.join(root, "contact", "index.html"), "utf8"),
-    readFile(path.join(root, "policy.js"), "utf8"),
   ]);
   for (const href of ["/privacy/", "/terms/", "/security/", "/contact/"]) assert.match(home, new RegExp(`href=["']${href.replaceAll("/", "\\/")}`));
-  assert.match(privacy, /90 days/);
-  assert.match(privacy, /365 days/);
-  assert.match(privacy, /request deletion/i);
-  assert.match(security, /web contact route/i);
-  assert.match(contact, /action="https:\/\/api\.k32\.run\/v1\/contact"/);
-  assert.match(contact, /src="\/policy\.js"/);
+  assert.match(privacy, /does not have permission to access the Internet/i);
+  assert.match(privacy, /does not upload analytics/i);
+  assert.match(privacy, /signed Bluetooth firmware updates/i);
+  assert.match(security, /private vulnerability reporting/i);
+  assert.match(contact, /github\.com\/pattalium\/Kitsu\/issues/i);
+  assert.match(contact, /New public issues are currently restricted/i);
+  assert.match(contact, /github\.com\/pattalium\/Kitsu\/pulls/i);
+  assert.match(contact, /github\.com\/pattalium\/Kitsu\/security\/advisories\/new/i);
+  assert.doesNotMatch(contact, /<form\b|api\.k32\.run|policy\.js/i);
   assert.doesNotMatch(contact, /<script>(?:.|\n)*<\/script>/);
-  assert.match(policyScript, /URLSearchParams/);
-  assert.doesNotMatch(`${privacy}${terms}${security}${contact}`, /private machine|private address|mailto:|placeholder/i);
+  assert.doesNotMatch(`${privacy}${terms}${security}${contact}`, /private machine|private address|mailto:|placeholder|app\.k32\.run|auth\.k32\.run/i);
+});
+
+test("all local page, asset, and fragment links resolve", async () => {
+  const pages = ["index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
+  for (const page of pages) {
+    const html = await readFile(path.join(root, page), "utf8");
+    for (const [, reference] of html.matchAll(/(?:href|src)=["']([^"']+)["']/g)) {
+      const target = new URL(reference, `https://k32.run/${page}`);
+      if (target.origin !== "https://k32.run") continue;
+      const relative = target.pathname === "/"
+        ? "index.html"
+        : target.pathname.endsWith("/")
+          ? `${target.pathname.slice(1)}index.html`
+          : target.pathname.slice(1);
+      const destination = path.join(root, relative);
+      assert.equal((await stat(destination)).isFile(), true, `${page}: ${reference}`);
+      if (target.hash) {
+        const targetText = await readFile(destination, "utf8");
+        assert.match(targetText, new RegExp(`id=["']${target.hash.slice(1)}["']`), `${page}: ${reference}`);
+      }
+    }
+  }
+});
+
+test("public pages contain no retired runtime-service actions or origins", async () => {
+  const text = (await Promise.all([
+    "index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html",
+  ].map((relative) => readFile(path.join(root, relative), "utf8")))).join("\n");
+  assert.doesNotMatch(text, /https:\/\/(?:app|api|auth|gateway)\.k32\.run/i);
+  assert.doesNotMatch(text, /Connect to public gateway|Use Wi-Fi remote access|gateway enrollment|owner sign-in|contact form/i);
 });
 
 test("uses byte-exact authoritative K32 brand assets", async () => {

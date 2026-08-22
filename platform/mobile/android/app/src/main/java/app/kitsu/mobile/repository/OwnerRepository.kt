@@ -1,50 +1,44 @@
 package app.kitsu.mobile.repository
 
-import app.kitsu.mobile.cache.CacheSnapshot
 import app.kitsu.mobile.cache.CachePolicy
+import app.kitsu.mobile.cache.CacheSnapshot
 import app.kitsu.mobile.cache.EncryptedBoundedCache
 import app.kitsu.mobile.connection.ConnectionCoordinator
 import app.kitsu.mobile.connection.ConnectionState
 import app.kitsu.mobile.model.ActionCommand
 import app.kitsu.mobile.model.ActionReceipt
 import app.kitsu.mobile.model.HistoryEntry
-import app.kitsu.mobile.model.GatewayConfiguration
-import app.kitsu.mobile.model.GatewayConfigurationReceipt
-import app.kitsu.mobile.model.GatewayEnrollmentBeginBody
-import app.kitsu.mobile.model.GatewayEnrollmentFinishBody
-import app.kitsu.mobile.model.GatewayEnrollmentReceipt
 import app.kitsu.mobile.model.KitsuStatus
 import app.kitsu.mobile.model.Message
 import app.kitsu.mobile.model.MeshChannel
 import app.kitsu.mobile.model.MeshConfigurationReceipt
 import app.kitsu.mobile.model.Peer
-import app.kitsu.mobile.model.ProvisioningReceipt
-import app.kitsu.mobile.model.WifiProvisioning
-import app.kitsu.mobile.model.WifiRetryReceipt
 import app.kitsu.mobile.pairing.ControllerPairingProgress
 import app.kitsu.mobile.pairing.ControllerPairingService
 import app.kitsu.mobile.pairing.PairingException
+import app.kitsu.mobile.security.BondedCompanion
+import app.kitsu.mobile.security.CredentialStore
 import app.kitsu.mobile.security.SafeLog
 import app.kitsu.mobile.transport.ConnectionMode
-import app.kitsu.mobile.transport.GatewayCatalogService
-import app.kitsu.mobile.transport.GatewayProvisioningRecord
-import app.kitsu.mobile.transport.RemoteCompanion
-import app.kitsu.mobile.transport.RemoteCompanionCatalog
-import app.kitsu.mobile.transport.OwnerEnrollmentService
-import app.kitsu.mobile.transport.ProvisioningPolicy
 import app.kitsu.mobile.transport.TransportException
-import kotlinx.coroutines.CoroutineScope
+import app.kitsu.mobile.update.FirmwareInstallProgress
+import app.kitsu.mobile.update.FirmwareInstallStage
+import app.kitsu.mobile.update.FirmwareUpdateReceipt
+import app.kitsu.mobile.update.VerifiedFirmwarePackage
+import java.io.FileInputStream
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 data class OwnerState(
@@ -54,68 +48,46 @@ data class OwnerState(
     val peers: List<Peer> = emptyList(),
     val messages: List<Message> = emptyList(),
     val channels: List<MeshChannel> = emptyList(),
+    val savedKitsu: List<BondedCompanion> = emptyList(),
+    val activeDeviceAddress: String? = null,
+    val pendingPairing: BondedCompanion? = null,
+    val pendingForgetAddress: String? = null,
     val loading: Boolean = false,
     val errorCode: String? = null,
-    val lastAction: ActionReceipt? = null,
-    val remoteCompanions: List<RemoteCompanion> = emptyList(),
-    val selectedRemoteCompanionId: String? = null,
-    val gatewayProvisioningRecords: List<GatewayProvisioningRecord> = emptyList(),
-    val gatewayCatalogLoading: Boolean = false,
-    val gatewayCatalogError: String? = null,
-    /** Exact non-secret gateway UUID stored on the current direct device in this process. */
-    val provisionedGatewayId: String? = null,
     val pairing: Boolean = false,
     val pairingProgress: ControllerPairingProgress? = null,
     val meshConfigurationInFlight: Boolean = false,
 )
 
-enum class GatewayEnrollmentStage {
-    CREATING_CLAIM,
-    WAITING_FOR_PHYSICAL_CONFIRMATION,
-    SWITCHING_TO_WIFI,
-    POLLING_BACKEND,
-    COMPLETE,
-}
-
-data class GatewayEnrollmentProgress(
-    val stage: GatewayEnrollmentStage,
-    val remainingMilliseconds: Int? = null,
-)
-
 class OwnerRepository(
     private val coordinator: ConnectionCoordinator,
     private val cache: EncryptedBoundedCache,
-    private val remoteCatalog: RemoteCompanionCatalog,
-    private val gatewayCatalog: GatewayCatalogService,
+    private val credentials: CredentialStore,
     private val pairingService: ControllerPairingService,
-    private val enrollmentService: OwnerEnrollmentService,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
 ) {
     private val mutableState = MutableStateFlow(OwnerState())
     val state: StateFlow<OwnerState> = mutableState.asStateFlow()
     private var eventJob: Job? = null
-    // A backend cursor is not meaningful to the Heltec (and vice versa), and
-    // different companions may use unrelated cursor spaces. Disk cache is
-    // display-only until the first successful live refresh establishes this
-    // namespace.
     private var lastLiveNamespace: OwnerCursorNamespace? = null
-    // The firmware intentionally does not echo trust material or gateway UUID.
-    // Retain only the non-secret UUID bound to the exact device on which this
-    // process successfully stored the v2 gateway record. Process loss requires
-    // the owner to select/store the gateway again before enrollment.
-    private var provisionedGatewayBinding: Pair<String, String>? = null
 
     init {
         scope.launch {
             val cached = withContext(Dispatchers.IO) { cache.read() }
-            if (cached != null) {
-                mutableState.value = mutableState.value.copy(
-                    status = cached.status,
-                    history = cached.history,
-                    peers = cached.peers,
-                    messages = cached.messages,
-                )
-            }
+            val devices = credentials.bondedCompanions()
+            val active = credentials.bondedCompanion()
+            val pendingPairing = reconcilePendingPairing(devices)
+            val pendingForget = reconcilePendingForget(devices)
+            mutableState.value = mutableState.value.copy(
+                status = cached?.status,
+                history = cached?.history.orEmpty(),
+                peers = cached?.peers.orEmpty(),
+                messages = cached?.messages.orEmpty(),
+                savedKitsu = devices,
+                activeDeviceAddress = active?.deviceAddress,
+                pendingPairing = pendingPairing,
+                pendingForgetAddress = pendingForget,
+            )
         }
         scope.launch {
             coordinator.state.collect { connection ->
@@ -126,100 +98,41 @@ class OwnerRepository(
 
     suspend fun connectAndRefresh(userInitiated: Boolean = false) {
         if (mutableState.value.pairing) return
-        eventJob?.cancelAndJoin()
-        eventJob = null
+        stopEvents()
         mutableState.value = mutableState.value.copy(loading = true, errorCode = null)
         val connection = coordinator.connect(userInitiated)
         if (!connection.connected) {
             mutableState.value = mutableState.value.copy(loading = false, errorCode = connection.detail)
-            if (connection.detail == "companion_selection_required") refreshRemoteCompanions()
             return
         }
         refresh()
-        val refreshedConnection = coordinator.state.value
-        if (!refreshedConnection.connected) return
-        if (refreshedConnection.mode == ConnectionMode.REMOTE_BACKEND) refreshRemoteCompanions()
-        subscribeToEvents()
+        if (coordinator.state.value.connected) subscribeToEvents()
     }
 
-    /** Explicit owner choice to use the authenticated remote service without a
-     * preceding BLE scan. This is intentionally separate from automatic
-     * fallback, which still requires the bonded device to be absent. */
-    suspend fun connectRemoteAndRefresh() {
-        if (mutableState.value.pairing) return
-        eventJob?.cancelAndJoin()
-        eventJob = null
-        mutableState.value = mutableState.value.copy(loading = true, errorCode = null)
-        val connection = coordinator.connectRemote(userInitiated = true)
-        if (!connection.connected) {
-            mutableState.value = mutableState.value.copy(loading = false, errorCode = connection.detail)
-            if (connection.detail == "companion_selection_required") refreshRemoteCompanions()
-            return
-        }
-        refresh()
-        val refreshedConnection = coordinator.state.value
-        if (!refreshedConnection.connected || refreshedConnection.mode != ConnectionMode.REMOTE_BACKEND) return
-        refreshRemoteCompanions()
-        subscribeToEvents()
+    suspend fun selectDevice(deviceAddress: String) {
+        if (mutableState.value.activeDeviceAddress.equals(deviceAddress, ignoreCase = true)) return
+        stopEvents()
+        coordinator.disconnect(suppressAutomaticReconnect = false)
+        val selected = credentials.selectBondedCompanion(deviceAddress)
+            ?: throw TransportException("saved_kitsu_not_found")
+        clearLiveData(selected.deviceAddress)
     }
 
-    suspend fun connectDirectAndRefresh() {
-        if (mutableState.value.pairing) return
-        eventJob?.cancelAndJoin()
-        eventJob = null
-        mutableState.value = mutableState.value.copy(loading = true, errorCode = null)
-        val connection = coordinator.connectDirect(userInitiated = true)
-        if (!connection.connected) {
-            mutableState.value = mutableState.value.copy(loading = false, errorCode = connection.detail)
-            return
-        }
-        refresh()
-        val refreshedConnection = coordinator.state.value
-        if (!refreshedConnection.connected || refreshedConnection.mode != ConnectionMode.DIRECT_BLE) return
-        subscribeToEvents()
+    suspend fun connectDevice(deviceAddress: String) {
+        selectDevice(deviceAddress)
+        connectAndRefresh(userInitiated = true)
     }
 
     fun recordUserDisconnectIntent(): Boolean = coordinator.recordUserDisconnectIntent()
 
     suspend fun disconnectByUser() {
         pairingService.cancelPairing()
-        eventJob?.cancelAndJoin()
-        eventJob = null
+        stopEvents()
         coordinator.disconnect(suppressAutomaticReconnect = true)
         mutableState.value = mutableState.value.copy(
             connection = coordinator.state.value,
             loading = false,
             errorCode = null,
-            lastAction = null,
-            pairing = false,
-            pairingProgress = null,
-        )
-    }
-
-    /** Hands an existing nearby GATT session to the opt-in foreground relay. */
-    suspend fun releaseDirectForMobileRelay(deviceAddress: String? = null) {
-        if (!coordinator.isDirect()) return
-        eventJob?.cancelAndJoin()
-        eventJob = null
-        coordinator.handoffDirectForPublicGateway(deviceAddress)
-        mutableState.value = mutableState.value.copy(
-            connection = coordinator.state.value,
-            loading = false,
-        )
-    }
-
-    /** Disconnects authenticated remote work without changing an earlier user
-     * Disconnect suppression decision. */
-    suspend fun handleSignedOut() {
-        pairingService.cancelPairing()
-        eventJob?.cancelAndJoin()
-        eventJob = null
-        coordinator.disconnect(suppressAutomaticReconnect = false)
-        clearDownloadedOwnerData()
-        mutableState.value = mutableState.value.copy(
-            connection = coordinator.state.value,
-            loading = false,
-            errorCode = "signed_out",
             pairing = false,
             pairingProgress = null,
         )
@@ -230,10 +143,7 @@ class OwnerRepository(
             val snapshot = coordinator.withTransport { transport ->
                 val previous = mutableState.value
                 val status = transport.status()
-                val liveNamespace = OwnerCursorNamespace(
-                    coordinator.state.value.mode,
-                    status.deviceId,
-                )
+                val liveNamespace = OwnerCursorNamespace(ConnectionMode.DIRECT_BLE, status.deviceId)
                 val history = transport.history(
                     after = OwnerCursorPolicy.resume(
                         previous.history.lastOrNull()?.cursor,
@@ -242,41 +152,28 @@ class OwnerRepository(
                     ),
                     limit = 100,
                 )
-                val peers = transport.peers()
                 val messages = transport.messages(
-                    after = OwnerCursorPolicy.resume(
-                        previous.messages.lastOrNull()?.cursor,
-                        lastLiveNamespace,
-                        liveNamespace,
-                    ),
+                    after = OwnerCursorPolicy.messagesAfter(),
                     limit = 100,
                 )
+                val peers = transport.peers()
                 val channels = transport.channels()
-                val mergedHistory = if (OwnerCursorPolicy.shouldReplace(
-                        lastLiveNamespace, liveNamespace, history.cursorExpired,
-                    )
-                ) history.items else
-                    (previous.history + history.items).distinctBy { it.id }.takeLast(CachePolicy.MAX_HISTORY)
-                val mergedMessages = if (OwnerCursorPolicy.shouldReplace(
-                        lastLiveNamespace, liveNamespace, messages.cursorExpired,
-                    )
-                ) messages.items else
-                    (previous.messages + messages.items).distinctBy { it.id }.takeLast(CachePolicy.MAX_MESSAGES)
+                val replaceHistory = OwnerCursorPolicy.shouldReplace(
+                    lastLiveNamespace,
+                    liveNamespace,
+                    history.cursorExpired,
+                )
                 lastLiveNamespace = liveNamespace
-                OwnerState(
+                previous.copy(
                     connection = coordinator.state.value,
                     status = status,
-                    history = mergedHistory,
+                    history = if (replaceHistory) history.items else
+                        (previous.history + history.items).distinctBy { it.id }.takeLast(CachePolicy.MAX_HISTORY),
                     peers = peers.items,
-                    messages = mergedMessages,
+                    messages = messages.items.takeLast(CachePolicy.MAX_MESSAGES),
                     channels = channels,
                     loading = false,
-                    remoteCompanions = previous.remoteCompanions,
-                    selectedRemoteCompanionId = remoteCatalog.selectedCompanionId(),
-                    gatewayProvisioningRecords = previous.gatewayProvisioningRecords,
-                    gatewayCatalogLoading = previous.gatewayCatalogLoading,
-                    gatewayCatalogError = previous.gatewayCatalogError,
-                    provisionedGatewayId = previous.provisionedGatewayId,
+                    errorCode = null,
                 )
             }
             mutableState.value = snapshot
@@ -285,91 +182,24 @@ class OwnerRepository(
             throw cancelled
         } catch (failure: Throwable) {
             SafeLog.warn("owner_refresh", "refresh_failed", failure)
-            val remote = coordinator.state.value.mode == ConnectionMode.REMOTE_BACKEND
-            if (remote) coordinator.disconnect(suppressAutomaticReconnect = false)
-            val code = (failure as? TransportException)?.code ?: "refresh_failed"
             mutableState.value = mutableState.value.copy(
                 connection = coordinator.state.value,
                 loading = false,
-                errorCode = code,
+                errorCode = (failure as? TransportException)?.code ?: "refresh_failed",
             )
         }
     }
 
     suspend fun perform(command: ActionCommand): ActionReceipt =
         coordinator.withTransport { transport ->
-            transport.action(command).also { receipt ->
-                mutableState.value = mutableState.value.copy(lastAction = receipt, errorCode = null)
+            transport.action(command).also {
+                mutableState.value = mutableState.value.copy(errorCode = null)
                 refresh()
             }
         }
 
-    suspend fun provisionWifi(credentials: WifiProvisioning): ProvisioningReceipt {
-        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
-        val (receipt, verifiedStatus) = coordinator.withTransport { transport ->
-            val accepted = transport.provisionWifi(credentials)
-            if (!accepted.accepted || accepted.state != "stored" || accepted.errorCode != null) {
-                throw TransportException(accepted.errorCode ?: "wifi_configuration_rejected")
-            }
-            val status = try {
-                transport.status()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Throwable) {
-                // The signed write receipt was accepted. Preserve that distinction
-                // instead of falsely claiming either verified storage or rejection.
-                throw TransportException("wifi_storage_verification_unavailable", failure)
-            }
-            ProvisioningPolicy.wifiVerificationError(accepted, status)?.let { code ->
-                throw TransportException(code)
-            }
-            accepted to status
-        }
-        val verifiedSnapshot = mutableState.value.copy(
-            status = verifiedStatus,
-            connection = coordinator.state.value,
-            errorCode = null,
-        )
-        mutableState.value = verifiedSnapshot
-        persistCache(verifiedSnapshot)
-        return receipt
-    }
-
-    suspend fun retryWifi(): WifiRetryReceipt {
-        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
-        val receipt = coordinator.withTransport { it.retryWifi() }
-        if (!receipt.accepted || receipt.state != "retrying" || receipt.errorCode != null) {
-            throw TransportException(receipt.errorCode ?: "wifi_retry_rejected")
-        }
-        repeat(WIFI_RETRY_STATUS_POLL_COUNT) { attempt ->
-            if (attempt > 0) delay(WIFI_RETRY_STATUS_POLL_INTERVAL_MS)
-            val status = try {
-                coordinator.withTransport { it.status() }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Throwable) {
-                // The authenticated retry receipt is still valid even if a
-                // later state poll is interrupted.
-                SafeLog.warn("wifi_retry", "status_poll_failed", failure)
-                return receipt
-            }
-            mutableState.value = mutableState.value.copy(
-                status = status,
-                connection = coordinator.state.value,
-                errorCode = null,
-            )
-            val wifiSettled = status.lan.wifiState !in setOf("connecting", "grace")
-            if (attempt > 0 && wifiSettled) {
-                persistCache(mutableState.value)
-                return receipt
-            }
-        }
-        persistCache(mutableState.value)
-        return receipt
-    }
-
     suspend fun configureMesh(enabled: Boolean): MeshConfigurationReceipt {
-        if (!coordinator.isDirect()) throw IllegalStateException("direct_ble_required")
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
         mutableState.value = mutableState.value.copy(meshConfigurationInFlight = true, errorCode = null)
         return try {
             coordinator.withTransport { it.configureMesh(enabled) }.also { refresh() }
@@ -378,283 +208,422 @@ class OwnerRepository(
         }
     }
 
-    suspend fun configureGateway(configuration: GatewayConfiguration): GatewayConfigurationReceipt {
-        if (!coordinator.isDirect()) throw IllegalStateException("direct_ble_required")
-        val deviceId = mutableState.value.status?.deviceId
-            ?: coordinator.withTransport { it.status() }.deviceId
-        return coordinator.withTransport { it.configureGateway(configuration) }.also { receipt ->
-            if (!receipt.accepted || receipt.state != "stored") {
-                throw TransportException(receipt.errorCode ?: "gateway_configuration_failed")
-            }
-            provisionedGatewayBinding = deviceId to configuration.gatewayId
-            mutableState.value = mutableState.value.copy(provisionedGatewayId = configuration.gatewayId)
-            refresh()
-        }
-    }
-
-    suspend fun enrollGateway(
-        displayName: String,
-        onProgress: (GatewayEnrollmentProgress) -> Unit,
-    ): GatewayEnrollmentReceipt {
-        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
-        val status = mutableState.value.status ?: coordinator.withTransport { it.status() }
-        if (status.lan.remoteConnectivityAllowed != true) {
-            throw TransportException("remote_connectivity_not_allowed")
-        }
-        if (status.lan.wifiConfigured != true) throw TransportException("wifi_not_configured")
-        if (status.lan.gatewayConfigured != true) throw TransportException("not_configured")
-        if (status.lan.gatewayEnrolled == true) throw TransportException("already_enrolled")
-        val expectedGatewayId = provisionedGatewayBinding
-            ?.takeIf { (deviceId, _) -> deviceId == status.deviceId }
-            ?.second
-            ?: throw TransportException("gateway_identity_unknown")
-
-        onProgress(GatewayEnrollmentProgress(GatewayEnrollmentStage.CREATING_CLAIM))
-        val (enrollmentId, begin) = createAndBeginGatewayEnrollment(status.deviceId, displayName.trim())
-        val physicalWindow = begin.expiresInMs ?: throw TransportException("malformed_enrollment_receipt")
-        onProgress(
-            GatewayEnrollmentProgress(
-                GatewayEnrollmentStage.WAITING_FOR_PHYSICAL_CONFIRMATION,
-                physicalWindow,
-            ),
-        )
-
-        val deadline = System.nanoTime() + physicalWindow * 1_000_000L
-        var receipt = begin
-        while (System.nanoTime() < deadline) {
-            delay(1_000)
-            receipt = coordinator.withTransport { transport ->
-                transport.finishGatewayEnrollment(GatewayEnrollmentFinishBody(enrollmentId = enrollmentId))
-            }
-            if (receipt.accepted && receipt.state == "ready_for_wifi") break
-            val remaining = ((deadline - System.nanoTime()) / 1_000_000L).coerceAtLeast(0L).toInt()
-            onProgress(
-                GatewayEnrollmentProgress(
-                    GatewayEnrollmentStage.WAITING_FOR_PHYSICAL_CONFIRMATION,
-                    remaining,
-                ),
-            )
-        }
-        if (!receipt.accepted || receipt.state != "ready_for_wifi") {
-            throw TransportException("expired")
-        }
-
-        onProgress(GatewayEnrollmentProgress(GatewayEnrollmentStage.SWITCHING_TO_WIFI))
-        eventJob?.cancelAndJoin()
-        eventJob = null
-        coordinator.beginEnrollmentRemoteHandoff()
-        mutableState.value = mutableState.value.copy(connection = coordinator.state.value, loading = false)
-        delay(3_000)
-
-        onProgress(GatewayEnrollmentProgress(GatewayEnrollmentStage.POLLING_BACKEND))
-        val backendDeadline = System.nanoTime() + 90_000_000_000L
-        var connection = coordinator.state.value
-        while (!connection.connected && System.nanoTime() < backendDeadline) {
-            try {
-                val matching = remoteCatalog.companions().filter { it.hardwareUid == status.deviceId }
-                if (matching.size > 1) throw TransportException("duplicate_remote_companion")
-                if (matching.size == 1) {
-                    remoteCatalog.selectCompanion(matching.single().id)
-                    connection = coordinator.pollEnrollmentBackend(
-                        expectedDeviceId = status.deviceId,
-                        expectedGatewayId = expectedGatewayId,
-                    )
-                    if (connection.detail in REMOTE_BINDING_FAILURES) {
-                        throw TransportException(connection.detail)
-                    }
-                } else {
-                    connection = ConnectionState(
-                        mode = ConnectionMode.OFFLINE,
-                        connected = false,
-                        detail = "no_remote_companion",
-                    )
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: TransportException) {
-                if (failure.code in FATAL_ENROLLMENT_BACKEND_FAILURES) throw failure
-                connection = ConnectionState(
-                    mode = ConnectionMode.OFFLINE,
-                    connected = false,
-                    detail = failure.code,
-                )
-                SafeLog.warn("gateway_enrollment", "backend_poll_retry", failure)
-            }
-            if (!connection.connected) delay(2_000)
-        }
-        mutableState.value = mutableState.value.copy(connection = connection, loading = false)
-        if (!connection.connected || connection.mode != ConnectionMode.REMOTE_BACKEND) {
-            throw TransportException(connection.detail.ifBlank { "enrollment_remote_path_not_confirmed" })
-        }
-        val verifiedRemote = coordinator.withTransport { it.status() }
-        app.kitsu.mobile.transport.RemoteSnapshotPolicy.validationError(
-            verifiedRemote,
-            expectedDeviceId = status.deviceId,
-            expectedGatewayId = expectedGatewayId,
-        )?.let { throw TransportException(it) }
-        refresh()
-        val refreshedConnection = coordinator.state.value
-        val refreshedStatus = mutableState.value.status
-        if (!refreshedConnection.connected || refreshedConnection.mode != ConnectionMode.REMOTE_BACKEND ||
-            refreshedStatus == null
-        ) {
-            throw TransportException("enrollment_remote_path_lost")
-        }
-        app.kitsu.mobile.transport.RemoteSnapshotPolicy.validationError(
-            refreshedStatus,
-            expectedDeviceId = status.deviceId,
-            expectedGatewayId = expectedGatewayId,
-        )?.let { throw TransportException(it) }
-        subscribeToEvents()
-        onProgress(GatewayEnrollmentProgress(GatewayEnrollmentStage.COMPLETE))
-        return receipt
-    }
-
-    /**
-     * Keeps the one-use claim token in this short-lived stack frame only. The
-     * caller receives the public enrollment ID and bound device receipt, never
-     * the token-bearing challenge.
-     */
-    private suspend fun createAndBeginGatewayEnrollment(
-        hardwareUid: String,
-        displayName: String,
-    ): Pair<String, GatewayEnrollmentReceipt> {
-        val challenge = enrollmentService.createEnrollment(hardwareUid, displayName)
-        val enrollmentId = challenge.enrollment.id
-        val receipt = coordinator.withTransport { transport ->
-            transport.beginGatewayEnrollment(
-                GatewayEnrollmentBeginBody(
-                    enrollmentId = enrollmentId,
-                    claimToken = challenge.claimToken,
-                ),
-            )
-        }
-        return enrollmentId to receipt
-    }
-
     suspend fun pairController(label: String) {
-        eventJob?.cancelAndJoin()
-        eventJob = null
-        coordinator.disconnect()
-        provisionedGatewayBinding = null
-        mutableState.value = mutableState.value.copy(provisionedGatewayId = null)
+        stopEvents()
+        coordinator.disconnect(suppressAutomaticReconnect = false)
+        mutableState.value = mutableState.value.copy(pairing = true, pairingProgress = null, errorCode = null)
+        try {
+            pairingService.pairController(label) { progress ->
+                mutableState.value = mutableState.value.copy(pairing = true, pairingProgress = progress)
+            }
+            reloadDevices()
+            mutableState.value = mutableState.value.copy(pairing = false, pairingProgress = null)
+            connectAndRefresh(userInitiated = true)
+        } catch (failure: Throwable) {
+            runCatching { reloadDevices() }
+            mutableState.value = mutableState.value.copy(
+                pairing = false,
+                pairingProgress = null,
+                errorCode = (failure as? PairingException)?.code ?: "pairing_failed",
+            )
+            throw failure
+        }
+    }
+
+    suspend fun finishPendingPairing() {
+        stopEvents()
+        coordinator.disconnect(suppressAutomaticReconnect = false)
         mutableState.value = mutableState.value.copy(
             pairing = true,
             pairingProgress = null,
             errorCode = null,
         )
         try {
-            pairingService.pairController(label) { progress ->
+            pairingService.finishPendingPairing { progress ->
                 mutableState.value = mutableState.value.copy(
-                    pairing = progress.stage != app.kitsu.mobile.pairing.ControllerPairingStage.CANCELLED,
+                    pairing = true,
                     pairingProgress = progress,
                 )
             }
-            mutableState.value = mutableState.value.copy(pairing = false, errorCode = null)
-            connectAndRefresh()
+            reloadDevices()
+            mutableState.value = mutableState.value.copy(pairing = false, pairingProgress = null)
+            connectAndRefresh(userInitiated = true)
         } catch (failure: Throwable) {
-            val code = (failure as? PairingException)?.code ?: "pairing_failed"
+            runCatching { reloadDevices() }
             mutableState.value = mutableState.value.copy(
                 pairing = false,
                 pairingProgress = null,
-                errorCode = code,
+                errorCode = (failure as? PairingException)?.code ?: "pairing_recovery_failed",
             )
             throw failure
         }
     }
 
-    fun cancelPairing() {
-        pairingService.cancelPairing()
-    }
+    fun cancelPairing() = pairingService.cancelPairing()
 
-    suspend fun refreshRemoteCompanions() {
-        runCatching { remoteCatalog.companions() }
-            .onSuccess { companions ->
-                mutableState.value = mutableState.value.copy(
-                    remoteCompanions = companions,
-                    selectedRemoteCompanionId = remoteCatalog.selectedCompanionId(),
-                )
+    /** Revokes this app's authenticated controller on Kitsu before deleting the local root. */
+    suspend fun forgetController(deviceAddress: String) {
+        val pending = credentials.pendingControllerForgetAddress()
+        if (pending != null && !pending.equals(deviceAddress, ignoreCase = true)) {
+            throw TransportException("controller_forget_pending")
+        }
+        val recoveringLostReceipt = pending?.equals(deviceAddress, ignoreCase = true) == true
+        selectDevice(deviceAddress)
+
+        var connection = coordinator.state.value
+        if (!connection.connected || !coordinator.isConnectedTo(deviceAddress)) {
+            connection = coordinator.connect(userInitiated = true)
+        }
+        if (!connection.connected) {
+            if (recoveringLostReceipt && connection.detail == "controller_auth_failed") {
+                completeControllerForget(deviceAddress)
+                return
             }
-            .onFailure { failure -> SafeLog.warn("remote_companions", "catalog_failed", failure) }
-    }
+            throw TransportException(connection.detail)
+        }
+        credentials.savePendingControllerForgetAddress(deviceAddress)
+        reloadDevices()
 
-    suspend fun refreshGatewayCatalog() {
-        if (mutableState.value.gatewayCatalogLoading) return
-        mutableState.value = mutableState.value.copy(
-            gatewayCatalogLoading = true,
-            gatewayCatalogError = null,
-        )
         try {
-            val records = gatewayCatalog.gateways()
-            mutableState.value = mutableState.value.copy(
-                gatewayProvisioningRecords = records,
-                gatewayCatalogLoading = false,
-                gatewayCatalogError = if (records.isEmpty()) "no_gateways" else null,
-            )
+            val receipt = coordinator.withTransport { it.forgetController() }
+            if (!receipt.accepted) throw TransportException(receipt.error ?: "controller_forget_failed")
+            completeControllerForget(deviceAddress)
         } catch (cancelled: CancellationException) {
-            mutableState.value = mutableState.value.copy(gatewayCatalogLoading = false)
             throw cancelled
-        } catch (failure: Throwable) {
-            val code = (failure as? TransportException)?.code ?: "gateway_catalog_unavailable"
-            SafeLog.warn("gateway_catalog", code, failure)
-            mutableState.value = mutableState.value.copy(
-                gatewayProvisioningRecords = emptyList(),
-                gatewayCatalogLoading = false,
-                gatewayCatalogError = code,
-            )
+        } catch (failure: TransportException) {
+            if (failure.code !in FORGET_OUTCOME_UNKNOWN) throw failure
+            coordinator.disconnect(suppressAutomaticReconnect = false)
+            val verification = coordinator.connect(userInitiated = true)
+            if (verification.detail == "controller_auth_failed") {
+                completeControllerForget(deviceAddress)
+            } else {
+                throw TransportException("controller_forget_outcome_unknown", failure)
+            }
         }
     }
 
-    suspend fun selectRemoteCompanion(id: String) {
-        val changed = remoteCatalog.selectedCompanionId() != id
-        remoteCatalog.selectCompanion(id)
-        if (changed) {
-            withContext(Dispatchers.IO) { cache.clear() }
-            lastLiveNamespace = null
-            mutableState.value = mutableState.value.copy(
-                status = null,
-                history = emptyList(),
-                peers = emptyList(),
-                messages = emptyList(),
-                channels = emptyList(),
-                selectedRemoteCompanionId = id,
-            )
+    suspend fun installFirmware(
+        packageFile: VerifiedFirmwarePackage,
+        onProgress: (FirmwareInstallProgress) -> Unit,
+    ) {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        stopEvents()
+        var cancelled = false
+        try {
+        val total = packageFile.manifest.imageBytes
+        onProgress(FirmwareInstallProgress(FirmwareInstallStage.PREPARING, packageFile.manifest.firmwareVersion, 0, total))
+        var status = coordinator.withTransport { it.firmwareUpdateStatus() }
+        if (status.state == "pending_verify") {
+            validateUpdateBinding(status, packageFile.updateId, total)
+            onProgress(FirmwareInstallProgress(FirmwareInstallStage.REBOOTING, packageFile.manifest.firmwareVersion, total, total))
+            delay(31_000L)
+            status = coordinator.withTransport { it.firmwareUpdateStatus() }
+            validateUpdateBinding(status, packageFile.updateId, total)
+            if (status.state == "rolled_back") throw TransportException("firmware_rolled_back")
+            if (status.state != "confirmed") throw TransportException("firmware_confirmation_pending")
         }
-        connectAndRefresh(userInitiated = false)
+        if (status.state == "confirmed" && status.updateId == packageFile.updateId) {
+            validateUpdateBinding(status, packageFile.updateId, total)
+            onProgress(FirmwareInstallProgress(FirmwareInstallStage.COMPLETE, packageFile.manifest.firmwareVersion, total, total))
+            refresh()
+            return
+        }
+        if (status.state in setOf("failed", "rolled_back")) {
+            if (status.updateId != null && status.updateId != packageFile.updateId) {
+                throw TransportException("update_conflict")
+            }
+            val aborted = coordinator.withTransport {
+                it.abortFirmwareUpdate(status.updateId ?: packageFile.updateId)
+            }
+            requireIdleAfterAbort(aborted)
+            status = coordinator.withTransport { it.firmwareUpdateStatus() }
+            requireIdleAfterAbort(status)
+        }
+        if (status.state == "receiving" && status.updateId != packageFile.updateId) {
+            throw TransportException("update_conflict")
+        }
+        val readyToReboot = status.state == "ready_to_reboot"
+        var receipt = if (readyToReboot) {
+            validateUpdateBinding(status, packageFile.updateId, total)
+            status
+        } else {
+            if (status.state !in setOf("idle", "receiving", "confirmed")) {
+                throw TransportException("invalid_state")
+            }
+            coordinator.withTransport {
+                it.beginFirmwareUpdate(packageFile.manifestBytes, packageFile.signature)
+            }.also {
+                validateUpdateBinding(it, packageFile.updateId, total)
+                if (it.state != "receiving") throw TransportException("invalid_state")
+            }
+        }
+        var offset = receipt.nextOffset
+        if (offset !in 0..total) throw TransportException("malformed_firmware_update_receipt")
+        val chunkBytes = coordinator.withTransport { it.firmwareTransferChunkBytes() }
+            .takeIf { it == 256 || it == 4_096 } ?: 256
+        if (!readyToReboot) {
+            FileInputStream(packageFile.imageFile).use { image ->
+                skipExactly(image, offset)
+                while (offset < total) {
+                    val data = image.readNBytesCompat(minOf(chunkBytes, total - offset))
+                    if (data.isEmpty()) throw TransportException("truncated_imported_image")
+                    receipt = writeWithRecovery(packageFile, offset, data)
+                    validateUpdateBinding(receipt, packageFile.updateId, total)
+                    if (receipt.state != "receiving") throw TransportException("invalid_state")
+                    if (receipt.nextOffset < offset + data.size) {
+                        throw TransportException("firmware_update_progress_mismatch")
+                    }
+                    if (receipt.nextOffset > offset + data.size) {
+                        skipExactly(image, receipt.nextOffset - (offset + data.size))
+                    }
+                    offset = receipt.nextOffset
+                    onProgress(FirmwareInstallProgress(
+                        FirmwareInstallStage.TRANSFERRING,
+                        packageFile.manifest.firmwareVersion,
+                        offset,
+                        total,
+                    ))
+                }
+            }
+            onProgress(FirmwareInstallProgress(FirmwareInstallStage.VERIFYING, packageFile.manifest.firmwareVersion, total, total))
+            receipt = coordinator.withTransport { it.finishFirmwareUpdate(packageFile.updateId) }
+            validateUpdateBinding(receipt, packageFile.updateId, total)
+            if (receipt.state != "ready_to_reboot" || receipt.nextOffset != total) {
+                throw TransportException("firmware_finish_rejected")
+            }
+        }
+        onProgress(FirmwareInstallProgress(FirmwareInstallStage.READY_TO_REBOOT, packageFile.manifest.firmwareVersion, total, total))
+        receipt = coordinator.withTransport { it.rebootFirmwareUpdate(packageFile.updateId) }
+        validateUpdateBinding(receipt, packageFile.updateId, total)
+        if (!receipt.scheduled || receipt.state != "ready_to_reboot") {
+            throw TransportException("reboot_not_ready")
+        }
+        onProgress(FirmwareInstallProgress(FirmwareInstallStage.REBOOTING, packageFile.manifest.firmwareVersion, total, total))
+        stopEvents()
+        coordinator.disconnect(suppressAutomaticReconnect = false)
+        var reconnected = false
+        repeat(3) { attempt ->
+            if (!reconnected) {
+                delay(3_000L + attempt * 1_000L)
+                reconnected = coordinator.connect(userInitiated = true).connected
+            }
+        }
+        if (!reconnected) throw TransportException("firmware_reconnect_required")
+        var bootStatus = coordinator.withTransport { it.firmwareUpdateStatus() }
+        validateUpdateBinding(bootStatus, packageFile.updateId, total)
+        if (bootStatus.state == "pending_verify") {
+            delay(31_000L)
+            bootStatus = coordinator.withTransport { it.firmwareUpdateStatus() }
+            validateUpdateBinding(bootStatus, packageFile.updateId, total)
+        }
+        when (bootStatus.state) {
+            "confirmed" -> {
+                onProgress(FirmwareInstallProgress(
+                    FirmwareInstallStage.COMPLETE,
+                    packageFile.manifest.firmwareVersion,
+                    total,
+                    total,
+                ))
+                refresh()
+            }
+            "rolled_back" -> throw TransportException("firmware_rolled_back")
+            else -> throw TransportException("firmware_confirmation_pending")
+        }
+        } catch (failure: CancellationException) {
+            cancelled = true
+            throw failure
+        } finally {
+            // Cancellation is followed immediately by an authenticated abort in the
+            // ViewModel. Do not let live refresh traffic interleave with that cleanup.
+            if (!cancelled && coordinator.state.value.connected) subscribeToEvents()
+        }
     }
 
-    suspend fun clearDownloadedOwnerData() {
-        eventJob?.cancelAndJoin()
+    suspend fun abortFirmwareUpdate(updateId: String) {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        stopEvents()
+        try {
+            val status = coordinator.withTransport { it.firmwareUpdateStatus() }
+            if (status.state == "idle" && status.updateId == null) return
+            if (status.updateId != null && status.updateId != updateId) {
+                throw TransportException("update_conflict")
+            }
+            if (status.updateId == null && status.state != "failed") {
+                throw TransportException("invalid_update_id")
+            }
+            val receipt = coordinator.withTransport {
+                it.abortFirmwareUpdate(status.updateId ?: updateId)
+            }
+            requireIdleAfterAbort(receipt, "firmware_abort_failed")
+        } finally {
+            if (coordinator.state.value.connected) subscribeToEvents()
+        }
+    }
+
+    suspend fun resetInterruptedFirmwareUpdate() {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        stopEvents()
+        try {
+            val status = coordinator.withTransport { it.firmwareUpdateStatus() }
+            if (status.state == "idle" && status.updateId == null) return
+            if (status.state in setOf("pending_verify", "confirmed")) {
+                throw TransportException("firmware_reset_not_allowed")
+            }
+            val updateId = status.updateId ?: if (status.state == "failed") {
+                UNBOUND_UPDATE_ABORT_ID
+            } else {
+                throw TransportException("invalid_update_id")
+            }
+            val reset = coordinator.withTransport { it.abortFirmwareUpdate(updateId) }
+            requireIdleAfterAbort(reset)
+        } finally {
+            if (coordinator.state.value.connected) subscribeToEvents()
+        }
+    }
+
+    private suspend fun writeWithRecovery(
+        packageFile: VerifiedFirmwarePackage,
+        offset: Int,
+        data: ByteArray,
+    ): FirmwareUpdateReceipt {
+        var lastFailure: TransportException? = null
+        var recoveryRequired = false
+        repeat(3) { attempt ->
+            if (recoveryRequired) {
+                coordinator.disconnect(suppressAutomaticReconnect = false)
+                delay(500L * attempt.coerceAtLeast(1))
+                val connection = coordinator.connect(userInitiated = true)
+                if (!connection.connected) {
+                    lastFailure = TransportException(connection.detail)
+                    if (attempt == 2) throw TransportException(connection.detail)
+                    return@repeat
+                }
+                val status = coordinator.withTransport { it.firmwareUpdateStatus() }
+                validateUpdateBinding(status, packageFile.updateId, packageFile.manifest.imageBytes)
+                if (status.nextOffset >= offset + data.size) return status
+                if (status.nextOffset != offset) throw TransportException("firmware_update_progress_mismatch")
+                if (status.state == "failed") {
+                    throw TransportException(status.error ?: "firmware_update_failed")
+                }
+                if (status.state != "receiving") throw TransportException("invalid_state")
+                // A recovered journal is not writable until the same signed begin is replayed.
+                val resumed = coordinator.withTransport {
+                    it.beginFirmwareUpdate(packageFile.manifestBytes, packageFile.signature)
+                }
+                validateUpdateBinding(resumed, packageFile.updateId, packageFile.manifest.imageBytes)
+                if (resumed.nextOffset >= offset + data.size) return resumed
+                if (resumed.nextOffset != offset || resumed.state != "receiving") {
+                    throw TransportException("firmware_update_progress_mismatch")
+                }
+            }
+            try {
+                return coordinator.withTransport {
+                    it.writeFirmwareUpdate(packageFile.updateId, offset, data)
+                }
+            } catch (failure: TransportException) {
+                lastFailure = failure
+                if (failure.code !in TRANSIENT_UPDATE_FAILURES || attempt == 2) throw failure
+                recoveryRequired = true
+            }
+        }
+        throw lastFailure ?: TransportException("firmware_update_failed")
+    }
+
+    private fun validateUpdateBinding(receipt: FirmwareUpdateReceipt, updateId: String, total: Int) {
+        if (receipt.updateId != updateId || receipt.imageBytes != total || receipt.nextOffset !in 0..total) {
+            throw TransportException("firmware_update_binding_failed")
+        }
+    }
+
+    private fun requireIdleAfterAbort(
+        receipt: FirmwareUpdateReceipt,
+        failureCode: String = "firmware_update_reset_failed",
+    ) {
+        if (receipt.state != "idle" || receipt.updateId != null ||
+            receipt.imageBytes != 0 || receipt.nextOffset != 0
+        ) throw TransportException(failureCode)
+    }
+
+    private suspend fun completeControllerForget(deviceAddress: String) {
+        stopEvents()
+        coordinator.disconnect(suppressAutomaticReconnect = false)
+        credentials.removeBondedCompanion(deviceAddress)
+        credentials.savePendingControllerForgetAddress(null)
         withContext(Dispatchers.IO) { cache.clear() }
         lastLiveNamespace = null
-        provisionedGatewayBinding = null
+        reloadDevices()
         mutableState.value = mutableState.value.copy(
             status = null,
             history = emptyList(),
             peers = emptyList(),
             messages = emptyList(),
             channels = emptyList(),
-            lastAction = null,
-            remoteCompanions = emptyList(),
-            gatewayProvisioningRecords = emptyList(),
-            gatewayCatalogLoading = false,
-            gatewayCatalogError = null,
-            provisionedGatewayId = null,
+            errorCode = null,
         )
     }
 
-    private suspend fun subscribeToEvents() {
+    private suspend fun reloadDevices() {
+        val devices = credentials.bondedCompanions()
+        val active = credentials.bondedCompanion()
+        mutableState.value = mutableState.value.copy(
+            savedKitsu = devices,
+            activeDeviceAddress = active?.deviceAddress,
+            pendingPairing = reconcilePendingPairing(devices),
+            pendingForgetAddress = reconcilePendingForget(devices),
+        )
+    }
+
+    private suspend fun reconcilePendingPairing(devices: List<BondedCompanion>): BondedCompanion? {
+        val pending = credentials.pendingBondedCompanion() ?: return null
+        val alreadyPromoted = devices.any {
+            it.deviceAddress.equals(pending.deviceAddress, ignoreCase = true) &&
+                it.controllerIdB64 == pending.controllerIdB64 &&
+                it.controllerRootB64 == pending.controllerRootB64
+        }
+        if (!alreadyPromoted) return pending
+        credentials.savePendingBondedCompanion(null)
+        return null
+    }
+
+    private suspend fun reconcilePendingForget(devices: List<BondedCompanion>): String? {
+        val pending = credentials.pendingControllerForgetAddress() ?: return null
+        if (devices.any { it.deviceAddress.equals(pending, ignoreCase = true) }) return pending
+        // The accepted receipt was already acted on and the saved root was removed,
+        // but a process stop may have interrupted the following marker cleanup.
+        credentials.savePendingControllerForgetAddress(null)
+        return null
+    }
+
+    private suspend fun clearLiveData(activeAddress: String) {
+        withContext(Dispatchers.IO) { cache.clear() }
+        lastLiveNamespace = null
+        reloadDevices()
+        mutableState.value = mutableState.value.copy(
+            activeDeviceAddress = activeAddress,
+            status = null,
+            history = emptyList(),
+            peers = emptyList(),
+            messages = emptyList(),
+            channels = emptyList(),
+            connection = coordinator.state.value,
+            errorCode = null,
+        )
+    }
+
+    private suspend fun stopEvents() {
         eventJob?.cancelAndJoin()
-        val cursor = mutableState.value.history.lastOrNull()?.cursor
-            ?: mutableState.value.status?.cursor
+        eventJob = null
+    }
+
+    private suspend fun subscribeToEvents() {
+        stopEvents()
+        val cursor = mutableState.value.history.lastOrNull()?.cursor ?: mutableState.value.status?.cursor
         eventJob = scope.launch {
             runCatching {
                 coordinator.withTransport { transport ->
                     transport.events(cursor).collect { refresh() }
                 }
-            }.onFailure { failure ->
-                SafeLog.warn("owner_events", "event_stream_ended", failure)
-            }
+            }.onFailure { SafeLog.warn("owner_events", "event_stream_ended", it) }
         }
     }
 
@@ -668,27 +637,38 @@ class OwnerRepository(
                     messages = snapshot.messages,
                     historyCursor = snapshot.history.lastOrNull()?.cursor,
                     messageCursor = snapshot.messages.lastOrNull()?.cursor,
-                    writtenAt = System.currentTimeMillis() / 1000L,
+                    writtenAt = System.currentTimeMillis() / 1_000L,
                 ),
             )
         }.onFailure { SafeLog.warn("owner_cache", "cache_write_failed", it) }
     }
 
+    private fun skipExactly(input: FileInputStream, bytes: Int) {
+        var remaining = bytes.toLong()
+        while (remaining > 0) {
+            val skipped = input.skip(remaining)
+            if (skipped <= 0) throw TransportException("truncated_imported_image")
+            remaining -= skipped
+        }
+    }
+
+    private fun FileInputStream.readNBytesCompat(bytes: Int): ByteArray {
+        val output = ByteArray(bytes)
+        var offset = 0
+        while (offset < bytes) {
+            val count = read(output, offset, bytes - offset)
+            if (count < 0) break
+            offset += count
+        }
+        return if (offset == bytes) output else output.copyOf(offset)
+    }
+
     private companion object {
-        const val WIFI_RETRY_STATUS_POLL_COUNT = 6
-        const val WIFI_RETRY_STATUS_POLL_INTERVAL_MS = 750L
-        val REMOTE_BINDING_FAILURES = setOf(
-            "remote_companion_binding_failed",
-            "remote_gateway_binding_failed",
-            "remote_provenance_unverified",
-            "remote_gateway_unverified",
-            "remote_last_seen_invalid",
-        )
-        val FATAL_ENROLLMENT_BACKEND_FAILURES = REMOTE_BINDING_FAILURES + setOf(
-            "duplicate_remote_companion",
-            "invalid_companion_id",
-            "malformed_response",
-            "sign_in_required",
+        const val UNBOUND_UPDATE_ABORT_ID =
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        val FORGET_OUTCOME_UNKNOWN = setOf("request_timeout", "disconnected", "gatt_disconnected")
+        val TRANSIENT_UPDATE_FAILURES = setOf(
+            "request_timeout", "disconnected", "gatt_disconnected", "gatt_write_failed",
         )
     }
 }

@@ -1,6 +1,5 @@
 package app.kitsu.mobile.ui
 
-import app.kitsu.mobile.model.Message
 import app.kitsu.mobile.model.MessageRoute
 import app.kitsu.mobile.model.MeshChannel
 import app.kitsu.mobile.model.MeshPeerKeyPolicy
@@ -12,16 +11,6 @@ data class MessageRecipient(
     val reference: String,
     val label: String,
 )
-
-enum class MessageDelivery {
-    QUEUED,
-    SENT,
-    DELIVERED,
-    FAILED,
-    UNREAD,
-    RECEIVED,
-    UNKNOWN,
-}
 
 object MessageComposerPolicy {
     private val channelSlot = Regex("^[0-3]$")
@@ -58,7 +47,7 @@ object MessageComposerPolicy {
 
     fun channelRecipients(channels: List<MeshChannel>): List<MessageRecipient> = channels
         .asSequence()
-        .filter { it.configured == true && it.slot in 0..3 }
+        .filter { it.configured && it.slot in 0..3 }
         .sortedBy { it.slot }
         .map {
             MessageRecipient(
@@ -69,20 +58,6 @@ object MessageComposerPolicy {
         }
         .distinctBy { it.reference }
         .toList()
-
-    fun delivery(state: String): MessageDelivery = when (state.trim().lowercase()) {
-        "queued", "pending", "accepted" -> MessageDelivery.QUEUED
-        "sent", "transmitted" -> MessageDelivery.SENT
-        "delivered", "acknowledged", "acked" -> MessageDelivery.DELIVERED
-        "failed", "rejected", "expired", "undeliverable" -> MessageDelivery.FAILED
-        "unread", "new" -> MessageDelivery.UNREAD
-        "received", "read" -> MessageDelivery.RECEIVED
-        else -> MessageDelivery.UNKNOWN
-    }
-
-    fun unreadCount(messages: List<Message>): Int = messages.count {
-        it.direction.equals("inbound", ignoreCase = true) && delivery(it.state) == MessageDelivery.UNREAD
-    }
 
     fun compactReference(value: String): String {
         val trimmed = value.trim()

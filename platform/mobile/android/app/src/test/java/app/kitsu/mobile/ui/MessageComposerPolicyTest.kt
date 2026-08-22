@@ -1,6 +1,5 @@
 package app.kitsu.mobile.ui
 
-import app.kitsu.mobile.model.Message
 import app.kitsu.mobile.model.MessageRoute
 import app.kitsu.mobile.model.MeshChannel
 import app.kitsu.mobile.model.Peer
@@ -51,7 +50,7 @@ class MessageComposerPolicyTest {
                 MeshChannel(1, false, "Private"),
                 MeshChannel(2, true, "Ops"),
                 MeshChannel(2, true, "Duplicate"),
-                MeshChannel(3, null, null),
+                MeshChannel(3, false, null),
             ),
         )
         assertEquals(listOf("0", "2"), recipients.map { it.reference })
@@ -72,19 +71,6 @@ class MessageComposerPolicyTest {
         assertEquals("Alice", recipients.single().label)
     }
 
-    @Test fun deliveryAndUnreadUseAuthoritativeWireStateOnly() {
-        val messages = listOf(
-            message("m1", state = "unread"),
-            message("m2", state = "received"),
-            message("m3", direction = "outbound", state = "unread"),
-            message("m4", state = "new"),
-        )
-        assertEquals(2, MessageComposerPolicy.unreadCount(messages))
-        assertEquals(MessageDelivery.DELIVERED, MessageComposerPolicy.delivery("acked"))
-        assertEquals(MessageDelivery.FAILED, MessageComposerPolicy.delivery("expired"))
-        assertEquals(MessageDelivery.UNKNOWN, MessageComposerPolicy.delivery("custom_state"))
-    }
-
     @Test fun blankAndOversizedMessagesAreRejectedWithoutTrimmingContent() {
         assertEquals(
             "Write a message",
@@ -98,19 +84,4 @@ class MessageComposerPolicyTest {
             )!!.contains("128"),
         )
     }
-
-    private fun message(
-        id: String,
-        direction: String = "inbound",
-        channel: String? = null,
-        state: String = "received",
-    ) = Message(
-        id = id,
-        cursor = id,
-        direction = direction,
-        channel = channel,
-        text = "hello",
-        state = state,
-        occurredAt = 1,
-    )
 }

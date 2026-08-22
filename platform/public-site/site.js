@@ -2,6 +2,8 @@ const DOWNLOAD_MANIFEST = "/downloads/latest.json";
 const DOWNLOAD_SIGNATURE = "/downloads/latest.json.sig";
 const RELEASE_PUBLIC_KEY_B64URL = "JAAR8Unpz7n7h_q02cpFc8HH_7OHF3ZYAAXsQa7lE4I";
 const ANDROID_SIGNING_CERTIFICATE_SHA256 = "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc";
+const MIN_LOCAL_FIRST_VERSION_CODE = 13;
+const MIN_LOCAL_FIRST_MAJOR_VERSION = 2;
 
 function validHttpsUrl(value) {
   try {
@@ -49,7 +51,14 @@ function showReleaseFailure() {
   document.querySelector("#android-status").textContent = "Android release unavailable";
   document.querySelector("#android-detail").textContent = "The signed Android release could not be verified. No download has been exposed.";
   document.querySelector("#android-download").textContent = "Verification failed";
-  document.querySelector("#android-digest").textContent = "Try again later or check the service status page.";
+  document.querySelector("#android-digest").textContent = "Try again later or check the public status page.";
+}
+
+function showReleaseNotPromoted(version) {
+  document.querySelector("#android-status").textContent = "Bluetooth-only Android release not promoted";
+  document.querySelector("#android-detail").textContent = `The verified Android ${version} manifest predates the local-first release, so this page will not offer its APK.`;
+  document.querySelector("#android-download").textContent = "No eligible APK available";
+  document.querySelector("#android-digest").textContent = "The link activates only for Android 2.0.0 / version code 13 or newer after release acceptance.";
 }
 
 async function loadAndroidRelease() {
@@ -86,15 +95,21 @@ async function loadAndroidRelease() {
       || Number.isNaN(Date.parse(release.publishedAt))
     ) return showReleaseFailure();
 
+    const majorVersion = Number.parseInt(release.version.split(".", 1)[0], 10);
+    if (
+      release.versionCode < MIN_LOCAL_FIRST_VERSION_CODE
+      || majorVersion < MIN_LOCAL_FIRST_MAJOR_VERSION
+    ) return showReleaseNotPromoted(release.version);
+
     const link = document.querySelector("#android-download");
     link.href = download.toString();
     link.download = `kitsu-k32-android-${release.version}.apk`;
     link.textContent = `Download Android ${release.version} · ${formatBytes(release.bytes)}`;
     link.classList.remove("disabled");
     link.removeAttribute("aria-disabled");
-    document.querySelector("#android-status").textContent = `Verified Android release · version ${release.version}`;
+    document.querySelector("#android-status").textContent = `Verified local-first Android manifest · version ${release.version}`;
     document.querySelector("#android-title").textContent = `Kitsu ${release.version} Android`;
-    document.querySelector("#android-detail").textContent = "Signed Android release with Bluetooth, remote access, messages, setup, and Disconnect.";
+    document.querySelector("#android-detail").textContent = "Signed local-first Android release with authenticated Bluetooth, saved-device controls, messages, offline firmware updates, and no account or Internet requirement.";
     document.querySelector("#android-digest").textContent = `${release.bytes.toLocaleString("en-US")} bytes · SHA-256 ${release.sha256.toUpperCase()}`;
   } catch {
     showReleaseFailure();

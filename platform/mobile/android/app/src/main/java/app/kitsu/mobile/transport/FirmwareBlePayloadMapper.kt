@@ -1,86 +1,85 @@
 package app.kitsu.mobile.transport
 
+import app.kitsu.mobile.model.ActionCommand
+import app.kitsu.mobile.model.ActionKind
+import app.kitsu.mobile.model.ActionReceipt
+import app.kitsu.mobile.model.ControllerForgetReceipt
+import app.kitsu.mobile.model.EventEnvelope
 import app.kitsu.mobile.model.HistoryEntry
 import app.kitsu.mobile.model.HistoryPage
-import app.kitsu.mobile.model.GatewayConfigurationReceipt
-import app.kitsu.mobile.model.GatewayEnrollmentReceipt
-import app.kitsu.mobile.model.GatewayEnrollmentEvent
 import app.kitsu.mobile.model.KitsuStatus
-import app.kitsu.mobile.model.LanState
-import app.kitsu.mobile.model.MeshState
 import app.kitsu.mobile.model.MeshChannel
 import app.kitsu.mobile.model.MeshConfigurationReceipt
 import app.kitsu.mobile.model.MeshPeerKeyPolicy
+import app.kitsu.mobile.model.MeshState
 import app.kitsu.mobile.model.Message
 import app.kitsu.mobile.model.MessagePage
 import app.kitsu.mobile.model.NeedLevels
 import app.kitsu.mobile.model.Peer
 import app.kitsu.mobile.model.PeerPage
-import app.kitsu.mobile.model.ProvisioningReceipt
-import app.kitsu.mobile.model.WifiRetryReceipt
 import app.kitsu.mobile.model.WIRE_VERSION
-import kotlinx.serialization.decodeFromString
+import app.kitsu.mobile.update.FirmwareUpdatePackageReader
+import app.kitsu.mobile.update.FirmwareUpdateReceipt
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-/** Maps the compact, authenticated Heltec operation payloads into app models. */
+/** Maps compact authenticated Heltec payloads into local app models. */
 internal object FirmwareBlePayloadMapper {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    private val strictJson = Json { ignoreUnknownKeys = false; explicitNulls = false }
 
     @Serializable
     private data class FirmwareState(
         val schema: String,
         @SerialName("device_uid") val deviceUid: String,
         val companion: String,
+        @SerialName("firmware_version") val firmwareVersion: String? = null,
+        val listening: Boolean = false,
+        val mood: String? = null,
+        @SerialName("battery_percent") val batteryPercent: Int? = null,
+        @SerialName("battery_mv") val batteryMillivolts: Int? = null,
+        @SerialName("pack_ready") val packReady: Boolean = false,
+        @SerialName("pack_id") val packId: Long? = null,
+        @SerialName("pack_revision") val packRevision: Long? = null,
+        @SerialName("bond_level") val bondLevel: Int = 0,
+        @SerialName("bond_xp") val bondExperience: Int = 0,
+        @SerialName("bond_progress_percent") val bondProgressPercent: Int = 0,
+        @SerialName("evolution_stage") val evolutionStage: String? = null,
+        @SerialName("appearance_variant") val appearanceVariant: Int? = null,
+        val personality: String? = null,
+        @SerialName("unlock_mask") val unlockMask: Long = 0,
+        @SerialName("memory_count") val memoryCount: Int = 0,
         val energy: Int,
         val curiosity: Int,
         val affection: Int,
         val sleeping: Boolean,
         @SerialName("mesh_rx_ready") val meshRxReady: Boolean,
-        @SerialName("mesh_tx_unlocked") val meshTxUnlocked: Boolean,
         @SerialName("mesh_enabled") val meshEnabled: Boolean = false,
         @SerialName("mesh_time_valid") val meshTimeValid: Boolean = false,
         @SerialName("mesh_one_shot_ready") val meshOneShotReady: Boolean = false,
-        @SerialName("wifi_configured") val wifiConfigured: Boolean = false,
-        @SerialName("wifi_state") val wifiState: String = "unconfigured",
-        @SerialName("gateway_configured") val gatewayConfigured: Boolean = false,
-        @SerialName("gateway_enrolled") val gatewayEnrolled: Boolean = false,
-        @SerialName("lan_state") val lanState: String = "unconfigured",
-        @SerialName("gateway_lan_state") val gatewayLanState: String? = null,
-        @SerialName("gateway_enrollment_state") val gatewayEnrollmentState: String = "idle",
-        @SerialName("gateway_enrollment_error") val gatewayEnrollmentError: String? = null,
-        @SerialName("gateway_enrollment_expires_in_ms") val gatewayEnrollmentExpiresInMs: Int = 0,
-        @SerialName("remote_connectivity_allowed") val remoteConnectivityAllowed: Boolean,
         @SerialName("event_count") val eventCount: Int = 0,
     )
 
-    @Serializable
-    private data class Observation(
+    @Serializable private data class Observation(
         @SerialName("epoch_valid") val epochValid: Boolean,
         val epoch: Long,
     )
 
-    @Serializable
-    private data class LastHop(
-        val valid: Boolean,
-        val rssi: Double,
-        val snr: Double,
-    )
+    @Serializable private data class LastHop(val valid: Boolean, val rssi: Double, val snr: Double)
 
-    @Serializable
-    private data class FirmwareHistoryItem(
+    @Serializable private data class FirmwareHistoryItem(
         val sequence: String,
         @SerialName("public_key_b64") val publicKeyB64: String,
         val observed: Observation,
         @SerialName("last_hop") val lastHop: LastHop,
     )
 
-    @Serializable
-    private data class FirmwareHistoryPage(
+    @Serializable private data class FirmwareHistoryPage(
         val schema: String,
         val items: List<FirmwareHistoryItem>,
         val cursor: String? = null,
@@ -88,8 +87,7 @@ internal object FirmwareBlePayloadMapper {
         val gap: Boolean,
     )
 
-    @Serializable
-    private data class FirmwarePeer(
+    @Serializable private data class FirmwarePeer(
         @SerialName("public_key_b64") val publicKeyB64: String,
         val name: String,
         val type: Int,
@@ -97,14 +95,9 @@ internal object FirmwareBlePayloadMapper {
         @SerialName("last_hop") val lastHop: LastHop,
     )
 
-    @Serializable
-    private data class FirmwarePeerPage(
-        val schema: String,
-        val items: List<FirmwarePeer>,
-    )
+    @Serializable private data class FirmwarePeerPage(val schema: String, val items: List<FirmwarePeer>)
 
-    @Serializable
-    private data class FirmwareMessage(
+    @Serializable private data class FirmwareMessage(
         @SerialName("message_id") val messageId: String,
         val timestamp: Long,
         val inbound: Boolean,
@@ -117,8 +110,7 @@ internal object FirmwareBlePayloadMapper {
         val state: String,
     )
 
-    @Serializable
-    private data class FirmwareMessagePage(
+    @Serializable private data class FirmwareMessagePage(
         val schema: String,
         val items: List<FirmwareMessage>,
         val cursor: String? = null,
@@ -126,90 +118,78 @@ internal object FirmwareBlePayloadMapper {
         val gap: Boolean,
     )
 
-    @Serializable
-    private data class FirmwareChannel(
-        val slot: Int,
-        val configured: Boolean,
-        val name: String? = null,
-    )
-
-    @Serializable
-    private data class FirmwareChannelPage(
-        val schema: String,
-        val items: List<FirmwareChannel>,
-    )
-
-    @Serializable
-    private data class FirmwareMeshConfiguration(
+    @Serializable private data class FirmwareChannel(val slot: Int, val configured: Boolean, val name: String? = null)
+    @Serializable private data class FirmwareChannelPage(val schema: String, val items: List<FirmwareChannel>)
+    @Serializable private data class FirmwareMeshConfiguration(
         val schema: String,
         val enabled: Boolean,
         val profile: String,
         @SerialName("tx_power_dbm") val txPowerDbm: Int,
     )
 
-    @Serializable
-    private data class FirmwareProvisioningReceipt(
-        val schema: String,
-        val accepted: Boolean,
-        val state: String,
-        @SerialName("error_code") val errorCode: String? = null,
-    )
-
-    @Serializable
-    private data class FirmwareGatewayEnrollmentReceipt(
-        val schema: String,
-        val accepted: Boolean,
-        val state: String,
-        @SerialName("enrollment_id") val enrollmentId: String,
-        @SerialName("expires_in_ms") val expiresInMs: Int? = null,
-        @SerialName("error_code") val errorCode: String? = null,
-    )
-
     fun rejectionCode(payload: ByteArray): String? = try {
         val root = json.parseToJsonElement(payload.toString(Charsets.UTF_8)).jsonObject
         if (root["ok"]?.jsonPrimitive?.booleanOrNull == false) {
             root["error"]?.jsonPrimitive?.content ?: "request_rejected"
-        } else {
-            null
-        }
+        } else null
     } catch (_: Throwable) {
         null
+    }
+
+    fun event(operation: String, payload: ByteArray): EventEnvelope {
+        val wire = payload.toString(Charsets.UTF_8)
+        val value = try {
+            strictJson.decodeFromString<EventEnvelope>(wire)
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_event", failure)
+        }
+        val refreshSequence = value.cursor.removePrefix("ble:").toLongOrNull()
+        if (operation != "companion.refresh" || value.v != WIRE_VERSION || value.kind != "refresh" ||
+            value.body.isNotEmpty() || refreshSequence == null || value.cursor != "ble:$refreshSequence" ||
+            refreshSequence !in 1L..0xffffffffL
+        ) throw TransportException("malformed_event")
+        return value
     }
 
     fun state(payload: ByteArray, observedAtEpochSeconds: Long): KitsuStatus {
         val value = decode<FirmwareState>(payload, "malformed_state")
         requireSchema(value.schema, "kitsu.state.v1")
-        if (value.energy !in 0..100 || value.curiosity !in 0..100 || value.affection !in 0..100) {
-            throw TransportException("malformed_state")
-        }
-        val gatewayLanState = value.gatewayLanState ?: value.lanState
-        if (value.wifiState !in WIFI_STATES || gatewayLanState !in LAN_STATES) {
+        if (value.energy !in 0..100 || value.curiosity !in 0..100 || value.affection !in 0..100 ||
+            (value.batteryPercent != null && value.batteryPercent !in 0..100) ||
+            (value.batteryMillivolts != null && value.batteryMillivolts < 0) ||
+            (value.packId != null && value.packId !in 0..0xffffffffL) ||
+            (value.packRevision != null && value.packRevision !in 0..0xffffffffL) ||
+            value.bondLevel < 0 || value.bondExperience < 0 || value.bondProgressPercent !in 0..100 ||
+            (value.appearanceVariant != null && value.appearanceVariant !in 0..255) ||
+            value.unlockMask < 0 || value.memoryCount < 0
+        ) {
             throw TransportException("malformed_state")
         }
         return KitsuStatus(
-            protocol = WIRE_VERSION,
             deviceId = value.deviceUid,
-            displayName = value.companion,
             companionName = value.companion,
-            mood = if (value.sleeping) "SLEEPING" else "AWAKE",
+            firmwareVersion = value.firmwareVersion,
+            listening = value.listening,
+            mood = value.mood?.takeIf { it.isNotBlank() } ?: if (value.sleeping) "SLEEPING" else "AWAKE",
+            batteryPercent = value.batteryPercent,
+            batteryMillivolts = value.batteryMillivolts,
+            packReady = value.packReady,
+            packId = value.packId?.toString(),
+            packRevision = value.packRevision,
+            bondLevel = value.bondLevel,
+            bondExperience = value.bondExperience,
+            bondProgressPercent = value.bondProgressPercent,
+            evolutionStage = value.evolutionStage,
+            appearanceVariant = value.appearanceVariant?.toString(),
+            personality = value.personality,
+            unlockMask = value.unlockMask,
+            memoryCount = value.memoryCount,
             needs = NeedLevels(value.energy, value.curiosity, value.affection),
             mesh = MeshState(
                 enabled = value.meshEnabled,
                 rxReady = value.meshRxReady,
-                txReady = value.meshOneShotReady,
                 timeValid = value.meshTimeValid,
                 oneShotReady = value.meshOneShotReady,
-            ),
-            lan = LanState(
-                wifiConfigured = value.wifiConfigured,
-                wifiState = value.wifiState,
-                gatewayConfigured = value.gatewayConfigured,
-                gatewayEnrolled = value.gatewayEnrolled,
-                lanState = gatewayLanState,
-                gatewayEnrollmentState = value.gatewayEnrollmentState,
-                gatewayEnrollmentError = value.gatewayEnrollmentError,
-                gatewayEnrollmentExpiresInMs = value.gatewayEnrollmentExpiresInMs,
-                remoteConnectivityAllowed = value.remoteConnectivityAllowed,
             ),
             cursor = value.eventCount.takeIf { it > 0 }?.toString(),
             updatedAt = observedAtEpochSeconds,
@@ -245,50 +225,38 @@ internal object FirmwareBlePayloadMapper {
         if (value.items.any { !MeshPeerKeyPolicy.isCanonicalBase64Url(it.publicKeyB64) }) {
             throw TransportException("malformed_peers")
         }
-        return PeerPage(
-            items = value.items.map { item ->
-                Peer(
-                    id = item.publicKeyB64,
-                    name = item.name,
-                    role = roleName(item.type),
-                    lastHeardAt = item.lastObserved.epoch.takeIf { item.lastObserved.epochValid },
-                    route = if (item.lastHop.valid) {
-                        "last hop ${item.lastHop.rssi} dBm / ${item.lastHop.snr} dB"
-                    } else {
-                        null
-                    },
-                )
-            },
-        )
+        return PeerPage(value.items.map { item ->
+            Peer(
+                id = item.publicKeyB64,
+                name = item.name,
+                role = when (item.type) { 1 -> "client"; 2 -> "repeater"; 3 -> "room"; 4 -> "sensor"; else -> "unknown" },
+                lastHeardAt = item.lastObserved.epoch.takeIf { item.lastObserved.epochValid },
+                route = if (item.lastHop.valid) "last hop ${item.lastHop.rssi} dBm / ${item.lastHop.snr} dB" else null,
+            )
+        })
     }
 
     fun messages(payload: ByteArray): MessagePage {
         val value = decode<FirmwareMessagePage>(payload, "malformed_messages")
         requireSchema(value.schema, "kitsu.messages.v1")
         if (value.items.any { item ->
-                item.kind !in setOf("direct", "channel") ||
-                    (item.peerId != null && !MeshPeerKeyPolicy.isCanonicalBase64Url(item.peerId)) ||
-                    (item.kind == "direct" && item.peerId == null) ||
-                    (item.kind == "channel" && item.channelSlot !in 0..3)
-            }
-        ) {
-            throw TransportException("malformed_messages")
-        }
+                item.state !in MESSAGE_STATES || when (item.kind) {
+                    "direct" -> item.peerId == null ||
+                        !MeshPeerKeyPolicy.isCanonicalBase64Url(item.peerId) ||
+                        item.channelSlot != null
+                    "channel" -> item.peerId != null || item.channelSlot !in 0..3
+                    else -> true
+                }
+            }) throw TransportException("malformed_messages")
         return MessagePage(
             items = value.items.map { item ->
-                val directPeer = item.peerId ?: item.senderName.ifBlank { "direct peer" }
-                val channelSender = item.senderName.takeIf { it.isNotBlank() }
-                    ?.let { "$it (unverified)" }
                 Message(
                     id = item.messageId,
                     cursor = item.messageId,
                     direction = if (item.inbound) "inbound" else "outbound",
-                    peerId = when {
-                        item.kind == "direct" -> directPeer
-                        item.inbound -> channelSender
-                        else -> null
-                    },
-                    channel = if (item.kind == "channel") item.channelSlot?.toString() ?: "unknown" else null,
+                    peerId = if (item.kind == "direct") item.peerId else
+                        item.senderName.takeIf { it.isNotBlank() }?.let { "$it (unverified)" },
+                    channel = item.channelSlot?.toString(),
                     text = item.text,
                     state = item.state,
                     occurredAt = item.timestamp,
@@ -304,10 +272,8 @@ internal object FirmwareBlePayloadMapper {
         val value = decode<FirmwareChannelPage>(payload, "malformed_channels")
         requireSchema(value.schema, "kitsu.channels.v1")
         if (value.items.size != 4 || value.items.map { it.slot } != listOf(0, 1, 2, 3) ||
-            value.items.any { channel -> !validChannelName(channel.configured, channel.name) }
-        ) {
-            throw TransportException("malformed_channels")
-        }
+            value.items.any { !validChannelName(it.configured, it.name) }
+        ) throw TransportException("malformed_channels")
         return value.items.map { MeshChannel(it.slot, it.configured, it.name) }
     }
 
@@ -320,88 +286,85 @@ internal object FirmwareBlePayloadMapper {
         return MeshConfigurationReceipt(value.enabled, value.profile, value.txPowerDbm)
     }
 
-    fun wifiConfiguration(payload: ByteArray): ProvisioningReceipt {
-        val value = provisioningReceipt(payload, "kitsu.wifi-config.v1")
-        return ProvisioningReceipt(value.accepted, value.state, value.errorCode)
-    }
-
-    fun wifiRetry(payload: ByteArray): WifiRetryReceipt {
-        val value = decode<FirmwareProvisioningReceipt>(payload, "malformed_wifi_retry")
-        requireSchema(value.schema, "kitsu.wifi-retry.v1")
-        if (!value.accepted || value.state != "retrying" || value.errorCode != null) {
-            throw TransportException(value.errorCode ?: "wifi_retry_rejected")
+    fun controllerForget(payload: ByteArray): ControllerForgetReceipt {
+        val wire = payload.toString(Charsets.UTF_8)
+        val keys = try {
+            strictJson.parseToJsonElement(wire).jsonObject.keys
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_controller_forget", failure)
         }
-        return WifiRetryReceipt(value.accepted, value.state, value.errorCode)
-    }
-
-    fun gatewayConfiguration(payload: ByteArray): GatewayConfigurationReceipt {
-        val value = provisioningReceipt(payload, "kitsu.gateway-config.v2")
-        return GatewayConfigurationReceipt(value.accepted, value.state, value.errorCode)
-    }
-
-    fun gatewayEnrollmentBegin(payload: ByteArray, expectedEnrollmentId: String): GatewayEnrollmentReceipt {
-        val value = gatewayEnrollmentReceipt(payload, expectedEnrollmentId)
-        val expiresInMs = value.expiresInMs
-        if (!value.accepted || value.state != "physical_confirmation_required" ||
-            expiresInMs == null || expiresInMs !in 1..60_000 || value.errorCode != null
-        ) {
-            throw TransportException(value.errorCode ?: "malformed_enrollment_receipt")
+        val value = try {
+            strictJson.decodeFromString<ControllerForgetReceipt>(wire)
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_controller_forget", failure)
         }
+        requireSchema(value.schema, "kitsu.controller-forget.v1")
+        val expectedKeys = if (value.accepted) CONTROLLER_FORGET_ACCEPTED_KEYS else CONTROLLER_FORGET_REJECTED_KEYS
+        if (keys != expectedKeys) throw TransportException("malformed_controller_forget")
+        if (!value.accepted) {
+            if (value.error != "storage_failed") throw TransportException("malformed_controller_forget")
+            throw TransportException(value.error)
+        }
+        if (value.error != null) throw TransportException("malformed_controller_forget")
         return value
     }
 
-    fun gatewayEnrollmentFinish(payload: ByteArray, expectedEnrollmentId: String): GatewayEnrollmentReceipt {
-        val value = gatewayEnrollmentReceipt(payload, expectedEnrollmentId)
-        val waiting = !value.accepted && value.state == "physical_confirmation_required" &&
-            value.errorCode == "physical_confirmation_required" &&
-            value.expiresInMs != null && value.expiresInMs in 1..60_000
-        val ready = value.accepted && value.state == "ready_for_wifi" &&
-            value.errorCode == null && value.expiresInMs == 300_000
-        if (!waiting && !ready) {
-            throw TransportException(value.errorCode ?: "malformed_enrollment_receipt")
+    fun action(payload: ByteArray, command: ActionCommand): ActionReceipt {
+        val wire = payload.toString(Charsets.UTF_8)
+        val root = try {
+            strictJson.parseToJsonElement(wire).jsonObject
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_action_receipt", failure)
         }
-        return value
+        val receipt = try {
+            strictJson.decodeFromString<ActionReceipt>(wire)
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_action_receipt", failure)
+        }
+        val expectedKeys = if (receipt.accepted) ACTION_ACCEPTED_KEYS else ACTION_REJECTED_KEYS
+        if (root.keys != expectedKeys || receipt.clientRequestId != command.clientRequestId) {
+            throw TransportException("malformed_action_receipt")
+        }
+        if (!receipt.accepted) {
+            val error = receipt.errorCode
+            if (receipt.state != "rejected" || error == null || !ACTION_TOKEN.matches(error)) {
+                throw TransportException("malformed_action_receipt")
+            }
+            throw TransportException(error)
+        }
+        val expectedState = if (command.kind == ActionKind.SEND_MESSAGE) "queued" else "applied"
+        if (receipt.state != expectedState || receipt.errorCode != null) {
+            throw TransportException("malformed_action_receipt")
+        }
+        return receipt
     }
 
-    fun gatewayEnrollmentEvent(payload: ByteArray): GatewayEnrollmentEvent {
-        val value = decode<GatewayEnrollmentEvent>(payload, "malformed_enrollment_event")
-        val physicalConfirmed = value.accepted && value.state == "physical_confirmed" &&
-            value.enrollmentId?.let(EnrollmentPolicy::canonicalUuid) == true &&
-            value.expiresInMs in 1..60_000 && value.errorCode == null
-        val expired = !value.accepted && value.state == "expired" &&
-            value.enrollmentId == null && value.expiresInMs == 0 && value.errorCode == "expired"
-        if (value.schema != "kitsu.gateway-enrollment.event.v1" ||
-            (!physicalConfirmed && !expired)
-        ) {
-            throw TransportException("malformed_enrollment_event")
+    fun firmwareUpdate(payload: ByteArray): FirmwareUpdateReceipt {
+        val wire = payload.toString(Charsets.UTF_8)
+        val keys = try {
+            strictJson.parseToJsonElement(wire).jsonObject.keys
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_firmware_update_receipt", failure)
         }
-        return value
-    }
-
-    private fun gatewayEnrollmentReceipt(
-        payload: ByteArray,
-        expectedEnrollmentId: String,
-    ): GatewayEnrollmentReceipt {
-        val value = decode<FirmwareGatewayEnrollmentReceipt>(payload, "malformed_enrollment_receipt")
-        requireSchema(value.schema, "kitsu.gateway-enrollment.receipt.v1")
-        if (!EnrollmentPolicy.canonicalUuid(value.enrollmentId) || value.enrollmentId != expectedEnrollmentId) {
-            throw TransportException("enrollment_response_binding_failed")
+        if (keys != UPDATE_RECEIPT_KEYS) {
+            throw TransportException("malformed_firmware_update_receipt")
         }
-        return GatewayEnrollmentReceipt(
-            schema = value.schema,
-            accepted = value.accepted,
-            state = value.state,
-            enrollmentId = value.enrollmentId,
-            expiresInMs = value.expiresInMs,
-            errorCode = value.errorCode,
-        )
-    }
-
-    private fun provisioningReceipt(payload: ByteArray, schema: String): FirmwareProvisioningReceipt {
-        val value = decode<FirmwareProvisioningReceipt>(payload, "malformed_provisioning_receipt")
-        requireSchema(value.schema, schema)
-        if (!value.accepted || value.state != "stored" || value.errorCode != null) {
-            throw TransportException(value.errorCode ?: "provisioning_rejected")
+        val value = try {
+            strictJson.decodeFromString<FirmwareUpdateReceipt>(wire)
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_firmware_update_receipt", failure)
+        }
+        if (value.protocol != 1 || value.state !in UPDATE_STATES || value.imageBytes < 0 ||
+            value.nextOffset !in 0..value.imageBytes ||
+            value.chunkBytes != FirmwareUpdatePackageReader.CHUNK_BYTES ||
+            (value.updateId != null && !LOWER_SHA.matches(value.updateId))
+        ) throw TransportException("malformed_firmware_update_receipt")
+        if (!value.ok) {
+            if (value.error == null) throw TransportException("malformed_firmware_update_receipt")
+            throw TransportException(value.error)
+        }
+        if ((value.state == "failed") != (value.error != null)) {
+            throw TransportException("malformed_firmware_update_receipt")
         }
         return value
     }
@@ -424,34 +387,20 @@ internal object FirmwareBlePayloadMapper {
         else -> true
     }
 
-    private fun roleName(type: Int): String = when (type) {
-        1 -> "client"
-        2 -> "repeater"
-        3 -> "room"
-        4 -> "sensor"
-        else -> "unknown"
-    }
-
-    private val WIFI_STATES = setOf(
-        "unconfigured",
-        "storage_unavailable",
-        "connectivity_unavailable",
-        "ble_active",
-        "grace",
-        "connecting",
-        "connected",
-        "backoff",
+    private val LOWER_SHA = Regex("^[0-9a-f]{64}$")
+    private val ACTION_TOKEN = Regex("^[a-z][a-z0-9_]{0,47}$")
+    private val MESSAGE_STATES = setOf(
+        "received", "queued", "sent", "delivered", "unconfirmed", "failed", "cancelled",
     )
-    private val LAN_STATES = setOf(
-        "config_unavailable",
-        "connectivity_unavailable",
-        "unconfigured",
-        "ble_priority",
-        "wifi_pending",
-        "enrollment_pending",
-        "time_pending",
-        "replay_unavailable",
-        "reconnecting",
-        "connected",
+    private val CONTROLLER_FORGET_ACCEPTED_KEYS = setOf("schema", "accepted")
+    private val CONTROLLER_FORGET_REJECTED_KEYS = CONTROLLER_FORGET_ACCEPTED_KEYS + "error"
+    private val ACTION_ACCEPTED_KEYS = setOf("action_id", "accepted", "state")
+    private val ACTION_REJECTED_KEYS = ACTION_ACCEPTED_KEYS + "error_code"
+    private val UPDATE_RECEIPT_KEYS = setOf(
+        "ok", "protocol", "state", "update_id", "firmware_version", "image_bytes",
+        "next_offset", "chunk_bytes", "resumed", "replayed", "scheduled", "error",
+    )
+    private val UPDATE_STATES = setOf(
+        "idle", "receiving", "ready_to_reboot", "pending_verify", "confirmed", "rolled_back", "failed",
     )
 }

@@ -1,19 +1,12 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content="Contact the K32 Kitsu operator." /><link rel="icon" href="/assets/kitsu-app-icon.png?v=4f850b55" /><link rel="stylesheet" href="/styles.css" /><title>Contact - K32 Kitsu</title></head>
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content="Public K32 Kitsu project and security-reporting routes." /><link rel="icon" href="/assets/kitsu-app-icon.png?v=4f850b55" /><link rel="stylesheet" href="/styles.css" /><title>Contact - K32 Kitsu</title></head>
 <body>
-  <header class="nav"><a class="wordmark" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="52" height="52" /><span><strong>K32</strong><small>Kitsu companion</small></span></a><nav><a href="/">Home</a><a class="nav-action" href="https://app.k32.run">Open Kitsu</a></nav></header>
-  <main class="policy"><p class="eyebrow">WEB CONTACT ROUTE</p><h1>Contact K32 Kitsu</h1><article>
-    <p class="notice" id="sent" hidden>Your report was accepted. Keep a copy of what you sent.</p><p>Use this form for security, privacy, abuse, or service reports. The reply address can be an email address or another contact handle you actively monitor. No public mailbox is claimed.</p>
-    <form class="contact-form" action="https://api.k32.run/v1/contact" method="post" accept-charset="utf-8">
-      <label>Category<select name="category" required><option value="service">Service problem</option><option value="security">Security vulnerability</option><option value="privacy">Privacy or deletion</option><option value="abuse">Abuse report</option></select></label>
-      <label>Reply address or handle<input name="reply_contact" minlength="3" maxlength="320" autocomplete="email" required /></label>
-      <label>Report<textarea name="message" minlength="20" maxlength="4000" required></textarea></label>
-      <label class="contact-honeypot" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off" /></label>
-      <button type="submit">Send report</button>
-    </form>
-    <p>Reports are rate-limited. Open reports expire after 180 days and resolved reports after 30 days. Do not submit passwords, private keys, companion secrets, or third-party radio traffic.</p>
+  <header class="nav"><a class="wordmark" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="52" height="52" /><span><strong>K32</strong><small>Kitsu companion</small></span></a><nav><a href="/">Home</a><a class="nav-action" href="/#download">Get Android</a></nav></header>
+  <main class="policy"><p class="eyebrow">PUBLIC PROJECT SUPPORT</p><h1>Contact K32 Kitsu</h1><article>
+    <h2>Project questions and changes</h2><p>Read the <a href="https://github.com/pattalium/Kitsu">public source repository</a> and its existing <a href="https://github.com/pattalium/Kitsu/issues">issue archive</a> first. New public issues are currently restricted, so this page does not pretend that archive is a working submission form. A concrete source or documentation fix can be proposed through a <a href="https://github.com/pattalium/Kitsu/pulls">pull request</a>.</p>
+    <h2>Security vulnerabilities</h2><p>Use <a href="https://github.com/pattalium/Kitsu/security/advisories/new">private vulnerability reporting</a> for a security issue that should not be public before a fix exists.</p>
+    <h2>What not to post</h2><p>Never submit controller credentials, private keys, complete flash dumps, pairing secrets, or third-party radio traffic. Kitsu has no product account, support-login database, or server-side device record in its local-first release.</p>
   </article></main>
   <footer><span>K32 Kitsu</span><nav><a href="/privacy/">Privacy</a><a href="/terms/">Terms</a><a href="/security/">Security</a></nav></footer>
-  <script type="module" src="/policy.js"></script>
 </body></html>

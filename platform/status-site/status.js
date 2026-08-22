@@ -1,3 +1,5 @@
+import { validateHealthResponse } from "/status-response.js";
+
 const checks = [...document.querySelectorAll("[data-url]")];
 const checked = document.querySelector("#checked");
 const summaryDot = document.querySelector("#summary-dot");
@@ -10,22 +12,6 @@ function setState(element, state, label) {
   element.querySelector("b").textContent = label;
 }
 
-async function validateResponse(response, kind) {
-  if (kind === "updates" && response.status === 503) return "gated";
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  if (kind === "oidc") {
-    const discovery = await response.json();
-    if (discovery?.issuer !== "https://auth.k32.run/realms/kitsu") {
-      throw new Error("issuer mismatch");
-    }
-  } else {
-    const body = (await response.text()).trim();
-    const expected = kind === "ready" ? "ready" : "ok";
-    if (body !== expected) throw new Error("unexpected health response");
-  }
-  return "ok";
-}
-
 async function probe(element) {
   setState(element, "pending", "Checking");
   try {
@@ -36,29 +22,23 @@ async function probe(element) {
       referrerPolicy: "no-referrer",
       signal: AbortSignal.timeout(6000),
     });
-    const state = await validateResponse(response, element.dataset.kind);
-    if (state === "gated") {
-      setState(element, "gated", "Not promoted");
-      return { state, counted: false };
-    }
+    await validateHealthResponse(response);
     setState(element, "ok", "Operational");
-    return { state, counted: true };
+    return "ok";
   } catch {
     setState(element, "down", "Unavailable");
-    return { state: "down", counted: true };
+    return "down";
   }
 }
 
 async function run() {
   refresh.disabled = true;
   const results = await Promise.all(checks.map(probe));
-  const counted = results.filter((result) => result.counted);
-  const available = counted.filter((result) => result.state === "ok").length;
-  const gated = results.filter((result) => result.state === "gated").length;
-  const healthy = available === counted.length;
+  const available = results.filter((state) => state === "ok").length;
+  const healthy = available === results.length;
   summaryDot.className = healthy ? "dot ok" : "dot down";
-  summaryTitle.textContent = healthy ? "Checked public services are operational" : "One or more public services are unavailable";
-  summaryDetail.textContent = `${available} of ${counted.length} active public checks passed.${gated ? " Signed firmware updates are not promoted and are not counted as an outage." : " Signed firmware updates are promoted and included."}`;
+  summaryTitle.textContent = healthy ? "Checked public sites are reachable" : "One or more public sites are unavailable";
+  summaryDetail.textContent = `${available} of ${results.length} public origin checks returned the exact expected response.`;
   checked.textContent = `Checked ${new Date().toLocaleTimeString()}`;
   refresh.disabled = false;
 }

@@ -24,43 +24,67 @@ test("documentation is a complete user manual without private deployment identif
   for (const marker of [
     "FIRST-TIME SETUP",
     "PORTRAIT DEVICE REFERENCE",
-    "NATIVE ANDROID APP",
+    "LOCAL-FIRST ANDROID APP",
     "MESHCORE MESSAGES",
-    "PORTABLE CONNECTIVITY",
-    "SAFE WEB SERIAL INSTALL",
+    "LOCAL-FIRST CONNECTIVITY",
+    "SIGNED A/B BLUETOOTH UPDATE",
     "DIAGNOSE BEFORE RESETTING",
-    "SECURITY MODEL",
+    "LOCAL SECURITY MODEL",
   ]) assert.match(docs, new RegExp(marker));
   assert.match(docs, /stock MeshCore/i);
+  assert.match(docs, /authenticated Bluetooth/i);
+  assert.match(docs, /controller store, MeshCore state, and coredump/i);
+  assert.doesNotMatch(docs, /app\.k32\.run|api\.k32\.run|auth\.k32\.run/i);
   assert.doesNotMatch(docs, /private machine|private address|private signing ceremony/i);
 });
 
-test("status checks distinct public services without exposing a private machine", async () => {
-  const [html, script] = await Promise.all([
+test("status checks only the retained static release surfaces", async () => {
+  const [html, script, responseScript] = await Promise.all([
     text("status-site/index.html"),
     text("status-site/status.js"),
+    text("status-site/status-response.js"),
   ]);
-  for (const check of ["public", "app", "api", "auth", "flash", "docs", "updates"]) {
+  for (const check of ["public", "flash", "docs", "updates"]) {
     assert.match(html, new RegExp(`data-url="/checks/${check}"`));
   }
-  assert.doesNotMatch(html, /data-url="https:\/\/(?:k32|app|api|auth|flash|docs|updates)\.k32\.run/);
+  assert.doesNotMatch(html, /data-url="\/checks\/(?:app|api|auth|gateway)"/);
+  assert.doesNotMatch(html, /data-url="https:\/\/(?:k32|flash|docs|updates)\.k32\.run/);
   assert.doesNotMatch(html, /private machine|private address/i);
   assert.match(script, /mode: "cors"/);
-  assert.match(script, /response\.status === 503/);
-  assert.match(script, /issuer !== "https:\/\/auth\.k32\.run\/realms\/kitsu"/);
+  assert.match(script, /validateHealthResponse/);
+  assert.match(responseScript, /if \(!response\.ok\)/);
+  assert.match(responseScript, /body !== "ok"/);
+  assert.doesNotMatch(responseScript, /status === 503|gated/);
+  assert.doesNotMatch(script, /issuer|oidc|auth\.k32\.run|kind === "ready"/i);
 });
 
-test("browser companion fails closed and links real setup and source", async () => {
-  const [consoleSource, apiSource] = await Promise.all([
-    text("web/app/components/CompanionConsole.tsx"),
-    text("web/app/lib/kitsu-api.ts"),
+test("static product, manual, and USB recovery surfaces link real destinations", async () => {
+  const [product, manual, flasher] = await Promise.all([
+    text("public-site/index.html"),
+    text("docs-site/index.html"),
+    text("flash-site/index.html"),
   ]);
-  assert.match(consoleSource, /isApiConfigured \? "loading" : "server-missing"/);
-  assert.match(consoleSource, /https:\/\/docs\.k32\.run\/connectivity\//);
-  assert.match(apiSource, /https:\/\/github\.com\/pattalium\/Kitsu/);
-  assert.doesNotMatch(consoleSource, /link pending|placeholder/i);
-  assert.doesNotMatch(`${consoleSource}\n${apiSource}`, /previewSnapshot|preview-fox|mode === "preview"|Interface preview/);
-  assert.doesNotMatch(consoleSource, /await new Promise\(\(resolve\).*preview/i);
+  assert.match(product, /https:\/\/docs\.k32\.run\/connectivity\//);
+  assert.match(product, /https:\/\/flash\.k32\.run/);
+  assert.match(manual, /https:\/\/github\.com\/pattalium\/Kitsu/);
+  assert.match(flasher, /seven verified writes/);
+  assert.match(flasher, /rollback-enabled Kitsu bootloader/);
+  assert.match(flasher, /app0 and app1/);
+  assert.match(flasher, /clean private OTA journal in each slot/);
+  assert.match(flasher, /isolated retired connectivity partition/);
+  assert.doesNotMatch(`${product}\n${manual}\n${flasher}`, /link pending|placeholder|app\.k32\.run/i);
+});
+
+test("physical acceptance cannot authorize its own signed manifest", async () => {
+  const acceptance = await text("mobile/android/qa/PHYSICAL-RELEASE-ACCEPTANCE.md");
+  assert.match(acceptance, /two\s+deliberately separate records/i);
+  assert.match(acceptance, /candidate hardware evidence/i);
+  assert.match(acceptance, /must exclude the final manifest, final signature, and final\s+public URL/i);
+  assert.match(acceptance, /physical_acceptance\.evidence_sha256/);
+  assert.match(acceptance, /Final public-delivery smoke/i);
+  assert.match(acceptance, /None of those values are fed back into record 1 or the\s+manifest/i);
+  assert.match(acceptance, /external retained record that\s+binds both evidence hashes/i);
+  assert.doesNotMatch(acceptance, /completed evidence.*final manifest.*evidence_sha256/is);
 });
 
 test("all public web surfaces are free of common UTF-8 mojibake", async () => {
@@ -74,9 +98,9 @@ test("all public web surfaces are free of common UTF-8 mojibake", async () => {
     "docs-site/troubleshooting/index.html",
     "status-site/index.html",
     "status-site/status.js",
-    "web/index.html",
-    "web/app/components/CompanionConsole.tsx",
-    "web/app/lib/kitsu-api.ts",
+    "status-site/status-response.js",
+    "public-site/index.html",
+    "public-site/site.js",
   ];
   for (const file of files) {
     assert.doesNotMatch(await text(file), /(?:Ã‚|Ã¢â‚¬|Ã¢â‚¬â„¢|Ã¢â€ |Ã¢â€¡|Ã¢â„¢|Ã¢â€”|Ã¢Å“|Ã¢Å’|Ãƒ|ï¿½)/, file);

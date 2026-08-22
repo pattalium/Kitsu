@@ -6,6 +6,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 private data class ClientHello(
@@ -35,6 +37,13 @@ private data class DeviceOk(
     val v: Int,
     val type: String,
     @SerialName("proof_b64") val proofB64: String,
+)
+
+@Serializable
+private data class HandshakeError(
+    val v: Int,
+    val type: String,
+    val code: String,
 )
 
 class CapabilityHandshake(private val random: SecureRandom = SecureRandom()) {
@@ -88,7 +97,9 @@ class CapabilityHandshake(private val random: SecureRandom = SecureRandom()) {
     }
 
     private fun decodeDeviceHello(bytes: ByteArray): DeviceHello = try {
-        json.decodeFromString(DeviceHello.serializer(), bytes.toString(Charsets.UTF_8)).also {
+        val text = bytes.toString(Charsets.UTF_8)
+        rejectExplicitFirmwareError(text)
+        json.decodeFromString(DeviceHello.serializer(), text).also {
             if (it.v != 1 || it.type != "device_hello") throw HandshakeException("auth_failed")
         }
     } catch (failure: HandshakeException) {
@@ -98,13 +109,25 @@ class CapabilityHandshake(private val random: SecureRandom = SecureRandom()) {
     }
 
     private fun decodeDeviceOk(bytes: ByteArray): DeviceOk = try {
-        json.decodeFromString(DeviceOk.serializer(), bytes.toString(Charsets.UTF_8)).also {
+        val text = bytes.toString(Charsets.UTF_8)
+        rejectExplicitFirmwareError(text)
+        json.decodeFromString(DeviceOk.serializer(), text).also {
             if (it.v != 1 || it.type != "device_ok") throw HandshakeException("auth_failed")
         }
     } catch (failure: HandshakeException) {
         throw failure
     } catch (failure: Throwable) {
         throw HandshakeException("auth_failed", failure)
+    }
+
+    private fun rejectExplicitFirmwareError(text: String) {
+        val value = json.parseToJsonElement(text).jsonObject
+        if (value["type"]?.jsonPrimitive?.content != "error") return
+        val error = json.decodeFromString(HandshakeError.serializer(), text)
+        if (value.keys == HANDSHAKE_ERROR_KEYS && error.v == 1 &&
+            error.type == "error" && error.code == "auth_failed"
+        ) throw HandshakeException("controller_rejected")
+        throw HandshakeException("auth_failed")
     }
 
     companion object {
@@ -133,6 +156,7 @@ class CapabilityHandshake(private val random: SecureRandom = SecureRandom()) {
         internal val DEVICE_PREFIX = "KITSU-HS-1\u0000device\u0000".toByteArray(Charsets.US_ASCII)
         internal val CLIENT_PREFIX = "KITSU-HS-1\u0000client\u0000".toByteArray(Charsets.US_ASCII)
         internal val OK_PREFIX = "KITSU-HS-1\u0000ok\u0000".toByteArray(Charsets.US_ASCII)
+        private val HANDSHAKE_ERROR_KEYS = setOf("v", "type", "code")
         const val MAX_HANDSHAKE_BYTES = 1024
         const val HANDSHAKE_TIMEOUT_MILLIS = 10_000L
     }

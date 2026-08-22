@@ -12,6 +12,12 @@ constexpr uint16_t kSecurityVersion = 2U;
 constexpr size_t kOuterHeaderBytes = 44U;
 constexpr size_t kPlainBytes = 320U;
 constexpr size_t kPlainCrcOffset = kPlainBytes - 4U;
+// Version 2 placed a now-retired network authentication key and two sequence
+// counters around the controller table. Keep those byte ranges reserved and
+// zero so an upgrade can retain controller roots without retaining or exposing
+// the old network authority.
+constexpr size_t kRetiredKeyBytes = 32U;
+constexpr size_t kRetiredCounterBytes = 16U;
 
 static_assert(kOuterHeaderBytes + kPlainBytes <= kSecurityBlobCapacity,
               "security blob capacity is too small");
@@ -19,6 +25,12 @@ static_assert(kOuterHeaderBytes + kPlainBytes <= kSecurityBlobCapacity,
 void secureZero(void* memory, size_t bytes) {
   volatile uint8_t* output = static_cast<volatile uint8_t*>(memory);
   while (bytes-- != 0U) *output++ = 0U;
+}
+
+bool containsNonzero(const uint8_t* input, size_t bytes) {
+  uint8_t combined = 0U;
+  for (size_t index = 0U; index < bytes; ++index) combined |= input[index];
+  return combined != 0U;
 }
 
 void putU16(uint8_t* output, uint16_t value) {
@@ -33,12 +45,6 @@ void putU32(uint8_t* output, uint32_t value) {
   output[3] = static_cast<uint8_t>(value >> 24U);
 }
 
-void putU64(uint8_t* output, uint64_t value) {
-  for (uint8_t i = 0U; i < 8U; ++i) {
-    output[i] = static_cast<uint8_t>(value >> (i * 8U));
-  }
-}
-
 uint16_t getU16(const uint8_t* input) {
   return static_cast<uint16_t>(input[0]) |
          static_cast<uint16_t>(static_cast<uint16_t>(input[1]) << 8U);
@@ -49,14 +55,6 @@ uint32_t getU32(const uint8_t* input) {
          (static_cast<uint32_t>(input[1]) << 8U) |
          (static_cast<uint32_t>(input[2]) << 16U) |
          (static_cast<uint32_t>(input[3]) << 24U);
-}
-
-uint64_t getU64(const uint8_t* input) {
-  uint64_t value = 0U;
-  for (uint8_t i = 0U; i < 8U; ++i) {
-    value |= static_cast<uint64_t>(input[i]) << (i * 8U);
-  }
-  return value;
 }
 
 uint32_t crc32(const uint8_t* input, size_t bytes) {
@@ -94,10 +92,6 @@ const char* securityResultName(SecurityResult result) {
     case SecurityResult::ControllerNotProvisioned:
       return "controller_not_provisioned";
     case SecurityResult::ControllerTableFull: return "controller_table_full";
-    case SecurityResult::SequenceRejected: return "sequence_rejected";
-    case SecurityResult::SequenceExhausted: return "sequence_exhausted";
-    case SecurityResult::LegacyMaterialRejected:
-      return "legacy_material_rejected";
     default: return "unknown";
   }
 }
@@ -167,7 +161,9 @@ bool KitsuDeviceSecurity::validateSlot(uint8_t slot, uint32_t& generation,
   return true;
 }
 
-bool KitsuDeviceSecurity::decodeLoaded(size_t bytes) {
+bool KitsuDeviceSecurity::decodeLoaded(size_t bytes,
+                                       bool& retiredMaterialPresent) {
+  retiredMaterialPresent = false;
   if (bytes != kOuterHeaderBytes + kPlainBytes) return false;
   const uint32_t flags = getU32(cryptScratch_ + 8U);
   size_t cursor = 12U;
@@ -177,9 +173,9 @@ bool KitsuDeviceSecurity::decodeLoaded(size_t bytes) {
   memcpy(material_.deviceSecret, cryptScratch_ + cursor,
          sizeof(material_.deviceSecret));
   cursor += sizeof(material_.deviceSecret);
-  memcpy(material_.lanAuthKey, cryptScratch_ + cursor,
-         sizeof(material_.lanAuthKey));
-  cursor += sizeof(material_.lanAuthKey);
+  retiredMaterialPresent = (flags & 0x01U) != 0U ||
+      containsNonzero(cryptScratch_ + cursor, kRetiredKeyBytes);
+  cursor += kRetiredKeyBytes;
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
     material_.controllers[i].valid = cryptScratch_[cursor] != 0U;
     cursor += 4U;
@@ -190,17 +186,10 @@ bool KitsuDeviceSecurity::decodeLoaded(size_t bytes) {
            sizeof(material_.controllers[i].root));
     cursor += sizeof(material_.controllers[i].root);
   }
-  // Version 2 used this bit for the old development profile. That profile was
-  // already application-encrypted with the same recoverable derivation, so it
-  // is safe to adopt as reflashable owner material. A zero flag is also
-  // accepted to let an owner restore/reset a historical image without a
-  // hardware-security lockout; the next write normalizes the flag.
-  (void)flags;
-  material_.reflashableMaterial = true;
-  material_.lanRxHighWater = getU64(cryptScratch_ + cursor);
-  cursor += 8U;
-  material_.lanTxReservedHigh = getU64(cryptScratch_ + cursor);
-  cursor += 8U;
+  material_.controllerRetirementPending = (flags & 0x02U) != 0U;
+  retiredMaterialPresent = retiredMaterialPresent ||
+      containsNonzero(cryptScratch_ + cursor, kRetiredCounterBytes);
+  cursor += kRetiredCounterBytes;
   return cursor == kPlainCrcOffset;
 }
 
@@ -210,7 +199,7 @@ bool KitsuDeviceSecurity::encode(uint32_t generation, size_t& bytes) {
   putU16(cryptScratch_ + 4U, kSecurityVersion);
   putU16(cryptScratch_ + 6U, static_cast<uint16_t>(kPlainBytes));
   uint32_t flags = 0U;
-  if (material_.reflashableMaterial) flags |= 0x01U;
+  if (material_.controllerRetirementPending) flags |= 0x02U;
   putU32(cryptScratch_ + 8U, flags);
   size_t cursor = 12U;
   memcpy(cryptScratch_ + cursor, material_.deviceId,
@@ -219,9 +208,8 @@ bool KitsuDeviceSecurity::encode(uint32_t generation, size_t& bytes) {
   memcpy(cryptScratch_ + cursor, material_.deviceSecret,
          sizeof(material_.deviceSecret));
   cursor += sizeof(material_.deviceSecret);
-  memcpy(cryptScratch_ + cursor, material_.lanAuthKey,
-         sizeof(material_.lanAuthKey));
-  cursor += sizeof(material_.lanAuthKey);
+  // memset above intentionally encodes the retired v2 key range as zeros.
+  cursor += kRetiredKeyBytes;
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
     cryptScratch_[cursor] = material_.controllers[i].valid ? 1U : 0U;
     cursor += 4U;
@@ -232,10 +220,8 @@ bool KitsuDeviceSecurity::encode(uint32_t generation, size_t& bytes) {
            sizeof(material_.controllers[i].root));
     cursor += sizeof(material_.controllers[i].root);
   }
-  putU64(cryptScratch_ + cursor, material_.lanRxHighWater);
-  cursor += 8U;
-  putU64(cryptScratch_ + cursor, material_.lanTxReservedHigh);
-  cursor += 8U;
+  // The retired v2 sequence-counter range is likewise always zero.
+  cursor += kRetiredCounterBytes;
   if (cursor != kPlainCrcOffset) return false;
   putU32(cryptScratch_ + cursor, crc32(cryptScratch_, cursor));
 
@@ -282,8 +268,37 @@ SecurityResult KitsuDeviceSecurity::persist() {
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
     if (material_.controllers[i].valid) ++status_.controllerCount;
   }
-  status_.lanRxHighWater = material_.lanRxHighWater;
-  status_.lanTxReservedHigh = material_.lanTxReservedHigh;
+  return setResult(SecurityResult::Ok);
+}
+
+SecurityResult KitsuDeviceSecurity::retirePreviousSlot() {
+  if (!material_.controllerRetirementPending) {
+    return setResult(SecurityResult::Ok);
+  }
+  if (!storage_ || status_.activeSlot < 0) {
+    return setResult(SecurityResult::NotBegun);
+  }
+  const uint8_t retired = static_cast<uint8_t>(status_.activeSlot ^ 1);
+  if (!storage_->clearSlot(retired)) {
+    return setResult(SecurityResult::StorageWriteFailed);
+  }
+  size_t bytes = 0U;
+  if (!storage_->readSlot(retired, scratch_, sizeof(scratch_), bytes)) {
+    return setResult(SecurityResult::StorageReadFailed);
+  }
+  if (bytes != 0U) return setResult(SecurityResult::ReadbackFailed);
+
+  // Complete the transaction with a newer authenticated record whose pending
+  // bit is clear. Both slots then contain only the post-retirement material,
+  // and a clean reboot does not erase the inactive slot again. If this final
+  // write is interrupted, keep the in-RAM state aligned with the still-active
+  // pending record so the next call/boot safely resumes the transaction.
+  material_.controllerRetirementPending = false;
+  const SecurityResult finalized = persist();
+  if (finalized != SecurityResult::Ok) {
+    material_.controllerRetirementPending = true;
+    return finalized;
+  }
   return setResult(SecurityResult::Ok);
 }
 
@@ -332,25 +347,46 @@ SecurityResult KitsuDeviceSecurity::begin(DeviceSecurityStorage& storage,
     uint32_t loadedGeneration = 0U;
     size_t loadedBytes = 0U;
     bool loadedNonempty = false;
+    bool retiredMaterialPresent = false;
     if (!validateSlot(static_cast<uint8_t>(chosen), loadedGeneration,
-                      loadedBytes, loadedNonempty) || !loadedNonempty ||
-        !decodeLoaded(loadedBytes)) {
+                       loadedBytes, loadedNonempty) || !loadedNonempty ||
+        !decodeLoaded(loadedBytes, retiredMaterialPresent)) {
       return setResult(SecurityResult::CorruptStorage);
     }
-    material_.reflashableMaterial = true;
     status_.activeSlot = static_cast<int8_t>(chosen);
     status_.generation = loadedGeneration;
+    if (material_.controllerRetirementPending &&
+        retirePreviousSlot() != SecurityResult::Ok) {
+      const SecurityResult retirementFailure = status_.lastResult;
+      clear();
+      return setResult(retirementFailure);
+    }
+    if (retiredMaterialPresent) {
+      // Transactionally replace the newest compatible record with one that
+      // preserves the device/controller roots but encodes both retired ranges
+      // as zero. The pending bit makes a power loss or failed erase resume the
+      // old-slot retirement and final non-pending generation before BLE
+      // authority becomes available.
+      material_.controllerRetirementPending = true;
+      const SecurityResult migrated = persist();
+      if (migrated != SecurityResult::Ok) {
+        clear();
+        return setResult(migrated);
+      }
+      const SecurityResult retired = retirePreviousSlot();
+      if (retired != SecurityResult::Ok) {
+        clear();
+        return setResult(retired);
+      }
+    }
   } else {
     if (anyNonempty) return setResult(SecurityResult::CorruptStorage);
     if (!platform_->randomBytes(material_.deviceId,
                                 sizeof(material_.deviceId)) ||
         !platform_->randomBytes(material_.deviceSecret,
-                                sizeof(material_.deviceSecret)) ||
-        !platform_->randomBytes(material_.lanAuthKey,
-                                sizeof(material_.lanAuthKey))) {
+                                sizeof(material_.deviceSecret))) {
       return setResult(SecurityResult::CryptoFailed);
     }
-    material_.reflashableMaterial = true;
     status_.begun = true;
     const SecurityResult persisted = persist();
     if (persisted != SecurityResult::Ok) {
@@ -364,17 +400,10 @@ SecurityResult KitsuDeviceSecurity::begin(DeviceSecurityStorage& storage,
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
     if (material_.controllers[i].valid) ++status_.controllerCount;
   }
-  status_.lanRxHighWater = material_.lanRxHighWater;
-  status_.lanTxReservedHigh = material_.lanTxReservedHigh;
   return setResult(SecurityResult::OkReflashable);
 }
 
 bool KitsuDeviceSecurity::ready() const { return status_.begun; }
-
-bool KitsuDeviceSecurity::remoteConnectivityAllowed() const {
-  return status_.begun && status_.securityMode == SecurityMode::Reflashable &&
-         material_.reflashableMaterial;
-}
 
 DeviceSecurityStatus KitsuDeviceSecurity::status() const { return status_; }
 
@@ -382,13 +411,6 @@ bool KitsuDeviceSecurity::copyDeviceId(
     uint8_t output[kKitsuDeviceIdBytes]) const {
   if (!status_.begun || !output) return false;
   memcpy(output, material_.deviceId, kKitsuDeviceIdBytes);
-  return true;
-}
-
-bool KitsuDeviceSecurity::copyLanAuthKey(
-    uint8_t output[kKitsuSecretBytes]) const {
-  if (!status_.begun || !output) return false;
-  memcpy(output, material_.lanAuthKey, kKitsuSecretBytes);
   return true;
 }
 
@@ -429,23 +451,6 @@ SecurityResult KitsuDeviceSecurity::deriveJournalKey(
     uint8_t output[kKitsuSecretBytes]) {
   static const uint8_t info[] =
       "kitsu868/journal/aes256gcm/v1";
-  if (!status_.begun) return setResult(SecurityResult::NotBegun);
-  if (!output) return setResult(SecurityResult::InvalidArgument);
-  if (!platform_->hkdfSha256(material_.deviceSecret,
-                             sizeof(material_.deviceSecret),
-                             material_.deviceId, sizeof(material_.deviceId),
-                             info, sizeof(info) - 1U, output,
-                             kKitsuSecretBytes)) {
-    secureZero(output, kKitsuSecretBytes);
-    return setResult(SecurityResult::CryptoFailed);
-  }
-  return setResult(SecurityResult::Ok);
-}
-
-SecurityResult KitsuDeviceSecurity::deriveConnectionStoreKey(
-    uint8_t output[kKitsuSecretBytes]) {
-  static const uint8_t info[] =
-      "kitsu868/connectivity-store/aes256gcm/v1";
   if (!status_.begun) return setResult(SecurityResult::NotBegun);
   if (!output) return setResult(SecurityResult::InvalidArgument);
   if (!platform_->hkdfSha256(material_.deviceSecret,
@@ -542,6 +547,24 @@ SecurityResult KitsuDeviceSecurity::revokeControllerAfterPhysicalConfirmation(
   if (!physicalConfirmed) {
     return setResult(SecurityResult::AuthorizationRequired);
   }
+  return revokeController(controllerId);
+}
+
+SecurityResult KitsuDeviceSecurity::revokeAuthenticatedController(
+    const uint8_t controllerId[kKitsuControllerIdBytes]) {
+  if (!status_.begun) return setResult(SecurityResult::NotBegun);
+  if (!controllerId) return setResult(SecurityResult::InvalidArgument);
+  return revokeController(controllerId);
+}
+
+SecurityResult KitsuDeviceSecurity::revokeController(
+    const uint8_t controllerId[kKitsuControllerIdBytes]) {
+  bool resumedRetirement = false;
+  if (material_.controllerRetirementPending) {
+    const SecurityResult resumed = retirePreviousSlot();
+    if (resumed != SecurityResult::Ok) return resumed;
+    resumedRetirement = true;
+  }
   int target = -1;
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
     if (material_.controllers[i].valid &&
@@ -551,90 +574,23 @@ SecurityResult KitsuDeviceSecurity::revokeControllerAfterPhysicalConfirmation(
       break;
     }
   }
-  if (target < 0) return setResult(SecurityResult::ControllerNotProvisioned);
+  if (target < 0) {
+    return setResult(resumedRetirement ? SecurityResult::Ok
+                                      : SecurityResult::ControllerNotProvisioned);
+  }
   Material::Controller old = material_.controllers[static_cast<size_t>(target)];
   secureZero(&material_.controllers[static_cast<size_t>(target)],
              sizeof(Material::Controller));
+  material_.controllerRetirementPending = true;
   const SecurityResult persisted = persist();
   if (persisted != SecurityResult::Ok) {
     material_.controllers[static_cast<size_t>(target)] = old;
-  }
-  secureZero(&old, sizeof(old));
-  return persisted;
-}
-
-SecurityResult KitsuDeviceSecurity::rotateLanKeyAfterPhysicalConfirmation(
-    bool secureConnectionsBonded, bool physicalConfirmed,
-    uint8_t outputKey[kKitsuSecretBytes]) {
-  if (!status_.begun) return setResult(SecurityResult::NotBegun);
-  if (!outputKey) return setResult(SecurityResult::InvalidArgument);
-  memset(outputKey, 0, kKitsuSecretBytes);
-  if (!secureConnectionsBonded || !physicalConfirmed) {
-    return setResult(SecurityResult::AuthorizationRequired);
-  }
-  uint8_t oldKey[kKitsuSecretBytes]{};
-  memcpy(oldKey, material_.lanAuthKey, sizeof(oldKey));
-  const uint64_t oldRx = material_.lanRxHighWater;
-  const uint64_t oldTx = material_.lanTxReservedHigh;
-  if (!platform_->randomBytes(material_.lanAuthKey,
-                              sizeof(material_.lanAuthKey))) {
-    secureZero(oldKey, sizeof(oldKey));
-    return setResult(SecurityResult::CryptoFailed);
-  }
-  material_.lanRxHighWater = 0U;
-  material_.lanTxReservedHigh = 0U;
-  const SecurityResult persisted = persist();
-  if (persisted != SecurityResult::Ok) {
-    memcpy(material_.lanAuthKey, oldKey, sizeof(oldKey));
-    material_.lanRxHighWater = oldRx;
-    material_.lanTxReservedHigh = oldTx;
-  } else {
-    memcpy(outputKey, material_.lanAuthKey, kKitsuSecretBytes);
-  }
-  secureZero(oldKey, sizeof(oldKey));
-  return persisted;
-}
-
-SecurityResult KitsuDeviceSecurity::acceptLanRxSequence(uint64_t sequence) {
-  if (!status_.begun) return setResult(SecurityResult::NotBegun);
-  uint64_t* highWater = &material_.lanRxHighWater;
-  if (*highWater == UINT64_MAX) {
-    return setResult(SecurityResult::SequenceExhausted);
-  }
-  if (sequence != *highWater + 1U) {
-    return setResult(SecurityResult::SequenceRejected);
-  }
-  const uint64_t previous = *highWater;
-  *highWater = sequence;
-  const SecurityResult persisted = persist();
-  if (persisted != SecurityResult::Ok) *highWater = previous;
-  return persisted;
-}
-
-SecurityResult KitsuDeviceSecurity::reserveLanTxSequenceBlock(
-    uint16_t blockSize, uint64_t& firstSequence,
-    uint64_t& lastSequence) {
-  firstSequence = 0U;
-  lastSequence = 0U;
-  if (!status_.begun) return setResult(SecurityResult::NotBegun);
-  if (blockSize == 0U || blockSize > 1024U) {
-    return setResult(SecurityResult::InvalidArgument);
-  }
-  uint64_t* reservedHigh = &material_.lanTxReservedHigh;
-  if (*reservedHigh > UINT64_MAX - blockSize) {
-    return setResult(SecurityResult::SequenceExhausted);
-  }
-  const uint64_t previous = *reservedHigh;
-  const uint64_t proposedLast = previous + blockSize;
-  *reservedHigh = proposedLast;
-  const SecurityResult persisted = persist();
-  if (persisted != SecurityResult::Ok) {
-    *reservedHigh = previous;
+    material_.controllerRetirementPending = false;
+    secureZero(&old, sizeof(old));
     return persisted;
   }
-  firstSequence = previous + 1U;
-  lastSequence = proposedLast;
-  return persisted;
+  secureZero(&old, sizeof(old));
+  return retirePreviousSlot();
 }
 
 }  // namespace connectivity

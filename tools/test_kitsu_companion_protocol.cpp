@@ -236,6 +236,10 @@ void testEnvelopeRoundTripAndStrictOuterParser() {
              json, jsonBytes, key, EnvelopeChannel::Request, 2U, crypto,
              decoded, decodedPayload, sizeof(decodedPayload)) ==
          ProtocolResult::UnexpectedSequence);
+  assert(kitsu868::companion::decodeAndVerifyEnvelope(
+             json, jsonBytes, key, EnvelopeChannel::Request, 0U, crypto,
+             decoded, decodedPayload, sizeof(decodedPayload)) ==
+         ProtocolResult::UnexpectedSequence);
 
   uint8_t mutated[2300]{};
   memcpy(mutated, json, jsonBytes + 1U);

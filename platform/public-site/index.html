@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Kitsu turns a Heltec WiFi LoRa 32 V3 into a portrait companion with memory, games, messaging, Bluetooth, Wi-Fi, and MeshCore." />
+    <meta name="description" content="Kitsu turns a Heltec WiFi LoRa 32 V3 into a local-first portrait companion with memory, games, messaging, authenticated Bluetooth, and MeshCore." />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="K32 Kitsu" />
     <meta property="og:description" content="A radio companion with memory, personality, messages, and a world of its own." />
@@ -28,7 +28,7 @@
         <a href="#start">Get started</a>
         <a href="#download">Android</a>
         <a href="https://docs.k32.run">Manual</a>
-        <a class="nav-action" href="https://app.k32.run">Open Kitsu</a>
+        <a class="nav-action" href="#download">Get Android</a>
       </nav>
     </header>
 
@@ -37,7 +37,7 @@
         <div class="hero-copy">
           <p class="eyebrow">HELTEC WIFI LORA 32 V3 · ANDROID · MESHCORE</p>
           <h1>A radio companion you can care for.</h1>
-          <p class="lede">Kitsu gives a small LoRa board a portrait face, memory, personality, games, messages, and a place in the MeshCore network. It lives on the device and stays useful with or without a phone nearby.</p>
+          <p class="lede">Kitsu gives a small LoRa board a portrait face, memory, personality, games, messages, and a place in the MeshCore network. It lives on the device; the Android app talks to it directly over authenticated Bluetooth and does not need an account, gateway, or Internet connection.</p>
           <div class="hero-actions">
             <a class="primary" href="#download">Download Android</a>
             <a class="secondary" href="https://docs.k32.run/getting-started/">Start with the guide</a>
@@ -72,19 +72,15 @@
       <section class="connection-section">
         <div class="section-heading">
           <p class="eyebrow">CONNECTED WHEN IT HELPS</p>
-          <h2>Three paths. One companion.</h2>
+          <h2>Two local paths. One companion.</h2>
         </div>
         <div class="connection-grid">
           <article>
             <b>01</b>
-            <div><h3>Bluetooth nearby</h3><p>Pair securely, care for Kitsu, read history, send messages, configure Wi-Fi, and disconnect when you are finished.</p></div>
+            <div><h3>Bluetooth nearby</h3><p>Pair securely, care for Kitsu, read history, send messages, manage saved devices, and install signed firmware updates from Android.</p></div>
           </article>
           <article>
             <b>02</b>
-            <div><h3>Public gateway through Android</h3><p>Keep Kitsu portable: the paired phone carries its encrypted gateway traffic over any working Internet connection. Kitsu itself needs no Wi-Fi or owner account.</p></div>
-          </article>
-          <article>
-            <b>03</b>
             <div><h3>MeshCore over LoRa</h3><p>Kitsu receives standard MeshCore traffic and uses the configured regional radio profile for approved transmissions.</p></div>
           </article>
         </div>
@@ -96,10 +92,10 @@
           <h2>Set up once. Keep using it your way.</h2>
         </div>
         <ol class="steps">
-          <li><span>1</span><div><strong>Install Kitsu firmware</strong><p>Use the browser flasher with a supported Heltec board. The installer preserves companion data and writes only the reviewed firmware regions.</p></div></li>
-          <li><span>2</span><div><strong>Install the Android app</strong><p>Download and manually install the signed Android APK below. Android 8 or newer is required.</p></div></li>
+          <li><span>1</span><div><strong>Install Kitsu firmware</strong><p>Use the browser flasher with a supported Heltec board. Its accepted release writes only the reviewed rollback bootloader, partition table, both A/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition while preserving companion data.</p></div></li>
+          <li><span>2</span><div><strong>Install the Android app</strong><p>Use the download below only when its verified local-first release link is enabled, then manually install the signed APK. Android 8 or newer is required.</p></div></li>
           <li><span>3</span><div><strong>Pair with physical confirmation</strong><p>Compare the six-digit code on Android and Kitsu, accept only if they match, then follow the two PRG prompts.</p></div></li>
-          <li><span>4</span><div><strong>Connect to the public gateway</strong><p>Tap the button in Android and hold PRG when Kitsu asks. No username, password, or Heltec Wi-Fi setup is required.</p></div></li>
+          <li><span>4</span><div><strong>Use Kitsu locally</strong><p>Connect to a saved Kitsu over Bluetooth. Care, history, messages, radio settings, and firmware updates work without an account, gateway, Wi-Fi, or Internet connection.</p></div></li>
         </ol>
         <div class="start-actions">
           <a class="primary" href="https://flash.k32.run">Open firmware installer</a>
@@ -111,35 +107,35 @@
         <div class="download-copy">
           <p class="eyebrow">ANDROID</p>
           <h2>Install the signed Android app.</h2>
-          <p>Download the current signed Android APK for Kitsu. Install it directly from your browser, then pair with the Heltec using the on-screen confirmation flow.</p>
+          <p>The download card exposes only an accepted Bluetooth-only Android release whose detached manifest, package identity, version, and signing-certificate digest pass the local checks. Install it directly from your browser, then pair with the Heltec using the on-screen confirmation flow.</p>
           <ul class="check-list">
-            <li>Signed Android APK</li>
+            <li>Local-first Android 2.0.0 or newer</li>
             <li>Android 8.0 and newer</li>
-            <li>Release manifest verified in your browser</li>
+            <li>Detached release manifest verified in your browser</li>
           </ul>
         </div>
         <div class="download-card">
           <span class="status" id="android-status">Checking signed Android release</span>
           <h3 id="android-title">Kitsu Android</h3>
-          <p id="android-detail">Verifying the APK signature and download metadata.</p>
+          <p id="android-detail">Verifying the signed release manifest and local-first eligibility.</p>
           <a id="android-download" class="disabled" aria-disabled="true">Verifying release…</a>
-          <small id="android-digest">The link is enabled only after the signed manifest passes verification.</small>
+          <small id="android-digest">The link is enabled only after an eligible local-first manifest passes verification.</small>
           <noscript><p class="noscript">JavaScript is required to verify the release signature before download.</p></noscript>
         </div>
       </section>
 
       <section class="resource-section">
         <a href="https://docs.k32.run" class="resource-card">
-          <span>Manual</span><h3>Learn Kitsu from first boot to daily use.</h3><p>Setup, controls, Wi-Fi, messages, updates, and troubleshooting.</p><b>Read the manual →</b>
+          <span>Manual</span><h3>Learn Kitsu from first boot to daily use.</h3><p>Setup, controls, Bluetooth, messages, offline updates, and troubleshooting.</p><b>Read the manual →</b>
         </a>
         <a href="https://docs.k32.run/connectivity/" class="resource-card">
-          <span>Public gateway</span><h3>Connect without an account or Heltec Wi-Fi.</h3><p>The Android phone bridges paired Kitsu devices to the public service after one physical PRG approval.</p><b>Read the gateway guide →</b>
+          <span>Bluetooth</span><h3>Control Kitsu directly and privately.</h3><p>The saved controller credential stays on the phone, and every command travels through the nearby authenticated Bluetooth session.</p><b>Read the Bluetooth guide →</b>
         </a>
         <a href="https://flash.k32.run" class="resource-card">
           <span>Firmware</span><h3>Install or update from a supported browser.</h3><p>Signed release checks, targeted writes, and read-back verification.</p><b>Open the installer →</b>
         </a>
         <a href="https://github.com/pattalium/Kitsu" class="resource-card">
-          <span>Source</span><h3>Inspect the code and build Kitsu yourself.</h3><p>Firmware, Android, services, website, protocols, and tests.</p><b>View on GitHub →</b>
+          <span>Source</span><h3>Inspect the code and build Kitsu yourself.</h3><p>Firmware, Android, public sites, protocols, release tooling, and tests.</p><b>View on GitHub →</b>
         </a>
       </section>
 
@@ -148,7 +144,7 @@
           <p class="eyebrow">YOUR HARDWARE STAYS YOURS</p>
           <h2>Reflashable by design.</h2>
         </div>
-        <p>Kitsu does not permanently lock the Heltec. You can update it, erase it, return to stock MeshCore, or repurpose the board. Network connections still use authenticated Bluetooth, pinned TLS, scoped gateway credentials, signed actions, and replay protection.</p>
+        <p>Kitsu does not permanently lock the Heltec. You can update it over signed Bluetooth OTA, recover it over USB, erase it, return to stock MeshCore, or repurpose the board. Nearby commands use authenticated Bluetooth with per-session keys, sequence checks, and replay protection.</p>
       </section>
     </main>
 
@@ -157,7 +153,7 @@
       <nav aria-label="Product links">
         <a href="https://docs.k32.run">Manual</a>
         <a href="https://flash.k32.run">Firmware</a>
-        <a href="https://app.k32.run">App</a>
+        <a href="#download">Android</a>
         <a href="https://github.com/pattalium/Kitsu">GitHub</a>
       </nav>
       <nav aria-label="Policies and contact">

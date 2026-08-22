@@ -1,17 +1,21 @@
 # k32.run public site
 
-This dependency-free static site is served by local nginx on the Kitsu host and
-published through Cloudflare Tunnel. The authenticated browser companion stays
-on `app.k32.run`. Android remains native; iOS is not part of the current release
-scope.
+This dependency-free static site distributes the signed native Android app,
+links the signed firmware installer and documentation, and points to the public
+source repository. The Kitsu app is local-first: it talks to the device through
+authenticated Bluetooth and has no product account, gateway, or runtime-server
+dependency. iOS is not part of the current release scope.
 
 `config.json` points to the public source repository at
 `https://github.com/pattalium/Kitsu`.
 
 ## Android release trust
 
-The APK on the website is the signed Android release. Install it directly from
-the browser on a supported Android device.
+The download card exposes only a signed local-first Android release. A valid
+historical manifest or APK may remain in `downloads/` for audit and rollback,
+but `site.js` deliberately refuses to link any build older than Android 2.0.0 /
+version code 13. Install an eligible release directly from the browser on a
+supported Android device.
 
 The Android download has two independent integrity boundaries:
 
@@ -28,5 +32,6 @@ exact `downloads/latest.json` bytes.
 
 The browser accepts only a same-origin versioned APK path, the stable/release
 package `app.kitsu.mobile`, bounded numeric fields, canonical lowercase SHA-256,
-the pinned APK certificate, and a valid manifest timestamp. Tests also verify
-the detached signature and hash the exact APK bytes.
+the pinned APK certificate, a valid manifest timestamp, and the minimum
+local-first version gate. Repository tests additionally verify the detached
+signature and hash the exact APK bytes.

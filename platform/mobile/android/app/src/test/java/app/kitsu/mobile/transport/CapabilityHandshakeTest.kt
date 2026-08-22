@@ -108,5 +108,14 @@ class CapabilityHandshakeTest {
         assert(request.isNotEmpty())
     }
 
+    @Test fun exactFirmwareAuthErrorIsAuthoritativeControllerRejection() = runTest {
+        val failure = runCatching {
+            CapabilityHandshake().perform(ByteArray(16) { 1 }, ByteArray(32) { 2 }) {
+                """{"v":1,"type":"error","code":"auth_failed"}""".toByteArray()
+            }
+        }.exceptionOrNull() as HandshakeException
+        assertEquals("controller_rejected", failure.code)
+    }
+
     private fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }
 }

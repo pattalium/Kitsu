@@ -26,23 +26,14 @@ import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
 import app.kitsu.mobile.model.ActionCommand
 import app.kitsu.mobile.model.ActionReceipt
+import app.kitsu.mobile.model.ControllerForgetReceipt
 import app.kitsu.mobile.model.EventEnvelope
-import app.kitsu.mobile.model.GatewayConfiguration
-import app.kitsu.mobile.model.GatewayConfigurationReceipt
-import app.kitsu.mobile.model.GatewayEnrollmentBeginBody
-import app.kitsu.mobile.model.GatewayEnrollmentFinishBody
-import app.kitsu.mobile.model.GatewayEnrollmentReceipt
 import app.kitsu.mobile.model.HistoryPage
 import app.kitsu.mobile.model.KitsuStatus
 import app.kitsu.mobile.model.MessagePage
 import app.kitsu.mobile.model.MeshChannel
 import app.kitsu.mobile.model.MeshConfigurationReceipt
 import app.kitsu.mobile.model.PeerPage
-import app.kitsu.mobile.model.ProvisioningReceipt
-import app.kitsu.mobile.model.WIRE_VERSION
-import app.kitsu.mobile.model.WifiProvisioning
-import app.kitsu.mobile.model.WifiRetryReceipt
-import app.kitsu.mobile.model.toConfigureBody
 import app.kitsu.mobile.pairing.ControllerPairingProgress
 import app.kitsu.mobile.pairing.ControllerPairingProtocol
 import app.kitsu.mobile.pairing.ControllerPairingService
@@ -51,16 +42,9 @@ import app.kitsu.mobile.pairing.PairingChannel
 import app.kitsu.mobile.pairing.PairingException
 import app.kitsu.mobile.security.BondedCompanion
 import app.kitsu.mobile.security.CredentialStore
+import app.kitsu.mobile.security.MAX_SAVED_KITSU
 import app.kitsu.mobile.security.SafeLog
-import app.kitsu.mobile.relay.MobileRelayBleOperations
-import app.kitsu.mobile.relay.GatewayForgetReceipt
-import app.kitsu.mobile.relay.MobileRelayChunk
-import app.kitsu.mobile.relay.MobileRelayDeviceSession
-import app.kitsu.mobile.relay.MobileRelayPullKind
-import app.kitsu.mobile.relay.MobileRelayPushKind
-import app.kitsu.mobile.relay.MobileRelayReceipt
-import app.kitsu.mobile.relay.MobileRelayWirePolicy
-import app.kitsu.mobile.relay.MAX_MOBILE_RELAY_DEVICES
+import app.kitsu.mobile.update.FirmwareUpdateReceipt
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -85,10 +69,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 data class BleGattConfiguration(
@@ -102,9 +84,7 @@ class BleKitsuTransport(
     private val credentials: CredentialStore,
     private val configuration: BleGattConfiguration,
     private val scanTimeoutMillis: Long = 8_000,
-    private val mobileRelayOperations: MobileRelayBleOperations = MobileRelayBleOperations(),
-    private val confirmPresenceByScan: Boolean = true,
-) : KitsuTransport, ControllerPairingService, MobileRelayDeviceSession {
+) : KitsuTransport, ControllerPairingService {
     override val mode: ConnectionMode = ConnectionMode.DIRECT_BLE
 
     private val manager = context.getSystemService(BluetoothManager::class.java)
@@ -152,17 +132,12 @@ class BleKitsuTransport(
     @Volatile private var pairingJob: Job? = null
     @Volatile private var envelopeSession: SecureEnvelopeSession? = null
     @Volatile private var connectedDeviceAddress: String? = null
+    @Volatile private var disconnectObserver: ((String) -> Unit)? = null
     @Volatile private var meshOneShotReady = false
     private var failedProofs = 0
     private var proofBackoffUntilMillis = 0L
 
     override suspend fun connect(): ConnectResult {
-        try {
-            credentials.savePendingBondedCompanion(null)
-        } catch (failure: Throwable) {
-            SafeLog.warn("ble_credentials", "pending_credential_cleanup_failed", failure)
-            return ConnectResult.Failed("credential_store_failed")
-        }
         val profile = try {
             credentials.bondedCompanion()
         } catch (failure: Throwable) {
@@ -203,41 +178,90 @@ class BleKitsuTransport(
         label: String,
         onProgress: (ControllerPairingProgress) -> Unit,
     ): BondedCompanion = pairingMutex.withLock {
-        if (credentials.bondedCompanions().size >= MAX_MOBILE_RELAY_DEVICES) {
-            throw PairingException("controller_device_limit")
+        if (credentials.pendingBondedCompanion() != null) {
+            throw PairingException("pairing_finish_required")
         }
-        // A candidate left by process death was never promoted by a verified pair_ok.
-        credentials.savePendingBondedCompanion(null)
         val missing = missingPermissions()
         if (missing.isNotEmpty()) throw PairingException("bluetooth_permission_required")
         val activeJob = currentCoroutineContext()[Job]
             ?: throw PairingException("pairing_failed")
         pairingJob = activeJob
-        var committed = false
         try {
             val result = pairControllerWithPermission(label) { progress ->
                 runCatching { onProgress(progress) }
             }
-            committed = true
             runCatching {
                 onProgress(ControllerPairingProgress(ControllerPairingStage.COMPLETE, "controller_paired"))
             }
             result
         } catch (failure: CancellationException) {
-            if (!committed) withContext(NonCancellable) {
-                credentials.savePendingBondedCompanion(null)
-            }
             withContext(NonCancellable) {
                 runCatching {
                     onProgress(ControllerPairingProgress(ControllerPairingStage.CANCELLED, "pairing_cancelled"))
                 }
             }
             throw PairingException("pairing_cancelled", failure)
-        } catch (failure: Throwable) {
-            if (!committed) withContext(NonCancellable) {
-                credentials.savePendingBondedCompanion(null)
+        } finally {
+            withContext(NonCancellable) { disconnect() }
+            if (pairingJob === activeJob) pairingJob = null
+        }
+    }
+
+    override suspend fun finishPendingPairing(
+        onProgress: (ControllerPairingProgress) -> Unit,
+    ): BondedCompanion = pairingMutex.withLock {
+        val candidate = credentials.pendingBondedCompanion()
+            ?: throw PairingException("no_pending_pairing")
+        val missing = missingPermissions()
+        if (missing.isNotEmpty()) throw PairingException("bluetooth_permission_required")
+        val activeJob = currentCoroutineContext()[Job]
+            ?: throw PairingException("pairing_failed")
+        pairingJob = activeJob
+        try {
+            runCatching {
+                onProgress(
+                    ControllerPairingProgress(
+                        ControllerPairingStage.CONNECTING_GATT,
+                        "finishing_committed_pairing",
+                    ),
+                )
             }
-            throw failure
+            disconnect()
+            when (val result = connectWithPermission(candidate, distinguishControllerRejection = true)) {
+                ConnectResult.Connected -> {
+                    runCatching {
+                        onProgress(
+                            ControllerPairingProgress(
+                                ControllerPairingStage.SAVING_CONTROLLER,
+                                "saving_recovered_controller",
+                            ),
+                        )
+                    }
+                    credentials.saveBondedCompanion(candidate)
+                    credentials.savePendingBondedCompanion(null)
+                    runCatching {
+                        onProgress(
+                            ControllerPairingProgress(
+                                ControllerPairingStage.COMPLETE,
+                                "controller_paired",
+                            ),
+                        )
+                    }
+                    candidate
+                }
+                ConnectResult.CompanionAbsent -> throw PairingException("pairing_device_absent")
+                is ConnectResult.PermissionRequired ->
+                    throw PairingException("bluetooth_permission_required")
+                is ConnectResult.Failed -> {
+                    if (result.code == "pending_controller_rejected") {
+                        credentials.savePendingBondedCompanion(null)
+                        throw PairingException("pairing_not_completed_repair_required")
+                    }
+                    throw PairingException(result.code)
+                }
+            }
+        } catch (failure: CancellationException) {
+            throw PairingException("pairing_cancelled", failure)
         } finally {
             withContext(NonCancellable) { disconnect() }
             if (pairingJob === activeJob) pairingJob = null
@@ -264,6 +288,11 @@ class BleKitsuTransport(
             DeviceScan.Absent -> throw PairingException("pairing_device_absent")
             is DeviceScan.Failed -> throw PairingException(scan.code)
         }
+        val saved = credentials.bondedCompanions()
+        if (saved.size >= MAX_SAVED_KITSU && saved.none {
+                it.deviceAddress.equals(device.address, ignoreCase = true)
+            }
+        ) throw PairingException("controller_device_limit")
 
         report(
             ControllerPairingProgress(
@@ -360,7 +389,10 @@ class BleKitsuTransport(
     }
 
     @SuppressLint("MissingPermission")
-    private suspend fun connectWithPermission(profile: BondedCompanion): ConnectResult {
+    private suspend fun connectWithPermission(
+        profile: BondedCompanion,
+        distinguishControllerRejection: Boolean = false,
+    ): ConnectResult {
         if (android.os.SystemClock.elapsedRealtime() < proofBackoffUntilMillis) {
             return ConnectResult.Failed("controller_auth_backoff")
         }
@@ -373,14 +405,10 @@ class BleKitsuTransport(
                 it.bondState == BluetoothDevice.BOND_BONDED
         } ?: return ConnectResult.Failed("bond_missing_repair_required")
 
-        val seen = if (confirmPresenceByScan) {
-            when (val scan = scanForKnown(bonded.address)) {
-                is DeviceScan.Found -> scan.device
-                DeviceScan.Absent -> return ConnectResult.CompanionAbsent
-                is DeviceScan.Failed -> return ConnectResult.Failed(scan.code)
-            }
-        } else {
-            bonded
+        val seen = when (val scan = scanForKnown(bonded.address)) {
+            is DeviceScan.Found -> scan.device
+            DeviceScan.Absent -> return ConnectResult.CompanionAbsent
+            is DeviceScan.Failed -> return ConnectResult.Failed(scan.code)
         }
         val ready = CompletableDeferred<ConnectResult>()
         connectionReady = ready
@@ -407,11 +435,13 @@ class BleKitsuTransport(
             disconnect()
             return ConnectResult.Failed("invalid_controller_capability")
         }
-        val session = withTimeoutOrNull(CapabilityHandshake.HANDSHAKE_TIMEOUT_MILLIS) {
+        val handshake = withTimeoutOrNull(CapabilityHandshake.HANDSHAKE_TIMEOUT_MILLIS) {
             runCatching {
                 CapabilityHandshake().perform(controllerId, controllerRoot, ::exchangeHandshake)
-            }.getOrNull()
+            }
         }
+        val session = handshake?.getOrNull()
+        val handshakeCode = (handshake?.exceptionOrNull() as? HandshakeException)?.code
         controllerRoot.fill(0)
         if (session == null) {
             failedProofs++
@@ -421,7 +451,13 @@ class BleKitsuTransport(
             }
             SafeLog.warn("ble_auth", "controller_auth_failed")
             disconnect()
-            return ConnectResult.Failed("controller_auth_failed")
+            return ConnectResult.Failed(
+                if (distinguishControllerRejection && handshakeCode == "controller_rejected") {
+                    "pending_controller_rejected"
+                } else {
+                    "controller_auth_failed"
+                },
+            )
         }
         failedProofs = 0
         envelopeSession = session
@@ -535,7 +571,7 @@ class BleKitsuTransport(
     /**
      * Android 6-11 couple BLE scan discovery to the system Location Services
      * switch even when the app already has location permission. Treating that
-     * condition as an empty scan would incorrectly authorize remote fallback.
+     * condition as an empty scan would misreport the selected Kitsu as absent.
      */
     @Suppress("DEPRECATION")
     private fun scanPrerequisiteError(): String? {
@@ -621,6 +657,7 @@ class BleKitsuTransport(
                         connectionReady?.complete(ConnectResult.Failed("gatt_status_$status"))
                         pairingInbox?.close(PairingException("gatt_disconnected"))
                         failPending("gatt_disconnected")
+                        disconnectObserver?.invoke("gatt_disconnected")
                     }
                     runCatching { gatt.close() }
                 }
@@ -780,25 +817,11 @@ class BleKitsuTransport(
                 return
             }
         }
-        if (verified.channel == SecureEnvelopeSession.CHANNEL_EVENT &&
-            verified.operation == "gateway.enroll.event"
-        ) {
-            try {
-                FirmwareBlePayloadMapper.gatewayEnrollmentEvent(verified.payload)
-            } catch (_: Throwable) {
-                failPending("malformed_enrollment_event")
-                closeMalformedGatt("malformed_enrollment_event")
-            }
-            return
-        }
-        val line = verified.payload.toString(Charsets.UTF_8)
         try {
-            val event = json.decodeFromString(EventEnvelope.serializer(), line)
-            if (event.v == WIRE_VERSION && verified.channel == SecureEnvelopeSession.CHANNEL_EVENT) {
-                eventBus.tryEmit(event)
-            } else {
+            if (verified.channel != SecureEnvelopeSession.CHANNEL_EVENT) {
                 throw EnvelopeException("invalid_event_binding")
             }
+            eventBus.tryEmit(FirmwareBlePayloadMapper.event(verified.operation, verified.payload))
         } catch (failure: Throwable) {
             failPending("malformed_event")
             closeMalformedGatt("malformed_event")
@@ -857,8 +880,7 @@ class BleKitsuTransport(
                 throw TransportException(failure.code, failure)
             }
         } finally {
-            // Provisioning bodies can contain a Wi-Fi passphrase. Do not leave the
-            // temporary plaintext JSON byte array live after authenticated wrapping.
+            // Do not leave temporary plaintext request JSON live after authenticated wrapping.
             payload.fill(0)
         }
         val frame = encodeGattFrame(secured)
@@ -1002,153 +1024,82 @@ class BleKitsuTransport(
             currentEpochSeconds = { java.time.Instant.now().epochSecond },
             messageOneShotReady = { meshOneShotReady },
         ).prepare(command)
-        return requestBody("action.apply", json.encodeToJsonElement(direct) as JsonObject)
-    }
-
-    override suspend fun provisionWifi(credentials: WifiProvisioning): ProvisioningReceipt {
-        ProvisioningPolicy.wifiError(credentials)?.let { throw TransportException(it) }
-        val body = json.encodeToJsonElement(credentials.toConfigureBody()) as JsonObject
-        return DirectProvisioningPlan.execute(
-            writeOperation = "wifi.configure",
-            synchronizeClock = ::synchronizeClock,
-        ) { operation ->
-            FirmwareBlePayloadMapper.wifiConfiguration(successfulPayload(operation, body))
-        }
-    }
-
-    override suspend fun retryWifi(): WifiRetryReceipt =
-        FirmwareBlePayloadMapper.wifiRetry(
-            successfulPayload("wifi.retry", buildJsonObject {}),
-        )
-
-    override suspend fun configureGateway(
-        configuration: GatewayConfiguration,
-    ): GatewayConfigurationReceipt {
-        ProvisioningPolicy.gatewayError(configuration)?.let { throw TransportException(it) }
-        val body = json.encodeToJsonElement(configuration) as JsonObject
-        return DirectProvisioningPlan.execute(
-            writeOperation = "gateway.configure",
-            synchronizeClock = ::synchronizeClock,
-        ) { operation ->
-            FirmwareBlePayloadMapper.gatewayConfiguration(successfulPayload(operation, body))
-        }
-    }
-
-    override suspend fun beginGatewayEnrollment(
-        request: GatewayEnrollmentBeginBody,
-    ): GatewayEnrollmentReceipt {
-        EnrollmentPolicy.beginError(request)?.let { throw TransportException(it) }
-        val body = json.encodeToJsonElement(request) as JsonObject
-        return DirectProvisioningPlan.execute(
-            writeOperation = "gateway.enroll.begin",
-            synchronizeClock = ::synchronizeClock,
-        ) { operation ->
-            FirmwareBlePayloadMapper.gatewayEnrollmentBegin(
-                successfulPayload(operation, body),
-                request.enrollmentId,
-            )
-        }
-    }
-
-    override suspend fun finishGatewayEnrollment(
-        request: GatewayEnrollmentFinishBody,
-    ): GatewayEnrollmentReceipt {
-        EnrollmentPolicy.finishError(request)?.let { throw TransportException(it) }
-        val body = json.encodeToJsonElement(request) as JsonObject
-        return FirmwareBlePayloadMapper.gatewayEnrollmentFinish(
-            successfulPayload("gateway.enroll.finish", body),
-            request.enrollmentId,
+        return FirmwareBlePayloadMapper.action(
+            successfulPayload("action.apply", json.encodeToJsonElement(direct) as JsonObject),
+            command,
         )
     }
 
-    override suspend fun beginEnrollment(
-        enrollmentId: String,
-        claimToken: String,
-    ): GatewayEnrollmentReceipt = beginGatewayEnrollment(
-        GatewayEnrollmentBeginBody(enrollmentId = enrollmentId, claimToken = claimToken),
+    override suspend fun forgetController(): ControllerForgetReceipt =
+        FirmwareBlePayloadMapper.controllerForget(
+            successfulPayload("controller.forget", buildJsonObject {}),
+        )
+
+    override fun firmwareTransferChunkBytes(): Int = if (negotiatedMtu >= 247) 4_096 else 256
+
+    override suspend fun firmwareUpdateStatus(): FirmwareUpdateReceipt = firmwareUpdateRequest(
+        "firmware.update.status",
+        buildJsonObject {},
     )
 
-    override suspend fun finishEnrollment(enrollmentId: String): GatewayEnrollmentReceipt =
-        finishGatewayEnrollment(GatewayEnrollmentFinishBody(enrollmentId = enrollmentId))
-
-    override suspend fun configureRelay(
-        gatewayId: String,
-        caCertificateDerB64: String,
-    ): MobileRelayReceipt = requestBody(
-        mobileRelayOperations.exchange,
+    override suspend fun beginFirmwareUpdate(
+        manifest: ByteArray,
+        signature: ByteArray,
+    ): FirmwareUpdateReceipt = firmwareUpdateRequest(
+        "firmware.update.begin",
         buildJsonObject {
-            put("schema", MobileRelayWirePolicy.EXCHANGE_SCHEMA)
-            put("kind", "relay_configure")
-            put("gateway_id", gatewayId)
-            put("ca_cert_der_b64", caCertificateDerB64)
+            put("manifest_b64", Base64.getUrlEncoder().withoutPadding().encodeToString(manifest))
+            put("signature_b64", Base64.getUrlEncoder().withoutPadding().encodeToString(signature))
         },
     )
 
-    override suspend fun forgetGateway(expectedGatewayId: String): GatewayForgetReceipt {
-        if (!MobileRelayWirePolicy.canonicalUuid(expectedGatewayId)) {
-            throw TransportException("invalid_mobile_relay_identity")
+    override suspend fun writeFirmwareUpdate(
+        updateId: String,
+        offset: Int,
+        data: ByteArray,
+    ): FirmwareUpdateReceipt {
+        if (!LOWER_SHA256.matches(updateId) || offset < 0 || data.isEmpty() || data.size > 4_096) {
+            throw TransportException("invalid_firmware_update_chunk")
         }
-        return requestBody(
-            "gateway.forget",
-            buildJsonObject { put("gateway_id", expectedGatewayId) },
-        )
-    }
-
-    override suspend fun pull(kind: MobileRelayPullKind, offset: Int): MobileRelayChunk {
-        val response = successfulPayload(
-            mobileRelayOperations.exchange,
+        return firmwareUpdateRequest(
+            "firmware.update.write",
             buildJsonObject {
-                put("schema", MobileRelayWirePolicy.EXCHANGE_SCHEMA)
-                put("kind", kind.wireName)
+                put("update_id", updateId)
                 put("offset", offset)
+                put("data_b64", Base64.getUrlEncoder().withoutPadding().encodeToString(data))
             },
         )
-        return try {
-            val body = json.parseToJsonElement(response.toString(Charsets.UTF_8))
-            if ((body as? JsonObject)?.get("schema")?.jsonPrimitive?.contentOrNull ==
-                MobileRelayWirePolicy.RECEIPT_SCHEMA
-            ) {
-                val receipt = json.decodeFromJsonElement<MobileRelayReceipt>(body)
-                throw TransportException(receipt.errorCode ?: "relay_pull_rejected")
-            }
-            json.decodeFromJsonElement(body)
-        } catch (failure: TransportException) {
-            throw failure
-        } catch (failure: Throwable) {
-            throw TransportException("malformed_response", failure)
-        }
     }
 
-    override suspend fun push(
-        kind: MobileRelayPushKind,
-        offset: Int,
-        total: Int,
-        data: ByteArray,
-        final: Boolean,
-    ): MobileRelayReceipt = requestBody(
-        mobileRelayOperations.exchange,
-        buildJsonObject {
-            put("schema", MobileRelayWirePolicy.EXCHANGE_SCHEMA)
-            put("kind", kind.wireName)
-            put("offset", offset)
-            put("total", total)
-            put("data_b64", Base64.getUrlEncoder().withoutPadding().encodeToString(data))
-            put("final", final)
-        },
-    )
+    override suspend fun finishFirmwareUpdate(updateId: String): FirmwareUpdateReceipt =
+        firmwareUpdateIdRequest("firmware.update.finish", updateId)
+
+    override suspend fun rebootFirmwareUpdate(updateId: String): FirmwareUpdateReceipt =
+        firmwareUpdateIdRequest("firmware.update.reboot", updateId)
+
+    override suspend fun abortFirmwareUpdate(updateId: String): FirmwareUpdateReceipt =
+        firmwareUpdateIdRequest("firmware.update.abort", updateId)
+
+    private suspend fun firmwareUpdateIdRequest(operation: String, updateId: String): FirmwareUpdateReceipt {
+        if (!LOWER_SHA256.matches(updateId)) throw TransportException("invalid_update_id")
+        return firmwareUpdateRequest(operation, buildJsonObject { put("update_id", updateId) })
+    }
+
+    private suspend fun firmwareUpdateRequest(
+        operation: String,
+        body: JsonObject,
+    ): FirmwareUpdateReceipt = FirmwareBlePayloadMapper.firmwareUpdate(request(operation, body))
 
     override fun events(after: String?): Flow<EventEnvelope> = flow { emitAll(eventBus) }
 
-    /** Lets the foreground public-gateway service take over an already-authenticated
-     * GATT session without disconnecting and immediately trying to scan it again. */
     override fun isConnectedTo(deviceAddress: String): Boolean =
         connectedDeviceAddress?.equals(deviceAddress, ignoreCase = true) == true &&
             gatt != null && writeCharacteristic != null && notifyCharacteristic != null &&
             envelopeSession != null
 
-    override fun isConnected(): Boolean =
-        gatt != null && writeCharacteristic != null && notifyCharacteristic != null &&
-            envelopeSession != null
+    internal fun setDisconnectObserver(observer: (String) -> Unit) {
+        disconnectObserver = observer
+    }
 
     @SuppressLint("MissingPermission")
     override suspend fun disconnect() {
@@ -1204,6 +1155,7 @@ class BleKitsuTransport(
     }
 
     companion object {
+        private val LOWER_SHA256 = Regex("^[0-9a-f]{64}$")
         private val CLIENT_CONFIGURATION_UUID: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val CONNECT_TIMEOUT_MILLIS = 12_000L

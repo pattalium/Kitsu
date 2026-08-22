@@ -1,15 +1,46 @@
 package app.kitsu.mobile.transport
 
+import app.kitsu.mobile.model.ActionCommand
+import app.kitsu.mobile.model.ActionKind
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FirmwareBlePayloadMapperTest {
+    @Test fun acceptsOnlyTheExactAuthenticatedRefreshEvent() {
+        val valid = FirmwareBlePayloadMapper.event(
+            "companion.refresh",
+            """{"v":1,"cursor":"ble:7","kind":"refresh","body":{}}""".toByteArray(),
+        )
+        assertEquals("ble:7", valid.cursor)
+        listOf(
+            "status.event" to """{"v":1,"cursor":"ble:7","kind":"refresh","body":{}}""",
+            "companion.refresh" to """{"v":1,"cursor":"ble:0","kind":"refresh","body":{}}""",
+            "companion.refresh" to """{"v":1,"cursor":"ble:7","kind":"refresh","body":{"extra":true}}""",
+            "companion.refresh" to """{"v":1,"cursor":"ble:7","kind":"refresh","body":{},"extra":true}""",
+        ).forEach { (operation, payload) ->
+            val failure = runCatching {
+                FirmwareBlePayloadMapper.event(operation, payload.toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_event", failure.code)
+        }
+    }
+
+    @Test fun surfacesProductionActionRejection() {
+        val actionId = "00000000-0000-4000-8000-000000000001"
+        val failure = runCatching {
+            FirmwareBlePayloadMapper.action(
+                """{"action_id":"$actionId","accepted":false,"state":"rejected","error_code":"companion_unavailable"}""".toByteArray(),
+                ActionCommand(ActionKind.PET, actionId),
+            )
+        }.exceptionOrNull() as TransportException
+        assertEquals("companion_unavailable", failure.code)
+    }
+
     @Test fun mapsExactFirmwareStatePayload() {
         val status = FirmwareBlePayloadMapper.state(
-            """{"schema":"kitsu.state.v1","device_uid":"KTDEAD","companion":"FOX","energy":88,"curiosity":72,"affection":91,"sleeping":false,"mesh_enabled":true,"mesh_rx_ready":true,"mesh_tx_unlocked":false,"mesh_time_valid":true,"mesh_one_shot_ready":true,"wifi_configured":true,"wifi_state":"connected","gateway_configured":true,"gateway_enrolled":false,"lan_state":"connected","journal_ready":true,"peer_count":2,"event_count":7,"controller_count":1,"remote_connectivity_allowed":false}""".toByteArray(),
+            """{"schema":"kitsu.state.v1","device_uid":"KTDEAD","companion":"FOX","firmware_version":"0.12.0","listening":true,"mood":"content","battery_percent":82,"battery_mv":3980,"pack_ready":true,"pack_id":305419896,"pack_revision":4294967295,"bond_level":3,"bond_xp":91,"bond_progress_percent":45,"evolution_stage":"kit","appearance_variant":2,"personality":"curious","unlock_mask":7,"memory_count":4,"energy":88,"curiosity":72,"affection":91,"sleeping":false,"mesh_enabled":true,"mesh_rx_ready":true,"mesh_tx_unlocked":false,"mesh_time_valid":true,"mesh_one_shot_ready":true,"event_count":7}""".toByteArray(),
             1_787_000_000,
         )
         assertEquals("KTDEAD", status.deviceId)
@@ -19,13 +50,14 @@ class FirmwareBlePayloadMapperTest {
         assertTrue(status.mesh.enabled)
         assertTrue(status.mesh.timeValid)
         assertTrue(status.mesh.oneShotReady)
-        assertTrue(status.mesh.txReady)
-        assertTrue(status.lan.wifiConfigured == true)
-        assertEquals("connected", status.lan.wifiState)
-        assertTrue(status.lan.gatewayConfigured == true)
-        assertFalse(status.lan.gatewayEnrolled == true)
-        assertEquals("connected", status.lan.lanState)
-        assertFalse(status.lan.remoteConnectivityAllowed == true)
+        assertEquals("0.12.0", status.firmwareVersion)
+        assertEquals(82, status.batteryPercent)
+        assertTrue(status.packReady)
+        assertEquals("305419896", status.packId)
+        assertEquals(4_294_967_295L, status.packRevision)
+        assertEquals("2", status.appearanceVariant)
+        assertEquals(3, status.bondLevel)
+        assertEquals("curious", status.personality)
         assertEquals("7", status.cursor)
     }
 
@@ -44,10 +76,24 @@ class FirmwareBlePayloadMapperTest {
         assertNull(peers.items.single().lastHeardAt)
 
         val messages = FirmwareBlePayloadMapper.messages(
-            """{"schema":"kitsu.messages.v1","items":[{"message_id":"11","timestamp":1787000002,"inbound":true,"kind":"channel","authenticated":false,"sender_name":"Alice","peer_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","channel_slot":0,"text":"hello","state":"received"}],"cursor":"11","has_more":false,"gap":false}""".toByteArray(),
+            """{"schema":"kitsu.messages.v1","items":[{"message_id":"11","timestamp":1787000002,"inbound":true,"kind":"channel","authenticated":false,"sender_name":"Alice","peer_id":null,"channel_slot":0,"text":"hello","state":"received"}],"cursor":"11","has_more":false,"gap":false}""".toByteArray(),
         )
         assertEquals("Alice (unverified)", messages.items.single().peerId)
         assertEquals("0", messages.items.single().channel)
+    }
+
+    @Test fun rejectsCrossShapedOrUnknownStateMessages() {
+        val peer = "A".repeat(43)
+        listOf(
+            """{"schema":"kitsu.messages.v1","items":[{"message_id":"1","timestamp":1,"inbound":true,"kind":"direct","authenticated":true,"sender_name":"A","peer_id":"$peer","channel_slot":0,"text":"hi","state":"received"}],"cursor":"1","has_more":false,"gap":false}""",
+            """{"schema":"kitsu.messages.v1","items":[{"message_id":"1","timestamp":1,"inbound":true,"kind":"channel","authenticated":false,"sender_name":"A","peer_id":"$peer","channel_slot":0,"text":"hi","state":"received"}],"cursor":"1","has_more":false,"gap":false}""",
+            """{"schema":"kitsu.messages.v1","items":[{"message_id":"1","timestamp":1,"inbound":true,"kind":"direct","authenticated":true,"sender_name":"A","peer_id":"$peer","channel_slot":null,"text":"hi","state":"accepted"}],"cursor":"1","has_more":false,"gap":false}""",
+        ).forEach { payload ->
+            val failure = runCatching {
+                FirmwareBlePayloadMapper.messages(payload.toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_messages", failure.code)
+        }
     }
 
     @Test fun mapsConfiguredChannelsAndPinnedMeshProfile() {
@@ -80,24 +126,39 @@ class FirmwareBlePayloadMapperTest {
         }
     }
 
-    @Test fun validatesExactProvisioningReceiptSchemas() {
-        val wifi = FirmwareBlePayloadMapper.wifiConfiguration(
-            """{"schema":"kitsu.wifi-config.v1","accepted":true,"state":"stored","error_code":null}""".toByteArray(),
+    @Test fun validatesControllerForgetAndFirmwareReceipts() {
+        assertTrue(FirmwareBlePayloadMapper.controllerForget(
+            """{"schema":"kitsu.controller-forget.v1","accepted":true}""".toByteArray(),
+        ).accepted)
+        val storageFailure = runCatching {
+            FirmwareBlePayloadMapper.controllerForget(
+                """{"schema":"kitsu.controller-forget.v1","accepted":false,"error":"storage_failed"}""".toByteArray(),
+            )
+        }.exceptionOrNull() as TransportException
+        assertEquals("storage_failed", storageFailure.code)
+        listOf(
+            """{"schema":"kitsu.controller-forget.v1","accepted":true,"extra":true}""",
+            """{"schema":"kitsu.controller-forget.v1","accepted":false,"error":"unknown"}""",
+        ).forEach { payload ->
+            val failure = runCatching {
+                FirmwareBlePayloadMapper.controllerForget(payload.toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_controller_forget", failure.code)
+        }
+        val update = FirmwareBlePayloadMapper.firmwareUpdate(
+            """{"ok":true,"protocol":1,"state":"receiving","update_id":"${"a".repeat(64)}","firmware_version":"0.11.4","image_bytes":1024,"next_offset":256,"chunk_bytes":4096,"resumed":false,"replayed":false,"scheduled":false,"error":null}""".toByteArray(),
         )
-        assertTrue(wifi.accepted)
-        assertEquals("stored", wifi.state)
+        assertEquals(256, update.nextOffset)
 
-        val retry = FirmwareBlePayloadMapper.wifiRetry(
-            """{"schema":"kitsu.wifi-retry.v1","accepted":true,"state":"retrying","error_code":null}""".toByteArray(),
-        )
-        assertTrue(retry.accepted)
-        assertEquals("retrying", retry.state)
-
-        val gateway = FirmwareBlePayloadMapper.gatewayConfiguration(
-            """{"schema":"kitsu.gateway-config.v2","accepted":true,"state":"stored","error_code":null}""".toByteArray(),
-        )
-        assertTrue(gateway.accepted)
-        assertEquals("stored", gateway.state)
+        listOf(
+            """{"ok":false,"protocol":1,"state":"failed","update_id":null,"firmware_version":"0.11.4","image_bytes":0,"next_offset":0,"chunk_bytes":4096,"resumed":false,"replayed":false,"scheduled":false,"error":null}""",
+            """{"ok":true,"protocol":1,"state":"idle","update_id":null,"firmware_version":"0.11.4","image_bytes":0,"next_offset":0,"chunk_bytes":4096,"resumed":false,"replayed":false,"scheduled":false,"error":null,"extra":true}""",
+        ).forEach { payload ->
+            val failure = runCatching {
+                FirmwareBlePayloadMapper.firmwareUpdate(payload.toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_firmware_update_receipt", failure.code)
+        }
     }
 
     @Test fun recognizesSignedFirmwareRejection() {

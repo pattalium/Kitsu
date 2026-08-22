@@ -130,6 +130,7 @@ class MemoryStorage final : public DeviceSecurityStorage {
 
   bool writeSlot(uint8_t slot, const uint8_t* input,
                  size_t inputBytes) override {
+    ++writeCalls;
     if (slot >= kSecuritySlots || inputBytes > kSecurityBlobCapacity) {
       return false;
     }
@@ -150,6 +151,14 @@ class MemoryStorage final : public DeviceSecurityStorage {
     return true;
   }
 
+  bool clearSlot(uint8_t slot) override {
+    ++clearCalls;
+    if (slot >= kSecuritySlots || failClear) return false;
+    memset(data[slot], 0, sizeof(data[slot]));
+    sizes[slot] = 0U;
+    return true;
+  }
+
   bool contains(const uint8_t* needle, size_t needleBytes) const {
     for (size_t slot = 0U; slot < kSecuritySlots; ++slot) {
       if (needleBytes > sizes[slot]) continue;
@@ -166,9 +175,128 @@ class MemoryStorage final : public DeviceSecurityStorage {
   bool failWrite = false;
   bool tearWrite = false;
   bool corruptWrite = false;
+  bool failClear = false;
+  size_t writeCalls = 0U;
+  size_t clearCalls = 0U;
 };
 
 const uint8_t kHardwareId[8] = {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
+
+constexpr size_t kOuterHeaderBytes = 44U;
+constexpr size_t kPlainBytes = 320U;
+constexpr size_t kPlainCrcOffset = 316U;
+constexpr size_t kRetiredKeyOffset = 60U;
+constexpr size_t kRetiredKeyBytes = 32U;
+constexpr size_t kControllerTableOffset = 92U;
+constexpr size_t kControllerTableBytes = 208U;
+constexpr size_t kRetiredCountersOffset = 300U;
+constexpr size_t kRetiredCountersBytes = 16U;
+
+uint32_t readU32(const uint8_t* input) {
+  return static_cast<uint32_t>(input[0]) |
+      (static_cast<uint32_t>(input[1]) << 8U) |
+      (static_cast<uint32_t>(input[2]) << 16U) |
+      (static_cast<uint32_t>(input[3]) << 24U);
+}
+
+void writeU32(uint8_t* output, uint32_t value) {
+  output[0] = static_cast<uint8_t>(value);
+  output[1] = static_cast<uint8_t>(value >> 8U);
+  output[2] = static_cast<uint8_t>(value >> 16U);
+  output[3] = static_cast<uint8_t>(value >> 24U);
+}
+
+uint32_t plaintextCrc32(const uint8_t* input, size_t bytes) {
+  uint32_t crc = 0xffffffffUL;
+  for (size_t index = 0U; index < bytes; ++index) {
+    crc ^= input[index];
+    for (uint8_t bit = 0U; bit < 8U; ++bit) {
+      const uint32_t mask = static_cast<uint32_t>(
+          -static_cast<int32_t>(crc & 1U));
+      crc = (crc >> 1U) ^ (0xedb88320UL & mask);
+    }
+  }
+  return ~crc;
+}
+
+bool openSlotPlaintext(const MemoryStorage& storage, uint8_t slot,
+                       TestPlatform& platform,
+                       uint8_t output[kPlainBytes]) {
+  if (slot >= kSecuritySlots ||
+      storage.sizes[slot] != kOuterHeaderBytes + kPlainBytes) {
+    return false;
+  }
+  const uint8_t* blob = storage.data[slot];
+  uint8_t wrappingKey[kKitsuSecretBytes]{};
+  if (!platform.deriveWrappingKey(kHardwareId, wrappingKey)) return false;
+  const bool opened = platform.open(
+      wrappingKey, readU32(blob + 8U), blob + 16U,
+      blob + kOuterHeaderBytes, kPlainBytes, blob + 28U, output);
+  memset(wrappingKey, 0, sizeof(wrappingKey));
+  return opened;
+}
+
+bool openActivePlaintext(const MemoryStorage& storage,
+                         const KitsuDeviceSecurity& security,
+                         TestPlatform& platform,
+                         uint8_t output[kPlainBytes]) {
+  const int8_t active = security.status().activeSlot;
+  return active >= 0 && openSlotPlaintext(
+      storage, static_cast<uint8_t>(active), platform, output);
+}
+
+bool retiredRangesAreZero(const uint8_t plain[kPlainBytes]) {
+  uint8_t combined = 0U;
+  for (size_t index = 0U; index < kRetiredKeyBytes; ++index) {
+    combined |= plain[kRetiredKeyOffset + index];
+  }
+  for (size_t index = 0U; index < kRetiredCountersBytes; ++index) {
+    combined |= plain[kRetiredCountersOffset + index];
+  }
+  return combined == 0U;
+}
+
+bool controllerTableIsZero(const uint8_t plain[kPlainBytes]) {
+  uint8_t combined = 0U;
+  for (size_t index = 0U; index < kControllerTableBytes; ++index) {
+    combined |= plain[kControllerTableOffset + index];
+  }
+  return combined == 0U;
+}
+
+void assertAllStoredGenerationsSanitized(const MemoryStorage& storage,
+                                         TestPlatform& platform,
+                                         bool expectEmptyControllerTable) {
+  for (uint8_t slot = 0U; slot < kSecuritySlots; ++slot) {
+    uint8_t plain[kPlainBytes]{};
+    assert(openSlotPlaintext(storage, slot, platform, plain));
+    assert(retiredRangesAreZero(plain));
+    if (expectEmptyControllerTable) assert(controllerTableIsZero(plain));
+  }
+}
+
+bool seedRetiredNetworkMaterial(MemoryStorage& storage,
+                                const KitsuDeviceSecurity& security,
+                                TestPlatform& platform) {
+  const int8_t active = security.status().activeSlot;
+  if (active < 0) return false;
+  uint8_t* blob = storage.data[static_cast<uint8_t>(active)];
+  uint8_t plain[kPlainBytes]{};
+  if (!openActivePlaintext(storage, security, platform, plain)) return false;
+  writeU32(plain + 8U, readU32(plain + 8U) | 0x01U);
+  memset(plain + kRetiredKeyOffset, 0xa5, kRetiredKeyBytes);
+  memset(plain + kRetiredCountersOffset, 0x5a, kRetiredCountersBytes);
+  writeU32(plain + kPlainCrcOffset,
+           plaintextCrc32(plain, kPlainCrcOffset));
+  uint8_t wrappingKey[kKitsuSecretBytes]{};
+  if (!platform.deriveWrappingKey(kHardwareId, wrappingKey)) return false;
+  const bool sealed = platform.seal(
+      wrappingKey, readU32(blob + 8U), blob + 16U, plain, kPlainBytes,
+      blob + kOuterHeaderBytes, blob + 28U);
+  memset(wrappingKey, 0, sizeof(wrappingKey));
+  memset(plain, 0, sizeof(plain));
+  return sealed;
+}
 
 void testProfileGates() {
   MemoryStorage storage;
@@ -192,7 +320,6 @@ void testReflashableCreationRecoveryAndDerivation() {
   assert(security.begin(storage, platform, kHardwareId) ==
          SecurityResult::OkReflashable);
   assert(security.ready());
-  assert(security.remoteConnectivityAllowed());
   assert(security.status().securityMode == SecurityMode::Reflashable);
   assert(security.status().applicationEncrypted);
   assert(!security.status().hardwareRootProtected);
@@ -200,24 +327,21 @@ void testReflashableCreationRecoveryAndDerivation() {
   assert(security.status().activeSlot == 0);
 
   uint8_t id[16]{};
-  uint8_t lanKey[32]{};
   uint8_t journalKey[32]{};
   assert(security.copyDeviceId(id));
-  assert(security.copyLanAuthKey(lanKey));
   assert(security.deriveJournalKey(journalKey) == SecurityResult::Ok);
-  assert(memcmp(lanKey, journalKey, sizeof(lanKey)) != 0);
-  assert(!storage.contains(lanKey, sizeof(lanKey)));
   assert(!storage.contains(journalKey, sizeof(journalKey)));
+  uint8_t freshPlain[kPlainBytes]{};
+  assert(openActivePlaintext(storage, security, platform, freshPlain));
+  assert(retiredRangesAreZero(freshPlain));
+  assert((readU32(freshPlain + 8U) & 0x01U) == 0U);
 
   KitsuDeviceSecurity restored;
   assert(restored.begin(storage, platform, kHardwareId) ==
          SecurityResult::OkReflashable);
   uint8_t restoredId[16]{};
-  uint8_t restoredLan[32]{};
   assert(restored.copyDeviceId(restoredId));
-  assert(restored.copyLanAuthKey(restoredLan));
   assert(memcmp(id, restoredId, sizeof(id)) == 0);
-  assert(memcmp(lanKey, restoredLan, sizeof(lanKey)) == 0);
 }
 
 void testControllerPhysicalGateAndRevocation() {
@@ -269,36 +393,65 @@ void testControllerPhysicalGateAndRevocation() {
                                                              true) ==
          SecurityResult::Ok);
   assert(!restored.findControllerRoot(controllerId, copied));
+  assertAllStoredGenerationsSanitized(storage, platform, true);
+
+  uint8_t secondRoot[kKitsuSecretBytes]{};
+  assert(restored.generatePendingControllerRoot(
+             true, true, true, true, secondRoot) == SecurityResult::Ok);
+  assert(restored.commitControllerAfterPairing(
+             controllerId, secondRoot, true, true, true, true, true) ==
+         SecurityResult::Ok);
+  storage.failClear = true;
+  assert(restored.revokeAuthenticatedController(controllerId) ==
+         SecurityResult::StorageWriteFailed);
+  assert(!restored.findControllerRoot(controllerId, copied));
+  const int8_t clearSlot = static_cast<int8_t>(restored.status().activeSlot ^ 1);
+  assert(storage.sizes[static_cast<uint8_t>(clearSlot)] != 0U);
+  storage.failClear = false;
+  assert(restored.revokeAuthenticatedController(controllerId) ==
+         SecurityResult::Ok);
+  assertAllStoredGenerationsSanitized(storage, platform, true);
 }
 
-void testSequencePersistenceAndStrictIncrement() {
+void testRetiredNetworkMaterialIsTransactionallyRemoved() {
   MemoryStorage storage;
   TestPlatform platform;
   KitsuDeviceSecurity security;
   assert(security.begin(storage, platform, kHardwareId) ==
          SecurityResult::OkReflashable);
-  assert(security.acceptLanRxSequence(2U) ==
-         SecurityResult::SequenceRejected);
-  assert(security.acceptLanRxSequence(1U) ==
+  uint8_t controllerId[kKitsuControllerIdBytes]{};
+  uint8_t controllerRoot[kKitsuSecretBytes]{};
+  memset(controllerId, 0x42, sizeof(controllerId));
+  memset(controllerRoot, 0xc3, sizeof(controllerRoot));
+  assert(security.commitControllerAfterPairing(
+             controllerId, controllerRoot, true, true, true, true, true) ==
          SecurityResult::Ok);
-  assert(security.acceptLanRxSequence(1U) ==
-         SecurityResult::SequenceRejected);
-  uint64_t first = 0U;
-  uint64_t last = 0U;
-  assert(security.reserveLanTxSequenceBlock(32U, first, last) ==
-         SecurityResult::Ok);
-  assert(first == 1U && last == 32U);
+  const uint32_t legacyGeneration = security.status().generation;
+  assert(seedRetiredNetworkMaterial(storage, security, platform));
 
   KitsuDeviceSecurity restored;
   assert(restored.begin(storage, platform, kHardwareId) ==
          SecurityResult::OkReflashable);
-  assert(restored.status().lanRxHighWater == 1U);
-  assert(restored.status().lanTxReservedHigh == 32U);
-  assert(restored.acceptLanRxSequence(2U) ==
-         SecurityResult::Ok);
-  assert(restored.reserveLanTxSequenceBlock(1U, first, last) ==
-         SecurityResult::Ok);
-  assert(first == 33U && last == 33U);
+  assert(restored.status().generation == legacyGeneration + 2U);
+  uint8_t recovered[kKitsuSecretBytes]{};
+  assert(restored.findControllerRoot(controllerId, recovered));
+  assert(memcmp(controllerRoot, recovered, sizeof(recovered)) == 0);
+  uint8_t migratedPlain[kPlainBytes]{};
+  assert(openActivePlaintext(storage, restored, platform, migratedPlain));
+  assert(retiredRangesAreZero(migratedPlain));
+  assert((readU32(migratedPlain + 8U) & 0x03U) == 0U);
+  assertAllStoredGenerationsSanitized(storage, platform, false);
+
+  const size_t writesBeforeCleanBoot = storage.writeCalls;
+  const size_t clearsBeforeCleanBoot = storage.clearCalls;
+  KitsuDeviceSecurity rebooted;
+  assert(rebooted.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+  assert(storage.writeCalls == writesBeforeCleanBoot);
+  assert(storage.clearCalls == clearsBeforeCleanBoot);
+  memset(recovered, 0, sizeof(recovered));
+  assert(rebooted.findControllerRoot(controllerId, recovered));
+  assert(memcmp(controllerRoot, recovered, sizeof(recovered)) == 0);
 }
 
 void testFourControllerLimitHasNoEviction() {
@@ -334,32 +487,78 @@ void testFourControllerLimitHasNoEviction() {
   assert(memcmp(recovered, firstRoot, sizeof(recovered)) == 0);
 }
 
-void testPowerLossRollbackAndCorruptionRefusal() {
+void testRetiredMaterialMigrationResumesAfterEraseFailure() {
   MemoryStorage storage;
   TestPlatform platform;
   KitsuDeviceSecurity security;
   assert(security.begin(storage, platform, kHardwareId) ==
          SecurityResult::OkReflashable);
-  storage.tearWrite = true;
-  assert(security.acceptLanRxSequence(1U) ==
+  uint8_t controllerId[kKitsuControllerIdBytes]{};
+  uint8_t controllerRoot[kKitsuSecretBytes]{};
+  memset(controllerId, 0x33, sizeof(controllerId));
+  memset(controllerRoot, 0x77, sizeof(controllerRoot));
+  assert(security.commitControllerAfterPairing(
+             controllerId, controllerRoot, true, true, true, true, true) ==
+         SecurityResult::Ok);
+  assert(seedRetiredNetworkMaterial(storage, security, platform));
+  storage.failClear = true;
+
+  KitsuDeviceSecurity interrupted;
+  assert(interrupted.begin(storage, platform, kHardwareId) ==
          SecurityResult::StorageWriteFailed);
-  assert(security.status().lanRxHighWater == 0U);
+  assert(!interrupted.ready());
+  storage.failClear = false;
 
-  KitsuDeviceSecurity restored;
-  assert(restored.begin(storage, platform, kHardwareId) ==
+  KitsuDeviceSecurity recovered;
+  assert(recovered.begin(storage, platform, kHardwareId) ==
          SecurityResult::OkReflashable);
-  assert(restored.status().lanRxHighWater == 0U);
+  uint8_t copied[kKitsuSecretBytes]{};
+  assert(recovered.findControllerRoot(controllerId, copied));
+  assert(memcmp(controllerRoot, copied, sizeof(copied)) == 0);
+  uint8_t plain[kPlainBytes]{};
+  assert(openActivePlaintext(storage, recovered, platform, plain));
+  assert(retiredRangesAreZero(plain));
+  assert((readU32(plain + 8U) & 0x03U) == 0U);
+  assertAllStoredGenerationsSanitized(storage, platform, false);
+}
 
-  uint8_t lanBefore[32]{};
-  assert(restored.copyLanAuthKey(lanBefore));
-  uint8_t output[32]{};
-  storage.corruptWrite = true;
-  assert(restored.rotateLanKeyAfterPhysicalConfirmation(
-             true, true, output) == SecurityResult::ReadbackFailed);
-  uint8_t lanAfter[32]{};
-  assert(restored.copyLanAuthKey(lanAfter));
-  assert(memcmp(lanBefore, lanAfter, sizeof(lanBefore)) == 0);
+void testRetiredMaterialMigrationResumesAfterWriteFailure() {
+  MemoryStorage storage;
+  TestPlatform platform;
+  KitsuDeviceSecurity security;
+  assert(security.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+  uint8_t controllerId[kKitsuControllerIdBytes]{};
+  uint8_t controllerRoot[kKitsuSecretBytes]{};
+  memset(controllerId, 0x22, sizeof(controllerId));
+  memset(controllerRoot, 0x66, sizeof(controllerRoot));
+  assert(security.commitControllerAfterPairing(
+             controllerId, controllerRoot, true, true, true, true, true) ==
+         SecurityResult::Ok);
+  assert(seedRetiredNetworkMaterial(storage, security, platform));
+  storage.failWrite = true;
 
+  KitsuDeviceSecurity interrupted;
+  assert(interrupted.begin(storage, platform, kHardwareId) ==
+         SecurityResult::StorageWriteFailed);
+  assert(!interrupted.ready());
+  storage.failWrite = false;
+
+  KitsuDeviceSecurity recovered;
+  assert(recovered.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+  uint8_t copied[kKitsuSecretBytes]{};
+  assert(recovered.findControllerRoot(controllerId, copied));
+  assert(memcmp(controllerRoot, copied, sizeof(copied)) == 0);
+  uint8_t plain[kPlainBytes]{};
+  assert(openActivePlaintext(storage, recovered, platform, plain));
+  assert(retiredRangesAreZero(plain));
+  assert((readU32(plain + 8U) & 0x03U) == 0U);
+  assertAllStoredGenerationsSanitized(storage, platform, false);
+}
+
+void testCorruptionRefusal() {
+  TestPlatform platform;
   MemoryStorage onlyCorrupt;
   onlyCorrupt.sizes[0] = 20U;
   memset(onlyCorrupt.data[0], 0xa5, onlyCorrupt.sizes[0]);
@@ -368,29 +567,16 @@ void testPowerLossRollbackAndCorruptionRefusal() {
          SecurityResult::CorruptStorage);
 }
 
-void testReflashableMaterialRestoresWithRemoteConnectivity() {
-  MemoryStorage storage;
-  TestPlatform platform;
-  KitsuDeviceSecurity security;
-  assert(security.begin(storage, platform, kHardwareId) ==
-         SecurityResult::OkReflashable);
-  assert(security.remoteConnectivityAllowed());
-
-  KitsuDeviceSecurity restored;
-  assert(restored.begin(storage, platform, kHardwareId) ==
-         SecurityResult::OkReflashable);
-  assert(restored.remoteConnectivityAllowed());
-}
-
 }  // namespace
 
 int main() {
   testProfileGates();
   testReflashableCreationRecoveryAndDerivation();
   testControllerPhysicalGateAndRevocation();
-  testSequencePersistenceAndStrictIncrement();
+  testRetiredNetworkMaterialIsTransactionallyRemoved();
   testFourControllerLimitHasNoEviction();
-  testPowerLossRollbackAndCorruptionRefusal();
-  testReflashableMaterialRestoresWithRemoteConnectivity();
+  testRetiredMaterialMigrationResumesAfterEraseFailure();
+  testRetiredMaterialMigrationResumesAfterWriteFailure();
+  testCorruptionRefusal();
   return 0;
 }

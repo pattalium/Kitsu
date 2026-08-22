@@ -32,9 +32,6 @@ enum class SecurityResult : uint8_t {
   AuthorizationRequired,
   ControllerNotProvisioned,
   ControllerTableFull,
-  SequenceRejected,
-  SequenceExhausted,
-  LegacyMaterialRejected,
 };
 
 const char* securityResultName(SecurityResult result);
@@ -46,6 +43,7 @@ class DeviceSecurityStorage {
                         size_t& outputBytes) = 0;
   virtual bool writeSlot(uint8_t slot, const uint8_t* input,
                          size_t inputBytes) = 0;
+  virtual bool clearSlot(uint8_t slot) = 0;
 };
 
 // Platform cryptography is backed by the ESP32-S3 RNG and mbedTLS. In the
@@ -89,13 +87,11 @@ struct DeviceSecurityStatus {
   uint8_t controllerCount = 0;
   int8_t activeSlot = -1;
   uint32_t generation = 0;
-  uint64_t lanRxHighWater = 0;
-  uint64_t lanTxReservedHigh = 0;
 };
 
-// Owns Kitsu connectivity material only.  MeshCore identity keys are neither
-// accepted nor exposed here, making accidental key reuse impossible at the
-// API boundary.
+// Owns only the local device root and authenticated BLE controller roots.
+// MeshCore identity keys are neither accepted nor exposed here, making
+// accidental key reuse impossible at the API boundary.
 class KitsuDeviceSecurity {
  public:
   KitsuDeviceSecurity();
@@ -109,14 +105,9 @@ class KitsuDeviceSecurity {
                        const uint8_t hardwareId[8]);
 
   bool ready() const;
-  // The reflashable owner image permits remote connectivity once this
-  // authenticated application store is healthy. Wi-Fi, owner authorization,
-  // physical confirmation, TLS trust, and enrollment remain separate gates.
-  bool remoteConnectivityAllowed() const;
   DeviceSecurityStatus status() const;
 
   bool copyDeviceId(uint8_t output[kKitsuDeviceIdBytes]) const;
-  bool copyLanAuthKey(uint8_t output[kKitsuSecretBytes]) const;
   bool controllerAt(size_t ordinal,
                     uint8_t controllerId[kKitsuControllerIdBytes]) const;
   bool findControllerRoot(
@@ -124,12 +115,6 @@ class KitsuDeviceSecurity {
       uint8_t outputRoot[kKitsuSecretBytes]) const;
 
   SecurityResult deriveJournalKey(uint8_t output[kKitsuSecretBytes]);
-  // Dedicated key domain for the raw kitsu_conn partition.  Keeping this
-  // derivation separate from the discovery journal prevents ciphertext from
-  // either store being transplanted into the other even when both use
-  // AES-256-GCM and the same device root material.
-  SecurityResult deriveConnectionStoreKey(
-      uint8_t output[kKitsuSecretBytes]);
 
   // Pairing is deliberately two-phase.  generatePendingControllerRoot() only
   // returns an in-RAM one-time grant; nothing durable changes until the BLE
@@ -145,40 +130,34 @@ class KitsuDeviceSecurity {
   SecurityResult revokeControllerAfterPhysicalConfirmation(
       const uint8_t controllerId[kKitsuControllerIdBytes],
       bool physicalConfirmed);
-  SecurityResult rotateLanKeyAfterPhysicalConfirmation(
-      bool secureConnectionsBonded, bool physicalConfirmed,
-      uint8_t outputKey[kKitsuSecretBytes]);
-
-  // RX advancement is persisted before returning Ok, so callers may execute a
-  // non-idempotent action only after this succeeds.  TX reservations likewise
-  // persist their upper bound before any sequence in the block is emitted.
-  SecurityResult acceptLanRxSequence(uint64_t sequence);
-  SecurityResult reserveLanTxSequenceBlock(uint16_t blockSize,
-                                           uint64_t& firstSequence,
-                                           uint64_t& lastSequence);
+  // An authenticated companion session is itself the authorization to revoke
+  // that same controller. The caller must supply the controller id captured
+  // by the verified handshake, never an id from an untrusted request body.
+  SecurityResult revokeAuthenticatedController(
+      const uint8_t controllerId[kKitsuControllerIdBytes]);
 
  private:
   struct Material {
     uint8_t deviceId[kKitsuDeviceIdBytes]{};
     uint8_t deviceSecret[kKitsuSecretBytes]{};
-    uint8_t lanAuthKey[kKitsuSecretBytes]{};
     struct Controller {
       bool valid = false;
       uint8_t id[kKitsuControllerIdBytes]{};
       uint8_t root[kKitsuSecretBytes]{};
     } controllers[kKitsuControllerCapacity]{};
-    bool reflashableMaterial = true;
-    uint64_t lanRxHighWater = 0;
-    uint64_t lanTxReservedHigh = 0;
+    bool controllerRetirementPending = false;
   };
 
   SecurityResult setResult(SecurityResult result);
   void clear();
   bool validateSlot(uint8_t slot, uint32_t& generation, size_t& bytes,
                     bool& nonempty);
-  bool decodeLoaded(size_t bytes);
+  bool decodeLoaded(size_t bytes, bool& retiredMaterialPresent);
   bool encode(uint32_t generation, size_t& bytes);
   SecurityResult persist();
+  SecurityResult revokeController(
+      const uint8_t controllerId[kKitsuControllerIdBytes]);
+  SecurityResult retirePreviousSlot();
   static bool generationAfter(uint32_t candidate, uint32_t reference);
 
   DeviceSecurityStorage* storage_ = nullptr;

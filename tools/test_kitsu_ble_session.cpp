@@ -196,8 +196,16 @@ class MemoryStorage final : public DeviceSecurityStorage {
     return true;
   }
 
+  bool clearSlot(uint8_t slot) override {
+    if (slot >= kSecuritySlots || failClear) return false;
+    memset(data[slot], 0, sizeof(data[slot]));
+    sizes[slot] = 0U;
+    return true;
+  }
+
   uint8_t data[kSecuritySlots][kSecurityBlobCapacity]{};
   size_t sizes[kSecuritySlots]{};
+  bool failClear = false;
 };
 
 class TestTransport final : public BleSessionTransport {
@@ -213,6 +221,8 @@ class TestTransport final : public BleSessionTransport {
     return !failAuthSwitch;
   }
 
+  bool bleTransmitIdle() const override { return transmitIdle; }
+
   void disconnectBle() override { disconnected = true; }
 
   std::vector<std::string> frames;
@@ -220,6 +230,7 @@ class TestTransport final : public BleSessionTransport {
   bool disconnected = false;
   bool failSend = false;
   bool failAuthSwitch = false;
+  bool transmitIdle = false;
 };
 
 class TestOperations final : public BleOperationDelegate {
@@ -405,19 +416,17 @@ void testPairingHandshakeEnvelopeAndReplay() {
   uint8_t requestId[16]{};
   memset(nonce, 0x11, sizeof(nonce));
   memset(requestId, 0x22, sizeof(requestId));
-  const uint8_t payload[] =
-      "{\"gateway_id\":\"12345678-1234-4abc-8def-1234567890ab\"}";
+  const uint8_t payload[] = "{}";
   uint8_t requestJson[1024]{};
   size_t requestBytes = 0U;
   assert(kitsu868::companion::encodeEnvelope(
-             EnvelopeChannel::Request, 1U, nonce, requestId, "gateway.forget",
+             EnvelopeChannel::Request, 1U, nonce, requestId, "action.apply",
              payload, sizeof(payload) - 1U, c2d, fixture.crypto, requestJson,
              sizeof(requestJson), requestBytes) == ProtocolResult::Ok);
   fixture.session.onFrame(requestJson, requestBytes, 2010U);
   assert(fixture.operations.calls == 1U);
-  assert(fixture.operations.lastOperation == "gateway.forget");
-  assert(fixture.operations.lastPayload ==
-         "{\"gateway_id\":\"12345678-1234-4abc-8def-1234567890ab\"}");
+  assert(fixture.operations.lastOperation == "action.apply");
+  assert(fixture.operations.lastPayload == "{}");
 
   const std::string response = fixture.transport.frames.back();
   uint8_t decodedPayload[128]{};
@@ -427,7 +436,7 @@ void testPairingHandshakeEnvelopeAndReplay() {
              response.size(), d2c, EnvelopeChannel::Response, 1U,
              fixture.crypto, decoded, decodedPayload,
              sizeof(decodedPayload)) == ProtocolResult::Ok);
-  assert(strcmp(decoded.operation, "gateway.forget") == 0);
+  assert(strcmp(decoded.operation, "action.apply") == 0);
   assert(std::string(reinterpret_cast<char*>(decodedPayload),
                      decoded.payloadBytes) == "{\"ok\":true}");
 
@@ -436,6 +445,99 @@ void testPairingHandshakeEnvelopeAndReplay() {
   assert(fixture.operations.calls == 1U);
   assert(fixture.session.status(2011U).state == BleSessionState::Closing);
   fixture.session.loop(2300U);
+  assert(fixture.transport.disconnected);
+}
+
+void testAuthenticatedControllerForgetDrainsReceipt() {
+  Fixture fixture;
+  uint8_t controllerId[16]{};
+  uint8_t controllerRoot[32]{};
+  pairController(fixture, controllerId, controllerRoot);
+
+  uint8_t c2d[32]{};
+  uint8_t d2c[32]{};
+  authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+  uint8_t nonce[16]{};
+  uint8_t requestId[16]{};
+  memset(nonce, 0x31, sizeof(nonce));
+  memset(requestId, 0x32, sizeof(requestId));
+  const uint8_t payload[] = "{}";
+  uint8_t requestJson[1024]{};
+  size_t requestBytes = 0U;
+  assert(kitsu868::companion::encodeEnvelope(
+             EnvelopeChannel::Request, 1U, nonce, requestId,
+             "controller.forget", payload, sizeof(payload) - 1U, c2d,
+             fixture.crypto, requestJson, sizeof(requestJson), requestBytes) ==
+         ProtocolResult::Ok);
+  fixture.session.onFrame(requestJson, requestBytes, 2010U);
+  assert(fixture.operations.calls == 0U);
+  assert(fixture.security.status().controllerCount == 0U);
+  uint8_t missingRoot[32]{};
+  assert(!fixture.security.findControllerRoot(controllerId, missingRoot));
+
+  const std::string response = fixture.transport.frames.back();
+  uint8_t decodedPayload[128]{};
+  DecodedEnvelope decoded{};
+  assert(kitsu868::companion::decodeAndVerifyEnvelope(
+             reinterpret_cast<const uint8_t*>(response.data()),
+             response.size(), d2c, EnvelopeChannel::Response, 1U,
+             fixture.crypto, decoded, decodedPayload,
+             sizeof(decodedPayload)) == ProtocolResult::Ok);
+  assert(strcmp(decoded.operation, "controller.forget") == 0);
+  assert(std::string(reinterpret_cast<char*>(decodedPayload),
+                     decoded.payloadBytes) ==
+         "{\"schema\":\"kitsu.controller-forget.v1\",\"accepted\":true}");
+  assert(fixture.session.status(2010U).state == BleSessionState::Closing);
+  assert(!fixture.transport.applicationAuthenticated);
+  fixture.session.loop(2011U);
+  assert(!fixture.transport.disconnected);
+  fixture.transport.transmitIdle = true;
+  fixture.session.loop(2012U);
+  assert(fixture.transport.disconnected);
+}
+
+void testPartialControllerForgetCannotKeepUsingSession() {
+  Fixture fixture;
+  uint8_t controllerId[16]{};
+  uint8_t controllerRoot[32]{};
+  pairController(fixture, controllerId, controllerRoot);
+  uint8_t c2d[32]{};
+  uint8_t d2c[32]{};
+  authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+  fixture.storage.failClear = true;
+
+  uint8_t nonce[16]{};
+  uint8_t requestId[16]{};
+  memset(nonce, 0x41, sizeof(nonce));
+  memset(requestId, 0x42, sizeof(requestId));
+  const uint8_t payload[] = "{}";
+  uint8_t requestJson[1024]{};
+  size_t requestBytes = 0U;
+  assert(kitsu868::companion::encodeEnvelope(
+             EnvelopeChannel::Request, 1U, nonce, requestId,
+             "controller.forget", payload, sizeof(payload) - 1U, c2d,
+             fixture.crypto, requestJson, sizeof(requestJson), requestBytes) ==
+         ProtocolResult::Ok);
+  fixture.session.onFrame(requestJson, requestBytes, 2010U);
+
+  uint8_t missingRoot[32]{};
+  assert(!fixture.security.findControllerRoot(controllerId, missingRoot));
+  const std::string response = fixture.transport.frames.back();
+  uint8_t decodedPayload[160]{};
+  DecodedEnvelope decoded{};
+  assert(kitsu868::companion::decodeAndVerifyEnvelope(
+             reinterpret_cast<const uint8_t*>(response.data()),
+             response.size(), d2c, EnvelopeChannel::Response, 1U,
+             fixture.crypto, decoded, decodedPayload,
+             sizeof(decodedPayload)) == ProtocolResult::Ok);
+  assert(std::string(reinterpret_cast<char*>(decodedPayload),
+                     decoded.payloadBytes) ==
+         "{\"schema\":\"kitsu.controller-forget.v1\",\"accepted\":false,"
+         "\"error\":\"storage_failed\"}");
+  assert(!fixture.transport.applicationAuthenticated);
+  assert(fixture.session.status(2010U).state == BleSessionState::Closing);
+  fixture.transport.transmitIdle = true;
+  fixture.session.loop(2011U);
   assert(fixture.transport.disconnected);
 }
 
@@ -483,6 +585,8 @@ void testPairingNeverPersistsBeforeCommit() {
 
 int main() {
   testPairingHandshakeEnvelopeAndReplay();
+  testAuthenticatedControllerForgetDrainsReceipt();
+  testPartialControllerForgetCannotKeepUsingSession();
   testStrictControlsAndTimeout();
   testPairingNeverPersistsBeforeCommit();
   return 0;

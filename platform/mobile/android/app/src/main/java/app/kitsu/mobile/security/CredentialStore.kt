@@ -4,9 +4,6 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
-import app.kitsu.mobile.relay.MAX_MOBILE_RELAY_DEVICES
-import app.kitsu.mobile.relay.MobileRelayBondPolicy
-import app.kitsu.mobile.relay.MobileRelaySettings
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -15,6 +12,8 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+
+const val MAX_SAVED_KITSU = 3
 
 @Serializable
 data class BondedCompanion(
@@ -26,80 +25,99 @@ data class BondedCompanion(
     val controllerRootB64: String,
 )
 
-@Serializable
-data class OAuthTokens(
-    val accessToken: String,
-    val refreshToken: String? = null,
-    val accessTokenExpiresAtEpochSeconds: Long,
-    val idToken: String? = null,
-)
-
 interface CredentialStore {
     suspend fun bondedCompanion(): BondedCompanion?
+    suspend fun bondedCompanions(): List<BondedCompanion>
     suspend fun saveBondedCompanion(value: BondedCompanion?)
+    suspend fun selectBondedCompanion(deviceAddress: String): BondedCompanion?
+    suspend fun removeBondedCompanion(deviceAddress: String): Boolean
+    suspend fun pendingBondedCompanion(): BondedCompanion?
     suspend fun savePendingBondedCompanion(value: BondedCompanion?)
-    suspend fun oauthTokens(): OAuthTokens?
-    suspend fun saveOauthTokens(value: OAuthTokens?)
-
-    /** Backward-compatible multi-device view; older stores still expose their active bond. */
-    suspend fun bondedCompanions(): List<BondedCompanion> = listOfNotNull(bondedCompanion())
-
-    suspend fun mobileRelaySettings(): MobileRelaySettings? = null
-
-    suspend fun saveMobileRelaySettings(value: MobileRelaySettings?) = Unit
+    suspend fun pendingControllerForgetAddress(): String?
+    suspend fun savePendingControllerForgetAddress(deviceAddress: String?)
 }
 
 class AndroidKeystoreCredentialStore(context: Context) : CredentialStore {
     private val prefs = context.getSharedPreferences("kitsu_encrypted_credentials", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
 
+    init {
+        // Retire version-1 credentials without touching controller roots, packs, or the
+        // Android Bluetooth bond.
+        prefs.edit().remove("oauth").remove("mobile_relay").commit()
+        context.deleteSharedPreferences("kitsu_owner_selection")
+    }
+
     override suspend fun bondedCompanion(): BondedCompanion? =
-        read("bonded")?.let { json.decodeFromString(BondedCompanion.serializer(), it) }
-
-    override suspend fun saveBondedCompanion(value: BondedCompanion?) {
-        if (value == null) {
-            write("bonded", null)
-            write("bonded_all", null)
-            return
-        }
-        val companions = MobileRelayBondPolicy.upsert(bondedCompanions(), value)
-        write("bonded", json.encodeToString(BondedCompanion.serializer(), value))
-        write(
-            "bonded_all",
-            json.encodeToString(ListSerializer(BondedCompanion.serializer()), companions),
-        )
-    }
-
-    override suspend fun savePendingBondedCompanion(value: BondedCompanion?) {
-        write("bonded_pending", value?.let { json.encodeToString(BondedCompanion.serializer(), it) })
-    }
-
-    override suspend fun oauthTokens(): OAuthTokens? =
-        read("oauth")?.let { json.decodeFromString(OAuthTokens.serializer(), it) }
-
-    override suspend fun saveOauthTokens(value: OAuthTokens?) {
-        write("oauth", value?.let { json.encodeToString(OAuthTokens.serializer(), it) })
-    }
+        read(ACTIVE)?.let { json.decodeFromString(BondedCompanion.serializer(), it) }
 
     override suspend fun bondedCompanions(): List<BondedCompanion> {
-        val stored = read("bonded_all")?.let {
+        val stored = read(ALL)?.let {
             json.decodeFromString(ListSerializer(BondedCompanion.serializer()), it)
         }
         return (stored ?: listOfNotNull(bondedCompanion()))
-            .distinctBy { it.controllerIdB64 }
-            .takeLast(MAX_MOBILE_RELAY_DEVICES)
+            .distinctBy { it.deviceAddress.uppercase() }
+            .take(MAX_SAVED_KITSU)
     }
 
-    override suspend fun mobileRelaySettings(): MobileRelaySettings? =
-        read("mobile_relay")?.let {
-            json.decodeFromString(MobileRelaySettings.serializer(), it)
+    override suspend fun saveBondedCompanion(value: BondedCompanion?) {
+        if (value == null) {
+            write(ACTIVE, null)
+            write(ALL, null)
+            return
         }
+        val current = bondedCompanions()
+        val replacing = current.any {
+            it.deviceAddress.equals(value.deviceAddress, ignoreCase = true) ||
+                it.controllerIdB64 == value.controllerIdB64
+        }
+        check(replacing || current.size < MAX_SAVED_KITSU) { "controller_device_limit" }
+        val updated = current.filterNot {
+            it.deviceAddress.equals(value.deviceAddress, ignoreCase = true) ||
+                it.controllerIdB64 == value.controllerIdB64
+        } + value
+        write(ACTIVE, json.encodeToString(BondedCompanion.serializer(), value))
+        write(ALL, json.encodeToString(ListSerializer(BondedCompanion.serializer()), updated))
+    }
 
-    override suspend fun saveMobileRelaySettings(value: MobileRelaySettings?) {
-        write(
-            "mobile_relay",
-            value?.let { json.encodeToString(MobileRelaySettings.serializer(), it) },
-        )
+    override suspend fun selectBondedCompanion(deviceAddress: String): BondedCompanion? {
+        val selected = bondedCompanions().firstOrNull {
+            it.deviceAddress.equals(deviceAddress, ignoreCase = true)
+        } ?: return null
+        write(ACTIVE, json.encodeToString(BondedCompanion.serializer(), selected))
+        return selected
+    }
+
+    override suspend fun removeBondedCompanion(deviceAddress: String): Boolean {
+        val current = bondedCompanions()
+        val updated = current.filterNot { it.deviceAddress.equals(deviceAddress, ignoreCase = true) }
+        if (updated.size == current.size) return false
+        val active = bondedCompanion()
+        if (active?.deviceAddress.equals(deviceAddress, ignoreCase = true)) {
+            write(ACTIVE, updated.firstOrNull()?.let {
+                json.encodeToString(BondedCompanion.serializer(), it)
+            })
+        }
+        // Retire the active pointer first. If a process stop interrupts the following
+        // list write, the old entry remains recoverable for a pending authenticated Forget.
+        write(ALL, updated.takeIf { it.isNotEmpty() }?.let {
+            json.encodeToString(ListSerializer(BondedCompanion.serializer()), it)
+        })
+        return true
+    }
+
+    override suspend fun pendingBondedCompanion(): BondedCompanion? = read(PENDING_BOND)?.let {
+        json.decodeFromString(BondedCompanion.serializer(), it)
+    }
+
+    override suspend fun savePendingBondedCompanion(value: BondedCompanion?) {
+        write(PENDING_BOND, value?.let { json.encodeToString(BondedCompanion.serializer(), it) })
+    }
+
+    override suspend fun pendingControllerForgetAddress(): String? = read(PENDING_FORGET)
+
+    override suspend fun savePendingControllerForgetAddress(deviceAddress: String?) {
+        write(PENDING_FORGET, deviceAddress)
     }
 
     private fun write(name: String, plaintext: String?) {
@@ -149,9 +167,13 @@ class AndroidKeystoreCredentialStore(context: Context) : CredentialStore {
         }
     }
 
-    companion object {
-        private const val KEY_ALIAS = "kitsu.mobile.credentials.v1"
-        private const val TRANSFORMATION = "AES/GCM/NoPadding"
-        private const val IV_BYTES = 12
+    private companion object {
+        const val ACTIVE = "bonded"
+        const val ALL = "bonded_all"
+        const val PENDING_BOND = "bonded_pending"
+        const val PENDING_FORGET = "controller_forget_pending"
+        const val KEY_ALIAS = "kitsu.mobile.credentials.v1"
+        const val TRANSFORMATION = "AES/GCM/NoPadding"
+        const val IV_BYTES = 12
     }
 }
