@@ -168,7 +168,19 @@ class BleKitsuTransport(
         } ?: return ConnectResult.CompanionAbsent
         val missing = missingPermissions()
         if (missing.isNotEmpty()) return ConnectResult.PermissionRequired(missing)
-        if (isConnectedTo(profile.deviceAddress)) return ConnectResult.Connected
+        if (isConnectedTo(profile.deviceAddress)) {
+            return try {
+                synchronizeClock()
+                ConnectResult.Connected
+            } catch (cancelled: CancellationException) {
+                disconnect()
+                throw cancelled
+            } catch (failure: Throwable) {
+                SafeLog.warn("ble_clock", "clock_sync_failed", failure)
+                disconnect()
+                ConnectResult.Failed("clock_sync_failed")
+            }
+        }
 
         return try {
             connectWithPermission(profile)
