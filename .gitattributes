@@ -1,7 +1,8 @@
 * text=auto eol=lf
 
 platform/public-site/downloads/latest.json -text
-platform/public-site/downloads/latest.json.sig -text
+platform/public-site/downloads/latest.json.sig binary
+platform/public-site/downloads/*.apk binary
 platform/flash-site/tests/fixtures/known-signed-message.json -text
 platform/flash-site/tests/fixtures/known-signed-message.sig.b64 -text
 platform/flash-site/tests/fixtures/update-authority-public.txt -text

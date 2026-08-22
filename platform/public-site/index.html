@@ -13,8 +13,8 @@
     <meta name="twitter:description" content="A radio companion with memory, personality, messages, and a world of its own." />
     <meta name="twitter:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
     <link rel="icon" href="/assets/kitsu-app-icon.png" />
-    <link rel="stylesheet" href="/styles.css" />
-    <script type="module" src="/site.js"></script>
+    <link rel="stylesheet" href="/styles.css?sha256=f8ae7d76ff8a2d937f4199ee1d1559830e415059014a95b5489714563cc33262" />
+    <script type="module" src="/site.js?sha256=9eee77d437e212ce6178dcf7f34557324fc524e93ee66efa189224eae110b60a"></script>
     <title>K32 Kitsu</title>
   </head>
   <body>
@@ -92,13 +92,13 @@
           <h2>Set up once. Keep using it your way.</h2>
         </div>
         <ol class="steps">
-          <li><span>1</span><div><strong>Install Kitsu firmware</strong><p>Use the browser flasher with a supported Heltec board. Its accepted release writes only the reviewed rollback bootloader, partition table, both A/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition while preserving companion data.</p></div></li>
+          <li><span>1</span><div><strong>Install an accepted Kitsu firmware release</strong><p>The browser flasher stays unavailable until a physically accepted release passes its signature and byte checks. When available, it writes only the reviewed rollback bootloader, partition table, both A/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition while preserving companion data.</p></div></li>
           <li><span>2</span><div><strong>Install the Android app</strong><p>Use the download below only when its verified local-first release link is enabled, then manually install the signed APK. Android 8 or newer is required.</p></div></li>
           <li><span>3</span><div><strong>Pair with physical confirmation</strong><p>Compare the six-digit code on Android and Kitsu, accept only if they match, then follow the two PRG prompts.</p></div></li>
           <li><span>4</span><div><strong>Use Kitsu locally</strong><p>Connect to a saved Kitsu over Bluetooth. Care, history, messages, radio settings, and firmware updates work without an account, gateway, Wi-Fi, or Internet connection.</p></div></li>
         </ol>
         <div class="start-actions">
-          <a class="primary" href="https://flash.k32.run">Open firmware installer</a>
+          <a class="primary" href="https://flash.k32.run">Check firmware availability</a>
           <a class="secondary" href="https://docs.k32.run/getting-started/">Read every setup step</a>
         </div>
       </section>
@@ -132,7 +132,7 @@
           <span>Bluetooth</span><h3>Control Kitsu directly and privately.</h3><p>The saved controller credential stays on the phone, and every command travels through the nearby authenticated Bluetooth session.</p><b>Read the Bluetooth guide →</b>
         </a>
         <a href="https://flash.k32.run" class="resource-card">
-          <span>Firmware</span><h3>Install or update from a supported browser.</h3><p>Signed release checks, targeted writes, and read-back verification.</p><b>Open the installer →</b>
+          <span>Firmware</span><h3>Check for an accepted browser release.</h3><p>The installer fails closed until a physically accepted signed release is available, then performs targeted writes and read-back verification.</p><b>Check availability →</b>
         </a>
         <a href="https://github.com/pattalium/Kitsu" class="resource-card">
           <span>Source</span><h3>Inspect the code and build Kitsu yourself.</h3><p>Firmware, Android, public sites, protocols, release tooling, and tests.</p><b>View on GitHub →</b>

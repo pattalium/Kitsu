@@ -164,6 +164,9 @@ test("release guidance explains signed resumable A/B OTA and recovery", async ()
   assert.match(updates, /inactive application slot/i);
   assert.match(updates, /64 KiB checkpoint/i);
   assert.match(updates, /30 seconds/i);
+  assert.match(updates, /public installer and download surface fail closed while a firmware candidate is still in physical acceptance/i);
+  assert.match(updates, /do not substitute an unaccepted local candidate/i);
+  assert.match(home, /If it reports unavailable, no public firmware has passed the release gate yet/i);
   assert.match(updates, /controller store, MeshCore state, and coredump<\/td><td>Preserved/i);
   assert.match(gettingStarted, /physical-acceptance record bind the exact SHA-256/i);
   assert.match(gettingStarted, /intentionally writes the reviewed rollback-enabled Kitsu bootloader/i);

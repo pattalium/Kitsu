@@ -37,6 +37,9 @@ test("publishes a complete product surface with real destinations", async () => 
   assert.match(html, /https:\/\/github\.com\/pattalium\/Kitsu/);
   assert.match(html, /does not need an account, gateway, or Internet connection/i);
   assert.match(html, /reviewed rollback bootloader, partition table, both A\/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition/i);
+  assert.match(html, /browser flasher stays unavailable until a physically accepted release/i);
+  assert.match(html, /Check firmware availability/i);
+  assert.match(html, /installer fails closed until a physically accepted signed release is available/i);
   assert.doesNotMatch(html, /https:\/\/(?:app|api|auth|gateway)\.k32\.run/i);
   assert.equal(config.repositoryUrl, "https://github.com/pattalium/Kitsu");
   assert.doesNotMatch(html, /link pending|verification pending|not exposed prematurely|placeholder/i);
@@ -49,10 +52,12 @@ test("source landing instructions match the local-only device controls", async (
   assert.match(readme, /hold PRG from Home[\s\S]*CONNECT[\s\S]*BLUETOOTH[\s\S]*PAIR PHONE/i);
   assert.match(readme, /Pair this phone/);
   assert.match(readme, /no online service is involved/i);
+  assert.match(readme, /signed local-first Android 2\.0\.0 release/i);
+  assert.match(readme, /firmware installer remains fail-closed until the matching local-only firmware\s+finishes physical acceptance/i);
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
 });
 
-test("fails closed until an accepted local-first Android release is promoted", async () => {
+test("fails closed for a signed Android manifest older than the local-first release", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
@@ -80,7 +85,17 @@ test("keeps device companion packs out of the static website", async () => {
   assert.deepEqual(publicFiles.filter((file) => file.toLowerCase().endsWith(".k868")), []);
 });
 
-test("retains the byte-exact signed Android 1.1.6 artifact without promoting it", async () => {
+test("keeps signed Android release bytes outside text conversion", async () => {
+  const attributes = await readFile(path.join(projectRoot, ".gitattributes"), "utf8");
+  const lines = new Set(attributes.split(/\r?\n/));
+  for (const rule of [
+    "platform/public-site/downloads/latest.json -text",
+    "platform/public-site/downloads/latest.json.sig binary",
+    "platform/public-site/downloads/*.apk binary",
+  ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
+});
+
+test("publishes the byte-exact signed local-first Android 2.0.0 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -96,14 +111,14 @@ test("retains the byte-exact signed Android 1.1.6 artifact without promoting it"
     channel: "stable",
     buildType: "release",
     packageId: "app.kitsu.mobile",
-    version: "1.1.6",
-    versionCode: 12,
+    version: "2.0.0",
+    versionCode: 13,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-k32-android-1.1.6.apk",
-    bytes: 2629722,
-    sha256: "5e6dc77149ee991bde829d25704f219b70655b4da86fc1276c998336c78ccfad",
+    url: "/downloads/kitsu-k32-android-2.0.0.apk",
+    bytes: 1693558,
+    sha256: "87499a391944e92b76fa158621b2b59718d15a8e60a133c39fb9f5cf24f9ab2a",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-22T07:35:54Z",
+    publishedAt: "2026-08-22T12:39:28Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -128,7 +143,7 @@ test("retains the byte-exact signed Android 1.1.6 artifact without promoting it"
   assert.deepEqual([...await readFile(apk).then((bytes) => bytes.subarray(0, 4))], [0x50, 0x4b, 0x03, 0x04]);
 
   const downloadEntries = await readdir(path.join(root, "downloads"));
-  assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")), ["kitsu-k32-android-1.1.6.apk"]);
+  assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")), ["kitsu-k32-android-2.0.0.apk"]);
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
 });
 
@@ -142,7 +157,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/latest.json",
     "downloads/latest.json.sig",
     "downloads/update-ed25519-public.pem",
-    "downloads/kitsu-k32-android-1.1.6.apk",
+    "downloads/kitsu-k32-android-2.0.0.apk",
   ];
   await Promise.all(files.map((file) => access(path.join(root, file))));
 });

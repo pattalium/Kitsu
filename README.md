@@ -19,9 +19,10 @@ certificate runtime.
 - [Signed USB/Web Serial bootstrap and recovery](https://flash.k32.run)
 - [Public release-surface status](https://status.k32.run)
 
-The download page deliberately fails closed while a matching local-first
-Android and firmware release is not promoted. Do not install an older APK and
-assume that the current source contract is present in that binary.
+The product page exposes the signed local-first Android 2.0.0 release. The
+firmware installer remains fail-closed until the matching local-only firmware
+finishes physical acceptance; an unaccepted candidate is never presented as a
+public stable release.
 
 ## What is included
 
@@ -44,7 +45,9 @@ temporary audit is removed only when those services are retired.
 
 ## First use
 
-1. Open the browser firmware installer in current desktop Chrome or Edge.
+1. Open the browser firmware installer in current desktop Chrome or Edge. If
+   it reports that no accepted release is available, stop and wait for the
+   firmware release gate; do not substitute a local candidate.
 2. Connect a supported 8 MiB Heltec with a USB data cable.
 3. Install the signed Kitsu release. The installer writes and reads back the
    reviewed rollback-enabled bootloader, partition table, both A/B application

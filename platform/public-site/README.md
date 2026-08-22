@@ -6,6 +6,10 @@ source repository. The Kitsu app is local-first: it talks to the device through
 authenticated Bluetooth and has no product account, gateway, or runtime-server
 dependency. iOS is not part of the current release scope.
 
+Android and firmware have independent release gates. The Android download may
+be available while the firmware installer safely reports that no physically
+accepted firmware release is available.
+
 `config.json` points to the public source repository at
 `https://github.com/pattalium/Kitsu`.
 
