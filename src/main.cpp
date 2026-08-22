@@ -1725,8 +1725,14 @@ class FirmwareMobileRelayEnrollment final
         kitsu868::connectivity::EnrollmentResult::Ok;
   }
 
-  bool installMobileRelayEnrollmentResponse(
+  kitsu868::connectivity::MobileRelayResult
+  installMobileRelayEnrollmentResponse(
       const uint8_t* response, size_t responseBytes) override {
+    using kitsu868::connectivity::ConfigResult;
+    using kitsu868::connectivity::EnrollmentResult;
+    using kitsu868::connectivity::GatewayBootstrapResult;
+    using kitsu868::connectivity::MobileRelayResult;
+
     const uint32_t now = millis();
     const kitsu868::connectivity::GatewayEnrollmentFlowStatus attempt =
         gatewayEnrollmentFlow.status(now);
@@ -1735,26 +1741,127 @@ class FirmwareMobileRelayEnrollment final
                              GatewayEnrollmentFlowState::ReadyForWifi ||
         !enrollmentRecipient.active() ||
         !gatewayEnrollmentFlow.markBootstrapping(now)) {
-      return false;
+      return MobileRelayResult::EnrollmentUnavailable;
     }
 
     uint8_t gatewayId[kitsu868::connectivity::kEnrollmentUuidBytes]{};
     auto* workspace = new (std::nothrow)
         kitsu868::connectivity::GatewayBootstrapWorkspace{};
-    bool installed = workspace &&
-        connectionConfigStore.copyGatewayId(gatewayId);
-    if (installed) {
+    MobileRelayResult result = workspace
+        ? MobileRelayResult::EnrollmentUnavailable
+        : MobileRelayResult::OutOfMemory;
+    if (workspace && connectionConfigStore.copyGatewayId(gatewayId)) {
       kitsu868::connectivity::EnrollmentResponse decoded{};
-      installed = kitsu868::connectivity::decodeBackendEnrollmentResponse(
-                      response, responseBytes, attempt.enrollmentId,
-                      gatewayId, *workspace, decoded) ==
-              kitsu868::connectivity::GatewayBootstrapResult::
-                  ReconnectSteady &&
-          enrollmentRecipient.finish(decoded, connectionConfigStore) ==
-              kitsu868::connectivity::EnrollmentResult::Ok &&
-          connectionConfigStore.status().gatewayEnrolled;
+      const GatewayBootstrapResult decodedResult =
+          kitsu868::connectivity::decodeBackendEnrollmentResponse(
+              response, responseBytes, attempt.enrollmentId, gatewayId,
+              *workspace, decoded);
+      if (decodedResult != GatewayBootstrapResult::ReconnectSteady) {
+        result = decodedResult == GatewayBootstrapResult::BackendMalformed
+            ? MobileRelayResult::EnrollmentBackendMalformed
+            : MobileRelayResult::EnrollmentUnavailable;
+      } else {
+        const size_t maximumCompactBytes = sizeof(*workspace);
+        size_t compactBytes = decoded.certificateBytes;
+        bool compactValid = decoded.certificateDer && compactBytes != 0U &&
+            compactBytes <=
+                kitsu868::connectivity::kEnrollmentMaximumCertificateBytes &&
+            decoded.certificateChainCount != 0U &&
+            decoded.certificateChainCount <= kitsu868::connectivity::
+                kEnrollmentMaximumChainCertificates;
+        for (size_t i = 0U;
+             compactValid && i < decoded.certificateChainCount; ++i) {
+          const size_t chainBytes = decoded.certificateChainBytes[i];
+          if (!decoded.certificateChainDer[i] || chainBytes == 0U ||
+              chainBytes > kitsu868::connectivity::
+                  kEnrollmentMaximumCertificateBytes ||
+              compactBytes > maximumCompactBytes ||
+              chainBytes > maximumCompactBytes - compactBytes) {
+            compactValid = false;
+          } else {
+            compactBytes += chainBytes;
+          }
+        }
+        uint8_t* compact = compactValid
+            ? new (std::nothrow) uint8_t[compactBytes]
+            : nullptr;
+        if (!compactValid) {
+          result = MobileRelayResult::EnrollmentBackendMalformed;
+        } else if (!compact) {
+          result = MobileRelayResult::OutOfMemory;
+        } else {
+          uint8_t* cursor = compact;
+          memcpy(cursor, decoded.certificateDer, decoded.certificateBytes);
+          decoded.certificateDer = cursor;
+          cursor += decoded.certificateBytes;
+          for (size_t i = 0U; i < decoded.certificateChainCount; ++i) {
+            memcpy(cursor, decoded.certificateChainDer[i],
+                   decoded.certificateChainBytes[i]);
+            decoded.certificateChainDer[i] = cursor;
+            cursor += decoded.certificateChainBytes[i];
+          }
+
+          // Only the exact certificate material must survive through commit.
+          // Drop the fixed 20 KiB decoder workspace before the store allocates
+          // its authenticated snapshot buffers on this no-PSRAM target.
+          wipeSensitive(workspace, sizeof(*workspace));
+          delete workspace;
+          workspace = nullptr;
+
+          const EnrollmentResult finished =
+              enrollmentRecipient.finish(decoded, connectionConfigStore);
+          if (finished == EnrollmentResult::Ok) {
+            result = connectionConfigStore.status().gatewayEnrolled
+                ? MobileRelayResult::Ok
+                : MobileRelayResult::EnrollmentCommitFailed;
+          } else if (finished == EnrollmentResult::ResponseMismatch) {
+            result = MobileRelayResult::EnrollmentResponseMismatch;
+          } else if (finished == EnrollmentResult::InvalidCertificate) {
+            result = MobileRelayResult::EnrollmentInvalidCertificate;
+          } else if (finished == EnrollmentResult::DecryptionFailed) {
+            result = MobileRelayResult::EnrollmentDecryptionFailed;
+          } else if (finished == EnrollmentResult::CommitFailed) {
+            switch (connectionConfigStore.status().lastResult) {
+              case ConfigResult::EnrollmentInvalid:
+                result = MobileRelayResult::EnrollmentInvalid;
+                break;
+              case ConfigResult::EnrollmentTrustFailed:
+                result = MobileRelayResult::EnrollmentTrustFailed;
+                break;
+              case ConfigResult::StorageAllocationFailed:
+                result = MobileRelayResult::StorageAllocationFailed;
+                break;
+              case ConfigResult::StorageReadFailed:
+                result = MobileRelayResult::StorageReadFailed;
+                break;
+              case ConfigResult::StorageWriteFailed:
+                result = MobileRelayResult::StorageWriteFailed;
+                break;
+              case ConfigResult::StorageReadbackFailed:
+                result = MobileRelayResult::StorageReadbackFailed;
+                break;
+              case ConfigResult::StorageCorrupt:
+                result = MobileRelayResult::StorageCorrupt;
+                break;
+              case ConfigResult::CryptoFailed:
+                result = MobileRelayResult::CryptoFailed;
+                break;
+              default:
+                result = MobileRelayResult::EnrollmentCommitFailed;
+                break;
+            }
+          } else {
+            result = finished == EnrollmentResult::CryptoFailed
+                ? MobileRelayResult::CryptoFailed
+                : MobileRelayResult::EnrollmentUnavailable;
+          }
+          wipeSensitive(compact, compactBytes);
+          delete[] compact;
+        }
+      }
       wipeSensitive(&decoded, sizeof(decoded));
     }
+    const bool installed = result == MobileRelayResult::Ok;
     gatewayEnrollmentFlow.completeBootstrap(
         installed,
         installed ? kitsu868::connectivity::GatewayEnrollmentError::None
@@ -1766,7 +1873,7 @@ class FirmwareMobileRelayEnrollment final
       delete workspace;
     }
     if (installed) gatewaySnapshotDirty = true;
-    return installed;
+    return result;
   }
 };
 

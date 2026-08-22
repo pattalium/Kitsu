@@ -284,15 +284,16 @@ class RelayEnrollment final : public MobileRelayEnrollmentDelegate {
     return true;
   }
 
-  bool installMobileRelayEnrollmentResponse(
+  MobileRelayResult installMobileRelayEnrollmentResponse(
       const uint8_t* response, size_t responseBytes) override {
-    if (!install || !response) return false;
+    if (!response) return MobileRelayResult::EnrollmentUnavailable;
+    if (installResult != MobileRelayResult::Ok) return installResult;
     installed.assign(response, response + responseBytes);
-    return true;
+    return MobileRelayResult::Ok;
   }
 
   std::string request = "{\"claim_token\":\"exact-inner-request\"}";
-  bool install = true;
+  MobileRelayResult installResult = MobileRelayResult::Ok;
   std::vector<uint8_t> installed;
 };
 
@@ -704,6 +705,17 @@ void testAuthenticatedMobileRelayHappyAndGuards() {
   assert(outcome.enrollmentCompleted);
   assert(std::string(enrollment.installed.begin(),
                      enrollment.installed.end()) == issuerResponse);
+
+  enrollment.installResult = MobileRelayResult::StorageAllocationFailed;
+  assert(relay.handleExchange(
+      reinterpret_cast<const uint8_t*>(enrollmentPush.data()),
+      enrollmentPush.size(), guards, 0, false, response, sizeof(response),
+      responseBytes, &outcome));
+  assert(outcome.result == MobileRelayResult::StorageAllocationFailed);
+  assert(std::string(reinterpret_cast<char*>(response), responseBytes).find(
+             "\"error_code\":\"storage_allocation_failed\"") !=
+         std::string::npos);
+  enrollment.installResult = MobileRelayResult::Ok;
 
   const std::string malformed =
       "{\"schema\":\"kitsu.mobile-relay.exchange.v1\","

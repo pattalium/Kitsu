@@ -392,6 +392,26 @@ const char* mobileRelayResultName(MobileRelayResult result) {
       return "action_store_failed";
     case MobileRelayResult::ActionSinkFailed: return "action_sink_failed";
     case MobileRelayResult::OutputTooSmall: return "output_too_small";
+    case MobileRelayResult::EnrollmentBackendMalformed:
+      return "backend_malformed";
+    case MobileRelayResult::EnrollmentResponseMismatch:
+      return "response_mismatch";
+    case MobileRelayResult::EnrollmentInvalidCertificate:
+      return "invalid_certificate";
+    case MobileRelayResult::EnrollmentDecryptionFailed:
+      return "decryption_failed";
+    case MobileRelayResult::EnrollmentCommitFailed:
+      return "enrollment_commit_failed";
+    case MobileRelayResult::EnrollmentInvalid: return "enrollment_invalid";
+    case MobileRelayResult::EnrollmentTrustFailed:
+      return "enrollment_trust_failed";
+    case MobileRelayResult::StorageAllocationFailed:
+      return "storage_allocation_failed";
+    case MobileRelayResult::StorageReadFailed: return "storage_read_failed";
+    case MobileRelayResult::StorageWriteFailed: return "storage_write_failed";
+    case MobileRelayResult::StorageReadbackFailed:
+      return "storage_readback_failed";
+    case MobileRelayResult::StorageCorrupt: return "storage_corrupt";
   }
   return "invalid_request";
 }
@@ -923,10 +943,9 @@ bool KitsuMobileRelay::handleExchange(
 
   if (local.result == MobileRelayResult::Ok && request.final) {
     if (requestedUpload == UploadKind::Enrollment) {
-      if (!enrollment_->installMobileRelayEnrollmentResponse(
-              upload_, uploadBytes_)) {
-        local.result = MobileRelayResult::EnrollmentUnavailable;
-      } else {
+      local.result = enrollment_->installMobileRelayEnrollmentResponse(
+          upload_, uploadBytes_);
+      if (local.result == MobileRelayResult::Ok) {
         local.enrollmentCompleted = true;
       }
     } else {

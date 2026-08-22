@@ -44,6 +44,18 @@ enum class MobileRelayResult : uint8_t {
   ActionStoreFailed,
   ActionSinkFailed,
   OutputTooSmall,
+  EnrollmentBackendMalformed,
+  EnrollmentResponseMismatch,
+  EnrollmentInvalidCertificate,
+  EnrollmentDecryptionFailed,
+  EnrollmentCommitFailed,
+  EnrollmentInvalid,
+  EnrollmentTrustFailed,
+  StorageAllocationFailed,
+  StorageReadFailed,
+  StorageWriteFailed,
+  StorageReadbackFailed,
+  StorageCorrupt,
 };
 
 const char* mobileRelayResultName(MobileRelayResult result);
@@ -92,7 +104,7 @@ class MobileRelayEnrollmentDelegate {
   virtual ~MobileRelayEnrollmentDelegate() = default;
   virtual bool buildMobileRelayEnrollmentRequest(
       uint8_t* output, size_t outputCapacity, size_t& outputBytes) = 0;
-  virtual bool installMobileRelayEnrollmentResponse(
+  virtual MobileRelayResult installMobileRelayEnrollmentResponse(
       const uint8_t* response, size_t responseBytes) = 0;
 };
 

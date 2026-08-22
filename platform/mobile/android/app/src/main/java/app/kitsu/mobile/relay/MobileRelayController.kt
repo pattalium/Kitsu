@@ -322,7 +322,17 @@ class MobileRelayController(
         enrollmentId: String,
         recovering: Boolean = false,
     ): String {
-        val exactRequest = MobileRelayTransfer.pull(MobileRelayPullKind.ENROLLMENT, session::pull)
+        val exactRequest = try {
+            MobileRelayTransfer.pull(MobileRelayPullKind.ENROLLMENT, session::pull)
+        } catch (failure: TransportException) {
+            if (recovering &&
+                (failure.code == "enrollment_unavailable" ||
+                    failure.code == "physical_confirmation_required")
+            ) {
+                clearPendingEnrollment(settings.installationId, hardwareUid, enrollmentId)
+            }
+            throw failure
+        }
         if (exactRequest == null) {
             if (recovering) {
                 clearPendingEnrollment(settings.installationId, hardwareUid, enrollmentId)

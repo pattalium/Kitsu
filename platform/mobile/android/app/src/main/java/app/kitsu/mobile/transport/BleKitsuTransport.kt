@@ -84,8 +84,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 data class BleGattConfiguration(
@@ -1081,14 +1083,30 @@ class BleKitsuTransport(
         },
     )
 
-    override suspend fun pull(kind: MobileRelayPullKind, offset: Int): MobileRelayChunk = requestBody(
-        mobileRelayOperations.exchange,
-        buildJsonObject {
-            put("schema", MobileRelayWirePolicy.EXCHANGE_SCHEMA)
-            put("kind", kind.wireName)
-            put("offset", offset)
-        },
-    )
+    override suspend fun pull(kind: MobileRelayPullKind, offset: Int): MobileRelayChunk {
+        val response = successfulPayload(
+            mobileRelayOperations.exchange,
+            buildJsonObject {
+                put("schema", MobileRelayWirePolicy.EXCHANGE_SCHEMA)
+                put("kind", kind.wireName)
+                put("offset", offset)
+            },
+        )
+        return try {
+            val body = json.parseToJsonElement(response.toString(Charsets.UTF_8))
+            if ((body as? JsonObject)?.get("schema")?.jsonPrimitive?.contentOrNull ==
+                MobileRelayWirePolicy.RECEIPT_SCHEMA
+            ) {
+                val receipt = json.decodeFromJsonElement<MobileRelayReceipt>(body)
+                throw TransportException(receipt.errorCode ?: "relay_pull_rejected")
+            }
+            json.decodeFromJsonElement(body)
+        } catch (failure: TransportException) {
+            throw failure
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_response", failure)
+        }
+    }
 
     override suspend fun push(
         kind: MobileRelayPushKind,
