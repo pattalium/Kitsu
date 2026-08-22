@@ -15,8 +15,8 @@ namespace connectivity {
 namespace {
 
 #if defined(ARDUINO_ARCH_ESP32)
-constexpr time_t kMinimumTrustedEpoch = static_cast<time_t>(1704067200UL);
-constexpr time_t kMaximumTrustedEpoch = static_cast<time_t>(4102444800UL);
+constexpr int64_t kMinimumTrustedEpoch = 1704067200LL;
+constexpr int64_t kMaximumTrustedEpoch = 4102444800LL;
 constexpr uint32_t kNetworkTimeStabilityMs = 2000UL;
 volatile TrustedTimeSource gTrustedTimeSource = TrustedTimeSource::None;
 #endif
@@ -35,8 +35,7 @@ bool trustedWallClock(int64_t& epoch, TrustedTimeSource* source) {
   const TrustedTimeSource observed = gTrustedTimeSource;
   if (source) *source = observed;
   return observed != TrustedTimeSource::None &&
-         epoch >= static_cast<int64_t>(kMinimumTrustedEpoch) &&
-         epoch <= static_cast<int64_t>(kMaximumTrustedEpoch);
+         epoch >= kMinimumTrustedEpoch && epoch <= kMaximumTrustedEpoch;
 }
 
 const char* trustedTimeSourceName(TrustedTimeSource source) {
@@ -296,7 +295,7 @@ void Esp32WifiRuntime::serviceNetworkTime(uint32_t now,
     networkTimeStarted_ = true;
     networkTimeCandidate_ = false;
   }
-  const time_t epoch = time(nullptr);
+  const int64_t epoch = static_cast<int64_t>(time(nullptr));
   if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED ||
       epoch < kMinimumTrustedEpoch || epoch > kMaximumTrustedEpoch) {
     networkTimeCandidate_ = false;
@@ -322,8 +321,8 @@ void Esp32WifiRuntime::serviceNetworkTime(uint32_t now,
 }
 
 bool Esp32WifiRuntime::noteAuthenticatedTime(uint32_t epoch) {
-  if (epoch < static_cast<uint32_t>(kMinimumTrustedEpoch) ||
-      epoch > static_cast<uint32_t>(kMaximumTrustedEpoch)) {
+  const int64_t candidate = static_cast<int64_t>(epoch);
+  if (candidate < kMinimumTrustedEpoch || candidate > kMaximumTrustedEpoch) {
     return false;
   }
   gTrustedTimeSource = TrustedTimeSource::AuthenticatedBle;

@@ -102,6 +102,10 @@ class ConnectivityFoundationTests(unittest.TestCase):
         self.assertIn("TrustedTimeSource::AuthenticatedBle", runtime)
         self.assertIn("!remoteConnectivityAllowed_", runtime)
         self.assertIn("trustedWallClock(int64_t& epoch", runtime)
+        self.assertIn("constexpr int64_t kMinimumTrustedEpoch", runtime)
+        self.assertIn("constexpr int64_t kMaximumTrustedEpoch", runtime)
+        self.assertNotIn("constexpr time_t kMaximumTrustedEpoch", runtime)
+        self.assertIn("const int64_t candidate = static_cast<int64_t>(epoch)", runtime)
         self.assertIn("wifiRuntime.noteAuthenticatedTime(epoch)", main)
         self.assertIn("meshTransport.setEpoch", main)
 
