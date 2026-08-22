@@ -256,21 +256,22 @@ class MobileRelayController(
                 throw TransportException("mobile_relay_enrollment_in_progress")
             }
             if (!Instant.parse(pending.expiresAt).isAfter(Instant.now())) {
-                throw TransportException("existing_gateway_enrollment_requires_reset")
+                clearPendingEnrollment(settings.installationId, hardwareUid, pending.enrollmentId)
+            } else {
+                mutableState.value = mutableState.value.copy(
+                    running = true,
+                    detail = "finishing_public_gateway",
+                    enrollmentRemainingMillis = null,
+                )
+                return completeEnrollment(
+                    session,
+                    hardwareUid,
+                    settings,
+                    identity,
+                    pending.enrollmentId,
+                    recovering = true,
+                )
             }
-            mutableState.value = mutableState.value.copy(
-                running = true,
-                detail = "finishing_public_gateway",
-                enrollmentRemainingMillis = null,
-            )
-            return completeEnrollment(
-                session,
-                hardwareUid,
-                settings,
-                identity,
-                pending.enrollmentId,
-                recovering = true,
-            )
         }
         val challenge = backend.createEnrollment(settings.installationId, hardwareUid, displayName)
         val enrollmentId = challenge.enrollment.id
@@ -322,13 +323,12 @@ class MobileRelayController(
         recovering: Boolean = false,
     ): String {
         val exactRequest = MobileRelayTransfer.pull(MobileRelayPullKind.ENROLLMENT, session::pull)
-            ?: throw TransportException(
-                if (recovering) {
-                    "existing_gateway_enrollment_requires_reset"
-                } else {
-                    "mobile_relay_enrollment_request_missing"
-                },
-            )
+        if (exactRequest == null) {
+            if (recovering) {
+                clearPendingEnrollment(settings.installationId, hardwareUid, enrollmentId)
+            }
+            throw TransportException("mobile_relay_enrollment_request_missing")
+        }
         var exactResponse: ByteArray? = null
         try {
             exactResponse = backend.claimEnrollment(

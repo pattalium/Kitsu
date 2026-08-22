@@ -59,8 +59,8 @@ class ReleaseContractInstrumentationTest {
     }
 
     @Test fun productionBuildCarriesTheExactRealmIssuer() {
-        assertEquals(9, BuildConfig.VERSION_CODE)
-        assertTrue(BuildConfig.VERSION_NAME.startsWith("1.1.3"))
+        assertEquals(10, BuildConfig.VERSION_CODE)
+        assertTrue(BuildConfig.VERSION_NAME.startsWith("1.1.4"))
         assertEquals("https://auth.k32.run/realms/kitsu", BuildConfig.KITSU_OIDC_ISSUER)
         assertTrue(
             BuildConfig.KITSU_SOURCE_ARCHIVE_SHA256 == "unbound" ||

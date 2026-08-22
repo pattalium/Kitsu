@@ -606,9 +606,8 @@ bool Esp32EnrollmentPlatformCrypto::createP256CsrDer(
   if (ok) {
     mbedtls_x509write_csr_set_key(&csr, &key);
     mbedtls_x509write_csr_set_md_alg(&csr, MBEDTLS_MD_SHA256);
-    ok = mbedtls_x509write_csr_set_subject_name(&csr, subject) == 0 &&
-         mbedtls_x509write_csr_set_key_usage(
-             &csr, MBEDTLS_X509_KU_DIGITAL_SIGNATURE) == 0;
+    // The service applies the certificate profile and rejects CSR extensions.
+    ok = mbedtls_x509write_csr_set_subject_name(&csr, subject) == 0;
   }
   int encoded = -1;
   if (ok) {

@@ -17,7 +17,7 @@ use ring::{
 use sha2::Sha256;
 use uuid::Uuid;
 use x509_parser::{
-    extensions::GeneralName,
+    extensions::{GeneralName, ParsedExtension},
     prelude::{FromDer, X509Certificate, X509CertificationRequest},
 };
 use zeroize::{Zeroize, Zeroizing};
@@ -103,14 +103,17 @@ pub fn validate_p256_csr(der: &[u8]) -> Result<ValidatedCsr, ApiError> {
         .as_ref()
         .try_into()
         .map_err(|_| ApiError::Invalid("CSR key must be P-256"))?;
-    // Asking for a CA or supplying identities in the CSR is unnecessary and
-    // potentially surprising: the issuer ignores all requested extensions and
-    // injects the one exact backend-assigned SAN.
-    if csr
-        .requested_extensions()
-        .is_some_and(|mut items| items.next().is_some())
-    {
-        return Err(ApiError::Invalid("CSR extensions are not accepted"));
+    // Older Kitsu firmware redundantly requests digitalSignature. The service
+    // still owns the certificate profile; reject every other requested value.
+    if let Some(mut items) = csr.requested_extensions() {
+        let allowed = match (items.next(), items.next()) {
+            (None, None) => true,
+            (Some(ParsedExtension::KeyUsage(usage)), None) => usage.flags == 1,
+            _ => false,
+        };
+        if !allowed {
+            return Err(ApiError::Invalid("CSR extensions are not accepted"));
+        }
     }
     Ok(ValidatedCsr {
         der: der.to_vec(),
