@@ -273,6 +273,30 @@ impl DeviceEnvelope {
     }
 
     pub fn parse_payload(&self, bytes: &[u8]) -> Result<DevicePayload, ApiError> {
+        // Firmware 0.11.3 signed the companion snapshot body directly instead
+        // of placing it inside the protocol's event_batch wrapper. Adapt only
+        // that authenticated payload type; every other payload keeps the
+        // canonical tagged-JSON path below.
+        if self.payload_type == "companion.snapshot" {
+            let body: Map<String, Value> = serde_json::from_slice(bytes)
+                .map_err(|_| ApiError::Invalid("device payload is not valid protocol JSON"))?;
+            let issued_epoch = parse_canonical_i64(&self.issued_epoch, true)?;
+            let payload = DevicePayload::EventBatch {
+                events: vec![DeviceEvent {
+                    event_id: self.request_id,
+                    event_type: "companion.snapshot".to_owned(),
+                    observed: ObservationTime {
+                        epoch: (issued_epoch != 0).then_some(issued_epoch),
+                        boot_id: 0,
+                        monotonic_ms: 0,
+                    },
+                    body,
+                }],
+            };
+            validate_payload(&payload)?;
+            return Ok(payload);
+        }
+
         let payload: DevicePayload = serde_json::from_slice(bytes)
             .map_err(|_| ApiError::Invalid("device payload is not valid protocol JSON"))?;
         let actual_type = match &payload {
@@ -768,5 +792,54 @@ mod tests {
         let mut nil = action;
         nil["companion_id"] = Value::String(Uuid::nil().to_string());
         assert!(serde_json::from_value::<RemoteAction>(nil).is_err());
+    }
+
+    #[test]
+    fn raw_companion_snapshot_is_adapted_to_one_deterministic_event() {
+        let request_id = Uuid::from_u128(3);
+        let mut envelope = DeviceEnvelope {
+            schema: DEVICE_ENVELOPE_SCHEMA.to_owned(),
+            companion_id: Uuid::from_u128(1),
+            gateway_id: Uuid::from_u128(2),
+            sequence: "1".to_owned(),
+            issued_epoch: "1800000000".to_owned(),
+            nonce_b64: URL_SAFE_NO_PAD.encode([0_u8; 16]),
+            request_id,
+            key_version: 1,
+            payload_type: "companion.snapshot".to_owned(),
+            payload_b64: URL_SAFE_NO_PAD.encode(b"{}"),
+            signature_b64: URL_SAFE_NO_PAD.encode([0_u8; 32]),
+        };
+        let snapshot = serde_json::json!({
+            "schema": "kitsu.companion-snapshot.v1",
+            "firmware_version": "0.11.3",
+            "remote_connectivity_allowed": true,
+            "wifi": {"configured": true, "state": "connected"},
+            "gateway": {"configured": true, "enrolled": true, "lan_state": "ready"},
+            "channels": [
+                {"slot": 0, "configured": false, "max_utf8_bytes": 128},
+                {"slot": 1, "configured": false, "max_utf8_bytes": 128},
+                {"slot": 2, "configured": false, "max_utf8_bytes": 128},
+                {"slot": 3, "configured": false, "max_utf8_bytes": 128}
+            ]
+        });
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+
+        match envelope.parse_payload(&bytes).unwrap() {
+            DevicePayload::EventBatch { events } => {
+                assert_eq!(events.len(), 1);
+                let event = &events[0];
+                assert_eq!(event.event_id, request_id);
+                assert_eq!(event.event_type, "companion.snapshot");
+                assert_eq!(event.observed.epoch, Some(1_800_000_000));
+                assert_eq!(event.observed.boot_id, 0);
+                assert_eq!(event.observed.monotonic_ms, 0);
+                assert_eq!(&event.body, snapshot.as_object().unwrap());
+            }
+            _ => panic!("raw companion snapshot was not adapted to an event batch"),
+        }
+
+        envelope.payload_type = "event_batch".to_owned();
+        assert!(envelope.parse_payload(&bytes).is_err());
     }
 }
