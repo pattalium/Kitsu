@@ -1891,17 +1891,34 @@ void uiMailBadge() {
 }
 
 char bleIndicator(uint32_t now) {
-  if (!companionBle.ready()) return '!';
+  if (!companionBle.ready()) return '-';
   const kitsu868::connectivity::BleLinkStatus link =
       companionBle.linkStatus(now);
   if (link.connected) return '+';
-  return link.advertising ? '~' : '-';
+  return '!';
 }
 
-void uiConnectionIndicators(int16_t y = 3) {
+void uiBluetoothIcon(int16_t x, int16_t y) {
+  // A compact Bluetooth rune drawn directly into the portrait framebuffer.
+  // Keeping this out of the 5x7 text font avoids unsupported-glyph fallbacks.
+  static constexpr uint8_t ROWS[] = {
+      0b0001000, 0b0001100, 0b0001010, 0b1001001,
+      0b0101010, 0b0011100, 0b0101010, 0b1001001,
+      0b0001010, 0b0001100, 0b0001000,
+  };
+  for (uint8_t row = 0; row < sizeof(ROWS); ++row) {
+    for (uint8_t column = 0; column < 7U; ++column) {
+      if ((ROWS[row] & (1U << (6U - column))) != 0U) {
+        uiPixel(x + column, y + row);
+      }
+    }
+  }
+}
+
+void uiConnectionIndicators(int16_t y = 2) {
   const uint32_t now = millis();
-  uiGlyph('B', 25, y, 1);
-  uiGlyph(bleIndicator(now), 33, y, 1);
+  uiBluetoothIcon(2, y);
+  uiGlyph(bleIndicator(now), 11, y + 2, 1);
 }
 
 const char* bluetoothStatusLabel(uint32_t now) {

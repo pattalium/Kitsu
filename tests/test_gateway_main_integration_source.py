@@ -178,6 +178,27 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertNotIn("Wifi", actions)
         self.assertNotIn("Gateway", actions)
 
+    def test_corner_bluetooth_icon_has_truthful_supported_status_glyphs(self):
+        indicator = MAIN.split("char bleIndicator", 1)[1].split(
+            "void uiBluetoothIcon", 1
+        )[0]
+        self.assertIn("if (!companionBle.ready()) return '-';", indicator)
+        self.assertIn("if (link.connected) return '+';", indicator)
+        self.assertIn("return '!';", indicator)
+        self.assertNotIn("'~'", indicator)
+
+        icon = MAIN.split("void uiBluetoothIcon", 1)[1].split(
+            "void uiConnectionIndicators", 1
+        )[0]
+        self.assertIn("static constexpr uint8_t ROWS[]", icon)
+        self.assertIn("uiPixel(x + column, y + row)", icon)
+
+        placement = MAIN.split("void uiConnectionIndicators", 1)[1].split(
+            "const char* bluetoothStatusLabel", 1
+        )[0]
+        self.assertIn("uiBluetoothIcon(2, y);", placement)
+        self.assertIn("uiGlyph(bleIndicator(now), 11, y + 2, 1);", placement)
+
     def test_legacy_network_sources_are_excluded_from_product_build(self):
         for source in (
             "kitsu_connectivity_runtime.cpp",
