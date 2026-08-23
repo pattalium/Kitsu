@@ -229,11 +229,16 @@ def make_sdkconfig(
 
 
 def bind_sdkconfig(build: Path, sdkconfig: Path) -> None:
+    # Match the canonical path consumed by validate_build_sdkconfig().  Windows
+    # runners can expose the temp directory through an 8.3 alias (RUNNER~1),
+    # while Path.resolve() expands that alias; binding the unresolved fixture
+    # path makes an otherwise valid synthetic build fail only on those hosts.
+    canonical_sdkconfig = sdkconfig.resolve()
     (build / ".sconsign313.dblite").write_bytes(
         b"platformio-build-input\x00"
-        + sdkconfig.as_posix().encode("utf-8")
+        + canonical_sdkconfig.as_posix().encode("utf-8")
         + b"\x00csig\x00"
-        + packager.scons_content_signature(sdkconfig).encode("ascii")
+        + packager.scons_content_signature(canonical_sdkconfig).encode("ascii")
         + b"\x00"
     )
 
