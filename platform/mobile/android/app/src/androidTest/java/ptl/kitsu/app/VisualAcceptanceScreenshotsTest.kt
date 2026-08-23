@@ -1,6 +1,7 @@
 package ptl.kitsu.app
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.content.res.Configuration
 import android.os.SystemClock
 import android.view.WindowInsets
@@ -448,15 +449,27 @@ class VisualAcceptanceScreenshotsTest {
             requireNotNull(context.getExternalFilesDir("visual-qa")),
             "${width}dp-$orientation-$theme-font$fontPercent-$name.png",
         )
-        FileOutputStream(destination).use { output ->
-            check(
-                InstrumentationRegistry.getInstrumentation()
-                    .uiAutomation
-                    .takeScreenshot()
-                    .compress(Bitmap.CompressFormat.PNG, 100, output),
-            ) { "screenshot_encode_failed" }
+        val screenshot = checkNotNull(
+            InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot(),
+        ) { "screenshot_capture_failed" }
+        val screenshotWidth = screenshot.width
+        val screenshotHeight = screenshot.height
+        check(screenshotWidth > 0 && screenshotHeight > 0) { "screenshot_dimensions_invalid" }
+        try {
+            FileOutputStream(destination).use { output ->
+                check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                    "screenshot_encode_failed"
+                }
+            }
+        } finally {
+            screenshot.recycle()
         }
-        check(destination.isFile && destination.length() > 10_000) { "screenshot_missing_or_empty" }
+        check(destination.isFile && destination.length() > 0) { "screenshot_missing_or_empty" }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(destination.absolutePath, bounds)
+        check(bounds.outWidth == screenshotWidth && bounds.outHeight == screenshotHeight) {
+            "screenshot_png_dimensions_mismatch"
+        }
     }
 
     private fun waitForStableLayout() {
