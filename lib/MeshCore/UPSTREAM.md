@@ -61,6 +61,42 @@ lock cancel only packets that are still queued while preserving honest
 `sent`/failure and direct-ACK tracking for the packet already on air. It does
 not alter scheduling, packet ownership, RF behavior, or the wire protocol.
 
+### Local SX126x receive-status patch
+
+Kitsu exposes the result of the wrapped `PhysicalLayer::startReceive()` while
+retaining the original `startRecv()` entry point for every existing MeshCore
+caller. A failed start explicitly restores the wrapper's idle state, preventing an
+earlier attempt's software-RX flag from surviving a failed retry.
+
+The pinned RadioLib implementation of `SX126x::getStatus()` requests zero data
+bytes from `Module::SPIreadStream()` and consequently returns its
+zero-initialized local byte rather than the SX126x response. Kitsu's tracked
+wrapper reads status through `Module` (never raw SPI or chip-select control):
+after validating the pinned stream configuration, it temporarily adapts the
+configured status width from 8 to 0 bits, performs a one-byte GetStatus read
+whose MOSI bytes are exactly `C0 00`, and restores the original width before
+examining the result. Unexpected Module layouts, SPI errors, and sentinel
+responses `00`/`FF` are reported as unavailable. Keep or re-evaluate this
+patch when updating the RadioLib pin. This temporary configuration adaptation
+depends on Kitsu's existing single-owner invariant: all Module/SPI operations
+run synchronously on the main Arduino task; DIO handling only latches/polls a
+GPIO flag and never starts a concurrent radio transaction.
+
+### Local RX observability patch
+
+Kitsu adds saturating, payload-free task-context counters to the pinned
+`RadioLibWrapper::recvRaw()` stages: interrupt-ready service, packet-length
+sampling, `readData()` result, and the post-read `startReceive()` result. It
+also records the SX1262 IRQ flags already read by `CustomSX1262::isReceiving()`.
+The application may take one additional non-clearing GetIrqStatus snapshot
+when its polled DIO1 line is asserted. A bounded 120-second boot/after-TX
+diagnostic window samples non-clearing IRQ status at no more than 10 Hz so
+preamble/header/error flags that are not mapped to DIO1 remain observable;
+outside that window no low-rate diagnostic SPI reads occur. No IRQ is cleared,
+no packet byte is retained, and packet matching, receive restart, and RF wire
+semantics are unchanged. Re-evaluate these hooks when updating either MeshCore
+or RadioLib.
+
 ## Intentionally excluded
 
 Kitsu constructs/signs/verifies advertisements and implements the smallest

@@ -99,17 +99,69 @@ void testMainAndGameMenus() {
 
 void testConnectVariants() {
   const Label labels[] = {
-      {"CONNECT", 14, 1},       {"BLUETOOTH", 31, 2},
-      {"WIFI", 31, 2},         {"GATEWAY", 31, 2},
-      {"BACK", 31, 2},         {"SETUP NEEDED", 54, 1},
-      {"STORE ERROR", 54, 1},  {"CONNECTED", 54, 1},
-      {"CONNECTING", 54, 1},   {"ENROLL NEEDED", 54, 1},
-      {"HOLD VIEW", 76, 1},    {"HOLD OPEN", 76, 1},
-      {"HOLD RETRY", 76, 1},   {"HOLD SETUP", 76, 1},
-      {"HOLD BACK", 76, 1},    {"TAP NEXT", 108, 1},
+      {"CONNECT", 14, 1},      {"BLUETOOTH", 31, 2},
+      {"CONTROLLERS", 31, 2}, {"BACK", 31, 2},
+      {"UNAVAILABLE", 54, 1}, {"4 STORED", 54, 1},
+      {"CONNECTED", 54, 1},   {"PAIRING", 54, 1},
+      {"HOLD VIEW", 76, 1},   {"HOLD OPEN", 76, 1},
+      {"HOLD MANAGE", 76, 1}, {"HOLD BACK", 76, 1},
+      {"TAP NEXT", 108, 1},
   };
   assertScreen(labels);
-  const DotPlan dots = kitsu868::portrait::planDots(4, 60);
+  const DotPlan dots = kitsu868::portrait::planDots(3, 60);
+  assert(dots.valid);
+  assert(kitsu868::portrait::rectangleFits(
+      (64 - dots.width) / 2, 94, dots.width, dots.size));
+}
+
+void testControllerRecoveryVariants() {
+  const Label unavailable[] = {
+      {"CONTROLLERS", 4, 1}, {"SECURITY", 31, 2},
+      {"UNAVAILABLE", 54, 1}, {"NO CHANGES", 79, 1},
+      {"TAP BACK", 108, 1}};
+  const Label closing[] = {
+      {"CONTROLLERS", 4, 1}, {"CLOSING BLE", 34, 1},
+      {"WAIT", 55, 2}, {"NO CHANGES", 82, 1},
+      {"TAP BACK", 108, 1}};
+  const Label occupied[] = {
+      {"CONTROLLERS", 4, 1}, {"SLOT 4", 28, 2},
+      {"ID 01234567", 54, 1}, {"HOLD REMOVE", 78, 1},
+      {"TAP NEXT", 108, 1}};
+  const Label empty[] = {
+      {"CONTROLLERS", 4, 1}, {"SLOT 4", 28, 2},
+      {"EMPTY", 54, 2}, {"NO ACTION", 78, 1},
+      {"TAP NEXT", 108, 1}};
+  const Label reset[] = {
+      {"CONTROLLERS", 4, 1}, {"RESET ALL", 31, 2},
+      {"4 STORED", 56, 1}, {"HOLD SELECT", 78, 1},
+      {"TAP NEXT", 108, 1}};
+  const Label confirmSlot[] = {
+      {"REMOVE", 4, 2}, {"SLOT 4", 23, 2},
+      {"ID 01234567", 42, 1}, {"HOLD PRG", 58, 2},
+      {"5S TO REMOVE", 76, 1}, {"TAP CANCEL", 95, 1},
+      {"EXPIRES 15S", 109, 1}};
+  const Label confirmAll[] = {
+      {"REMOVE ALL", 4, 1}, {"4 STORED", 24, 1},
+      {"KEEP HOLDING", 48, 1}, {"5S", 65, 2},
+      {"TAP CANCEL", 95, 1}, {"EXPIRES 15S", 109, 1}};
+  const Label success[] = {
+      {"CONTROLLERS", 4, 1}, {"ALL REMOVED", 29, 2},
+      {"4 CLEARED", 53, 1}, {"REOPEN PAIR", 79, 1},
+      {"TAP CONTINUE", 108, 1}};
+  const Label uncertain[] = {
+      {"CONTROLLERS", 4, 1}, {"UNCERTAIN", 23, 2},
+      {"STORAGE ERR", 43, 1}, {"REBOOT KITSU", 64, 2},
+      {"BEFORE PAIR", 88, 1}, {"REBOOT NOW", 108, 1}};
+  assertScreen(unavailable);
+  assertScreen(closing);
+  assertScreen(occupied);
+  assertScreen(empty);
+  assertScreen(reset);
+  assertScreen(confirmSlot);
+  assertScreen(confirmAll);
+  assertScreen(success);
+  assertScreen(uncertain);
+  const DotPlan dots = kitsu868::portrait::planDots(6, 60);
   assert(dots.valid);
   assert(kitsu868::portrait::rectangleFits(
       (64 - dots.width) / 2, 94, dots.width, dots.size));
@@ -181,7 +233,7 @@ void testStatusPages() {
       {"SCORE 65535", 111, 1},
   };
   const Label diagnostics[] = {
-      {"KITSU", 5, 2},   {"0.12.0", 27, 1}, {"KTFFFF", 43, 1},
+      {"KITSU", 5, 2},   {"0.16.5", 27, 1}, {"KTFFFF", 43, 1},
       {"OLED ERR", 59, 1}, {"MESH ERR", 75, 1},
       {"STORE ERR", 91, 1}, {"NO PACK", 107, 1},
   };
@@ -247,9 +299,10 @@ int main() {
   testListenAndSleep();
   testStatusPages();
   testPairPhoneVariants();
+  testControllerRecoveryVariants();
   puts("PASS portrait_ui_layout_host");
   puts("  canvas: 64x128; content: 60px");
-  puts("  screens: pet menu connect inbox game-menu game listen sleep status phone");
+  puts("  screens: pet menu connect inbox game-menu game listen sleep status phone controller-recovery");
   puts("  phone states: unavailable compare grant authenticated securing open closed");
   return 0;
 }

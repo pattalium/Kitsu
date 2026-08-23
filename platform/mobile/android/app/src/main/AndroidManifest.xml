@@ -5,7 +5,6 @@
 
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
@@ -27,15 +26,13 @@
         tools:targetApi="s">
         <!-- Public release provenance; this is a content hash, never a credential. -->
         <meta-data
-            android:name="app.kitsu.mobile.SOURCE_ARCHIVE_SHA256"
+            android:name="ptl.kitsu.app.SOURCE_ARCHIVE_SHA256"
             android:value="${kitsuSourceArchiveSha256}" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="portrait"
-            android:windowSoftInputMode="adjustResize"
-            tools:ignore="DiscouragedApi,LockedOrientationActivity">
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

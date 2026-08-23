@@ -30,6 +30,11 @@ enum class ContactRole : uint8_t {
   Sensor = 4,
 };
 
+enum class ChannelRegionScope : uint8_t {
+  Legacy = 0,
+  Eu = 1,
+};
+
 enum class CommandKind : uint8_t {
   None = 0,
   Status,
@@ -56,6 +61,7 @@ enum class ParseStatus : uint8_t {
   BadHex,
   IntegerOverflow,
   InvalidRole,
+  InvalidRegionScope,
   InvalidChannel,
   PublicChannelImmutable,
   ZeroKey,
@@ -75,6 +81,7 @@ struct Command {
   CommandKind kind = CommandKind::None;
   uint32_t afterMessageId = 0;
   uint8_t channelIndex = 0;
+  ChannelRegionScope channelRegionScope = ChannelRegionScope::Legacy;
   ContactRole contactRole = ContactRole::Client;
   uint8_t publicKey[kPublicKeyBytes]{};
   uint8_t channelSecret[kChannelSecretBytes]{};

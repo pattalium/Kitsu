@@ -133,7 +133,8 @@ struct KitsuBleGattLink::Impl {
     const uint16_t handle = connection.getConnHandle();
     bool reject = false;
     portENTER_CRITICAL(&mux);
-    if (connected && connectionHandle != handle) {
+    if (localControllerRecoveryLocked ||
+        (connected && connectionHandle != handle)) {
       reject = true;
     } else {
       clearConnectionLocked();
@@ -163,7 +164,7 @@ struct KitsuBleGattLink::Impl {
     portENTER_CRITICAL(&mux);
     if (connectionHandle == connection.getConnHandle()) {
       clearConnectionLocked();
-      advertising = true;
+      advertising = !localControllerRecoveryLocked;
       pushEventLocked(BleLinkEvent::Disconnected);
     }
     portEXIT_CRITICAL(&mux);
@@ -294,6 +295,7 @@ struct KitsuBleGattLink::Impl {
   bool bonded = false;
   bool notifySubscribed = false;
   bool pairingWindowOpen = false;
+  bool localControllerRecoveryLocked = false;
   bool numericPending = false;
   bool applicationAuthenticated = false;
   bool pendingApplicationAuthentication = false;
@@ -521,6 +523,10 @@ bool KitsuBleGattLink::openPairingWindow(uint32_t nowMillis,
     return false;
   }
   portENTER_CRITICAL(&impl_->mux);
+  if (impl_->localControllerRecoveryLocked) {
+    portEXIT_CRITICAL(&impl_->mux);
+    return false;
+  }
   impl_->pairingWindowOpen = true;
   impl_->pairingWindowDeadline = nowMillis + durationMs;
   portEXIT_CRITICAL(&impl_->mux);
@@ -536,6 +542,43 @@ void KitsuBleGattLink::closePairingWindow() {
   reject = impl_->numericPending;
   portEXIT_CRITICAL(&impl_->mux);
   if (reject) confirmNumericComparison(false);
+}
+
+bool KitsuBleGattLink::setLocalControllerRecoveryLocked(bool locked) {
+  if (!impl_ || !impl_->begun || !impl_->server) return false;
+  bool rejectNumeric = false;
+  bool connected = false;
+  portENTER_CRITICAL(&impl_->mux);
+  impl_->localControllerRecoveryLocked = locked;
+  if (locked) {
+    impl_->pairingWindowOpen = false;
+    impl_->pairingWindowDeadline = 0U;
+    rejectNumeric = impl_->numericPending;
+    connected = impl_->connected;
+    impl_->disconnectRequested = impl_->disconnectRequested || connected;
+    impl_->advertising = false;
+  } else {
+    connected = impl_->connected;
+  }
+  portEXIT_CRITICAL(&impl_->mux);
+
+  impl_->server->advertiseOnDisconnect(!locked);
+  if (rejectNumeric) confirmNumericComparison(false);
+  if (locked) {
+    NimBLEDevice::stopAdvertising();
+    return true;
+  }
+  if (!connected) {
+    NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+    if (!advertising || (!advertising->isAdvertising() &&
+                         !advertising->start())) {
+      return false;
+    }
+    portENTER_CRITICAL(&impl_->mux);
+    impl_->advertising = true;
+    portEXIT_CRITICAL(&impl_->mux);
+  }
+  return true;
 }
 
 bool KitsuBleGattLink::confirmNumericComparison(bool accept) {
@@ -651,6 +694,9 @@ void KitsuBleGattLink::loop(uint32_t) {}
 bool KitsuBleGattLink::openPairingWindow(uint32_t, uint32_t) { return false; }
 void KitsuBleGattLink::closePairingWindow() {}
 bool KitsuBleGattLink::confirmNumericComparison(bool) { return false; }
+bool KitsuBleGattLink::setLocalControllerRecoveryLocked(bool) {
+  return false;
+}
 bool KitsuBleGattLink::setApplicationAuthenticated(bool) { return false; }
 bool KitsuBleGattLink::queueFrame(const uint8_t*, size_t) { return false; }
 void KitsuBleGattLink::disconnect() {}

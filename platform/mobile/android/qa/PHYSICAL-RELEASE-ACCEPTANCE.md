@@ -31,8 +31,9 @@ Freeze and record before candidate hardware testing:
 
 - source commit and clean-tree status;
 - public-site, flash-site, and documentation build hashes;
-- Android package name, version/code, APK bytes/SHA-256, and production signing
-  certificate SHA-256;
+- Android package name, version/code, APK and AAB bytes/SHA-256, production
+  signing certificate SHA-256, bundletool-validation evidence, source-provenance
+  digest, and 16 KiB ZIP/ELF page-alignment evidence;
 - the seven-region Web Serial plan, flash-site source/dist hashes, and intended
   release ID, but not a downstream final signed release manifest;
 - bootloader, partition-table, application, 4 KiB journal-clear, and 256 KiB
@@ -91,14 +92,18 @@ matching readbacks is a failure. Do not cite this case as public-page proof.
 
 ## B. Candidate Android install and permission recovery — record 1
 
-1. Install the production-signed candidate with Android's ordinary package
-   installer from the retained protected stage. The public-site build must fail
-   closed in its automated gate until a signed manifest describes Android
-   `2.0.0` code 13 or newer; do not relabel the existing 1.1.6 file.
-2. Install the candidate as an upgrade over the last public APK, then repeat the core
-   pairing/connect cases on a fresh installation. Android must accept the
-   upgrade under the same production certificate. Confirm package
-   `app.kitsu.mobile`, version `2.0.0` (code 13), minimum Android 8/API 26.
+1. Before signing, confirm the highest version code already present in the
+   authoritative Play Console Draft and freeze a strictly greater candidate
+   code plus its matching version name. Build the candidate from the checked
+   Gradle wrapper with target API 36, bind it to the exact scoped source archive,
+   validate the AAB with bundletool, and verify every packaged native ABI for
+   16 KiB ZIP and ELF `PT_LOAD` alignment.
+2. Install the production-signed candidate with Android's ordinary package
+   installer. Confirm package `ptl.kitsu.app`, the exact frozen version/code,
+   minimum Android 8/API 26, and target API 36. This Play identity is a separate
+   install from the retired pre-Play app, not an in-place upgrade; it must not
+   inherit that app's authorizations or claim upgrade compatibility. Repeat the
+   cases below on a clean `ptl.kitsu.app` installation and pair again.
 3. Verify the installed app has no Internet or foreground-service permission
    and exposes no account, sign-in, Wi-Fi, gateway, remote companion, or server
    controls.
@@ -114,6 +119,16 @@ matching readbacks is a failure. Do not cite this case as public-page proof.
 6. Enable airplane mode, then turn Bluetooth back on. Leave airplane mode on
    for the remaining direct-Bluetooth cases. The app must remain usable without
    a network route.
+7. On a clean install, confirm the launch window and Compose UI are dark before
+   the first frame, with no white splash. **Dark** must remain the persisted
+   default. **System** may follow Android only after the owner explicitly opts
+   in.
+8. Exercise a compact phone, landscape phone, and tablet/large-width device.
+   Confirm there is no fixed-orientation declaration, content and IME remain
+   inside system insets, compact width uses bottom navigation, and expanded
+   width uses a navigation rail. Predictive Back from Mesh, Messages, or
+   Settings must return to Kitsu/Home; a locked firmware update must remain
+   non-dismissible.
 
 ## C. First-owner pairing and lost-receipt recovery — record 1
 
@@ -138,8 +153,11 @@ matching readbacks is a failure. Do not cite this case as public-page proof.
 
 ## D. Truthful local controls, state, and messages — record 1
 
-1. With one Kitsu selected, compare the visible companion name, pack, appearance,
-   battery, needs, mood, peers, channels, and message list with the Heltec state.
+1. Confirm the app exposes exactly four primary destinations: **Kitsu**,
+   **Mesh**, **Messages**, and **Settings**. With one Kitsu selected, compare the
+   visible companion name, battery, needs, bond, mood, peers, channels, and
+   message list with the Heltec state. Firmware and pack identifiers belong in
+   details/settings rather than the Home hierarchy.
 2. Tap **Refresh** after changing device state. The new state must appear, and a
    refresh failure must produce a visible non-secret error rather than a no-op.
 3. Run **Pet**, **Feed**, **Play**, and **Listen once**. Confirm each accepted
@@ -151,10 +169,29 @@ matching readbacks is a failure. Do not cite this case as public-page proof.
    Confirm direct messages have a peer and no channel slot; channel messages
    have a channel slot and no peer. Confirm the 24-entry snapshot refresh does
    not erase or oscillate when the device ring has wrapped.
-6. Leave the app connected for at least three minutes. The GATT session must
+6. Before the first send, confirm the current versioned mesh terms and prohibited-
+   content policy gate the composer. Accept the policy, recreate the activity,
+   and confirm acceptance, selected tab, route, recipient, and draft survive.
+   An outbound message must have no moderation actions. An inbound channel
+   message offers only **Report message** in its compact overflow. An inbound
+   direct message offers **Report message**, **Report sender**, and **Block
+   sender** in that overflow—never as a permanent button row. Report exports
+   must bind `report_type`, write only to the owner-chosen document, and state
+   truthfully that nothing was submitted automatically. Blocking must persist,
+   hide that direct peer locally, prevent new sends to it, and remain reversible
+   in Settings without claiming a radio-wide or server-side ban.
+7. With firmware supporting `advertise_once`, confirm **Advertise now** appears
+   only as a real enabled control. Nearby is the default and sends explicit
+   scope `nearby`; Mesh sends explicit scope `mesh`. Each deliberate tap uses a
+   unique action ID. A queued receipt must show success followed by the
+   authoritative `advertise_cooldown` state and remaining duration; a rejected
+   cooldown uses the same visible retry UI. Exercise one other prerequisite or
+   busy rejection and confirm its safe firmware code is shown rather than a
+   false success.
+8. Leave the app connected for at least three minutes. The GATT session must
    remain stable; there must be no two-second disconnect/reconnect churn, PRG
    prompt, background enrollment, HTTP request, or rate-limit error.
-7. Tap **Disconnect**, relaunch the app, and wait at least 30 seconds. It must stay
+9. Tap **Disconnect**, relaunch the app, and wait at least 30 seconds. It must stay
    disconnected until **Connect** is tapped. Reconnect must use the saved root
    and bond without pairing again.
 
@@ -171,6 +208,10 @@ matching readbacks is a failure. Do not cite this case as public-page proof.
    progression/brain state, MeshCore state, and messages must remain intact.
 4. Pair the forgotten phone again through the normal owner flow and confirm no
    hidden server cleanup or device reset is required.
+5. Fill all four controller slots and attempt one more pairing. On
+   `controller_full`, Android must direct the owner to Kitsu's physical
+   **CONNECT > CONTROLLERS** menu, slot removal, reopening **Pair Phone**, and
+   retry. Android must not expose remote slot enumeration, reset, or recovery.
 
 ## F. Signed Bluetooth firmware update — record 1
 
@@ -224,7 +265,7 @@ matching readbacks is a failure. Do not cite this case as public-page proof.
 
 For every numbered case A-G, record `pass`, `fail`, or `not_run`, UTC start/end,
 the app-visible or tool-visible safe result code, and concise notes. Record the
-frozen source/build/APK/artifact/`.kitsu-fw` hashes listed above and the SHA-256
+frozen source/build/APK/AAB/provenance/16-KiB/artifact/`.kitsu-fw` hashes listed above and the SHA-256
 of this completed candidate evidence. `not_run` is a failure unless the case
 explicitly says an automated bound test covers it.
 

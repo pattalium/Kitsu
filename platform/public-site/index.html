@@ -13,8 +13,9 @@
     <meta name="twitter:description" content="A radio companion with memory, personality, messages, and a world of its own." />
     <meta name="twitter:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
     <link rel="icon" href="/assets/kitsu-app-icon.png" />
-    <link rel="stylesheet" href="/styles.css?sha256=f8ae7d76ff8a2d937f4199ee1d1559830e415059014a95b5489714563cc33262" />
+    <link rel="stylesheet" href="/styles.css?sha256=5ac23805fb8c3f847d66546b9ed30819c6b37c86b705704b4796f4133396a100" />
     <script type="module" src="/site.js?sha256=9eee77d437e212ce6178dcf7f34557324fc524e93ee66efa189224eae110b60a"></script>
+    <script type="module" src="/preview-release.js?sha256=0ffc25be94d6473767e4e256ffcc1db9e6e6c07ff49549c91c2e2c757b669425"></script>
     <title>K32 Kitsu</title>
   </head>
   <body>
@@ -114,13 +115,28 @@
             <li>Detached release manifest verified in your browser</li>
           </ul>
         </div>
-        <div class="download-card">
-          <span class="status" id="android-status">Checking signed Android release</span>
-          <h3 id="android-title">Kitsu Android</h3>
-          <p id="android-detail">Verifying the signed release manifest and local-first eligibility.</p>
-          <a id="android-download" class="disabled" aria-disabled="true">Verifying release…</a>
-          <small id="android-digest">The link is enabled only after an eligible local-first manifest passes verification.</small>
-          <noscript><p class="noscript">JavaScript is required to verify the release signature before download.</p></noscript>
+        <div class="download-cards">
+          <div class="download-card">
+            <span class="status" id="android-status">Checking signed Android release</span>
+            <h3 id="android-title">Kitsu Android</h3>
+            <p id="android-detail">Verifying the signed release manifest and local-first eligibility.</p>
+            <a id="android-download" class="disabled" aria-disabled="true">Verifying release…</a>
+            <small id="android-digest">The link is enabled only after an eligible local-first manifest passes verification.</small>
+            <noscript><p class="noscript">JavaScript is required to verify the release signature before download.</p></noscript>
+          </div>
+          <div class="download-card preview-download-card" aria-labelledby="android-preview-title">
+            <span class="status preview-status" id="android-preview-status">Checking signed testing preview</span>
+            <h3 id="android-preview-title">Kitsu Android 2.1.4 testing preview</h3>
+            <p id="android-preview-detail">Verifying the exact test-only manifest before exposing any preview APK.</p>
+            <ul class="preview-facts">
+              <li>Test-only and debug-signed — not an accepted or stable release.</li>
+              <li>Installs separately from Play/production and stores a separate controller authorization.</li>
+              <li>No Internet permission or foreground service; this preview may be removed after testing.</li>
+            </ul>
+            <a id="android-preview-download" class="disabled" aria-disabled="true">Verifying testing preview…</a>
+            <small id="android-preview-digest">The test link stays hidden unless its dedicated preview schema and detached signature pass every check.</small>
+            <noscript><p class="noscript">JavaScript is required to verify the testing-preview signature before download.</p></noscript>
+          </div>
         </div>
       </section>
 

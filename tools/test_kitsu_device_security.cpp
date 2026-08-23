@@ -487,6 +487,116 @@ void testFourControllerLimitHasNoEviction() {
   assert(memcmp(recovered, firstRoot, sizeof(recovered)) == 0);
 }
 
+void testPhysicalAllControllerRecoveryPreservesDeviceMaterial() {
+  MemoryStorage storage;
+  TestPlatform platform;
+  KitsuDeviceSecurity security;
+  assert(security.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+
+  uint8_t ids[4][kKitsuControllerIdBytes]{};
+  uint8_t roots[4][kKitsuSecretBytes]{};
+  for (uint8_t slot = 0U; slot < 4U; ++slot) {
+    memset(ids[slot], static_cast<int>(slot + 1U), sizeof(ids[slot]));
+    memset(roots[slot], static_cast<int>(0x90U + slot),
+           sizeof(roots[slot]));
+    assert(security.commitControllerAfterPairing(
+               ids[slot], roots[slot], true, true, true, true, true) ==
+           SecurityResult::Ok);
+  }
+  assert(security.status().controllerCount == 4U);
+
+  for (size_t slot = 0U; slot < 4U; ++slot) {
+    uint8_t inspected[kKitsuControllerIdBytes]{};
+    assert(security.controllerAtSlot(slot, inspected));
+    assert(memcmp(inspected, ids[slot], sizeof(inspected)) == 0);
+  }
+  uint8_t invalid[kKitsuControllerIdBytes]{};
+  memset(invalid, 0xff, sizeof(invalid));
+  assert(!security.controllerAtSlot(4U, invalid));
+  assert(invalid[0] == 0xffU);
+
+  uint8_t deviceIdBefore[16]{};
+  uint8_t journalKeyBefore[kKitsuSecretBytes]{};
+  assert(security.copyDeviceId(deviceIdBefore));
+  assert(security.deriveJournalKey(journalKeyBefore) == SecurityResult::Ok);
+
+  assert(security.revokeAllControllersAfterPhysicalConfirmation(false) ==
+         SecurityResult::AuthorizationRequired);
+  assert(security.status().controllerCount == 4U);
+  for (size_t slot = 0U; slot < 4U; ++slot) {
+    uint8_t root[kKitsuSecretBytes]{};
+    assert(security.findControllerRoot(ids[slot], root));
+    assert(memcmp(root, roots[slot], sizeof(root)) == 0);
+  }
+
+  assert(security.revokeAllControllersAfterPhysicalConfirmation(true) ==
+         SecurityResult::Ok);
+  assert(security.status().controllerCount == 0U);
+  assertAllStoredGenerationsSanitized(storage, platform, true);
+
+  KitsuDeviceSecurity rebooted;
+  assert(rebooted.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+  assert(rebooted.status().controllerCount == 0U);
+  for (size_t slot = 0U; slot < 4U; ++slot) {
+    uint8_t inspected[kKitsuControllerIdBytes]{};
+    assert(!rebooted.controllerAtSlot(slot, inspected));
+    uint8_t root[kKitsuSecretBytes]{};
+    assert(!rebooted.findControllerRoot(ids[slot], root));
+  }
+  uint8_t deviceIdAfter[16]{};
+  uint8_t journalKeyAfter[kKitsuSecretBytes]{};
+  assert(rebooted.copyDeviceId(deviceIdAfter));
+  assert(rebooted.deriveJournalKey(journalKeyAfter) == SecurityResult::Ok);
+  assert(memcmp(deviceIdBefore, deviceIdAfter, sizeof(deviceIdBefore)) == 0);
+  assert(memcmp(journalKeyBefore, journalKeyAfter,
+                sizeof(journalKeyBefore)) == 0);
+  assert(rebooted.revokeAllControllersAfterPhysicalConfirmation(true) ==
+         SecurityResult::Ok);
+}
+
+void testPhysicalAllControllerRecoveryFailureBoundaries() {
+  MemoryStorage storage;
+  TestPlatform platform;
+  KitsuDeviceSecurity security;
+  assert(security.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+  uint8_t controllerId[kKitsuControllerIdBytes]{};
+  uint8_t controllerRoot[kKitsuSecretBytes]{};
+  memset(controllerId, 0x44, sizeof(controllerId));
+  memset(controllerRoot, 0xa4, sizeof(controllerRoot));
+  assert(security.commitControllerAfterPairing(
+             controllerId, controllerRoot, true, true, true, true, true) ==
+         SecurityResult::Ok);
+
+  storage.failWrite = true;
+  assert(security.revokeAllControllersAfterPhysicalConfirmation(true) ==
+         SecurityResult::StorageWriteFailed);
+  storage.failWrite = false;
+  assert(security.status().controllerCount == 1U);
+  uint8_t recoveredRoot[kKitsuSecretBytes]{};
+  assert(security.findControllerRoot(controllerId, recoveredRoot));
+  assert(memcmp(controllerRoot, recoveredRoot, sizeof(recoveredRoot)) == 0);
+
+  storage.failClear = true;
+  assert(security.revokeAllControllersAfterPhysicalConfirmation(true) ==
+         SecurityResult::StorageWriteFailed);
+  // The newer authenticated generation is already authoritative. Failure to
+  // retire the previous slot must fail closed, not revive its controller.
+  assert(security.status().controllerCount == 0U);
+  memset(recoveredRoot, 0, sizeof(recoveredRoot));
+  assert(!security.findControllerRoot(controllerId, recoveredRoot));
+  storage.failClear = false;
+
+  KitsuDeviceSecurity rebooted;
+  assert(rebooted.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+  assert(rebooted.status().controllerCount == 0U);
+  assert(!rebooted.findControllerRoot(controllerId, recoveredRoot));
+  assertAllStoredGenerationsSanitized(storage, platform, true);
+}
+
 void testRetiredMaterialMigrationResumesAfterEraseFailure() {
   MemoryStorage storage;
   TestPlatform platform;
@@ -575,6 +685,8 @@ int main() {
   testControllerPhysicalGateAndRevocation();
   testRetiredNetworkMaterialIsTransactionallyRemoved();
   testFourControllerLimitHasNoEviction();
+  testPhysicalAllControllerRecoveryPreservesDeviceMaterial();
+  testPhysicalAllControllerRecoveryFailureBoundaries();
   testRetiredMaterialMigrationResumesAfterEraseFailure();
   testRetiredMaterialMigrationResumesAfterWriteFailure();
   testCorruptionRefusal();

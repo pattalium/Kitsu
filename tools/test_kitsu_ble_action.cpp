@@ -11,6 +11,7 @@ using kitsu868::connectivity::BleActionDecodeResult;
 using kitsu868::connectivity::BleActionKind;
 using kitsu868::connectivity::BleActionReplayCache;
 using kitsu868::connectivity::BleActionReplayDecision;
+using kitsu868::connectivity::BleAdvertScope;
 using kitsu868::connectivity::BleMessageRoute;
 
 namespace {
@@ -129,12 +130,28 @@ void testExactKindParams() {
 
 void testTxActionsAndWithdrawnActionsFailClosed() {
   BleActionCommand command{};
-  expect(body("advertise_once", "{\"scope\":\"nearby\"}"),
-         BleActionDecodeResult::InvalidKind);
+  assert(static_cast<uint8_t>(BleActionKind::AdvertiseOnce) == 5U);
+  assert(static_cast<uint8_t>(BleActionKind::SendMessage) == 6U);
+  assert(decode(body("advertise_once", "{\"scope\":\"nearby\"}"),
+                command) == BleActionDecodeResult::Ok);
+  assert(command.kind == BleActionKind::AdvertiseOnce);
+  assert(command.advertScope == BleAdvertScope::Nearby);
+  assert(kitsu868::connectivity::bleActionKindAvailable(command.kind));
+  assert(command.messageRoute == BleMessageRoute::None);
+  assert(decode(body("advertise_once", "{\"scope\":\"mesh\"}"),
+                command) == BleActionDecodeResult::Ok);
+  assert(command.advertScope == BleAdvertScope::Mesh);
+  expect(body("advertise_once", "{}"),
+         BleActionDecodeResult::InvalidParams);
+  expect(body("advertise_once", "{\"scope\":\"world\"}"),
+         BleActionDecodeResult::InvalidParams);
+  expect(body("advertise_once", "{\"scope\":\"nearby\",\"x\":1}"),
+         BleActionDecodeResult::InvalidParams);
+  expect(body("advertise_once", "{\"scope\":\"near\\u0062y\"}"),
+         BleActionDecodeResult::InvalidParams);
   expect(body("share_location_once",
               "{\"lat_e6\":0,\"lon_e6\":0,\"exposure\":\"map_card\"}"),
          BleActionDecodeResult::InvalidKind);
-  assert(static_cast<uint8_t>(BleActionKind::SendMessage) == 6U);
 
   const std::string directHello =
       messageParams("direct", kPeerKey, "hello \\u263a");
@@ -238,6 +255,9 @@ BleActionCommand commandFor(unsigned ordinal, BleActionKind kind,
     const uint32_t listenDuration = duration == 0U ? 60000U : duration;
     snprintf(params, sizeof(params), "{\"duration_ms\":%lu}",
              static_cast<unsigned long>(listenDuration));
+  } else if (kind == BleActionKind::AdvertiseOnce) {
+    assert(duration == 0U);
+    memcpy(params, "{\"scope\":\"nearby\"}", 19U);
   } else {
     assert(duration == 0U);
   }
@@ -314,6 +334,28 @@ void testCommandDigestAndNoPlaintextPersistence() {
   };
   assert(memcmp(messageDigest, expectedMessageDigest,
                 sizeof(messageDigest)) == 0);
+
+  BleActionCommand nearby =
+      commandFor(5U, BleActionKind::AdvertiseOnce);
+  uint8_t nearbyDigest[
+      kitsu868::connectivity::kBleActionCommandDigestBytes]{};
+  assert(kitsu868::connectivity::bleActionCommandDigest(
+      nearby, nearbyDigest));
+  static const uint8_t expectedNearbyDigest[] = {
+      0x89U, 0x8cU, 0x80U, 0x9fU, 0x53U, 0x5eU, 0x46U, 0x23U,
+      0x89U, 0xe2U, 0x47U, 0x4bU, 0x9eU, 0xc2U, 0x1bU, 0xe0U,
+      0x83U, 0x39U, 0x2dU, 0x0dU, 0x19U, 0x25U, 0x63U, 0x97U,
+      0x81U, 0x23U, 0xe3U, 0xb9U, 0x36U, 0x3bU, 0x0aU, 0x0aU,
+  };
+  assert(memcmp(nearbyDigest, expectedNearbyDigest,
+                sizeof(nearbyDigest)) == 0);
+  BleActionCommand mesh = nearby;
+  mesh.advertScope = BleAdvertScope::Mesh;
+  uint8_t meshDigest[
+      kitsu868::connectivity::kBleActionCommandDigestBytes]{};
+  assert(kitsu868::connectivity::bleActionCommandDigest(mesh, meshDigest));
+  assert(memcmp(nearbyDigest, meshDigest, sizeof(nearbyDigest)) != 0);
+
   BleActionReplayCache cache;
   assert(cache.remember(message, kNow));
   size_t serializedBytes = 0U;
@@ -403,6 +445,14 @@ void testPersistentPendingAppliedAndConflicts() {
   assert(decode(body("send_message", secondParams.c_str()),
                 changedMessage) == BleActionDecodeResult::Ok);
   assert(cache.inspect(changedMessage, kNow) ==
+         BleActionReplayDecision::Conflict);
+
+  BleActionCommand nearby =
+      commandFor(4U, BleActionKind::AdvertiseOnce);
+  assert(cache.remember(nearby, kNow));
+  BleActionCommand sameIdMesh = nearby;
+  sameIdMesh.advertScope = BleAdvertScope::Mesh;
+  assert(cache.inspect(sameIdMesh, kNow) ==
          BleActionReplayDecision::Conflict);
 
   size_t serializedBytes = 0U;

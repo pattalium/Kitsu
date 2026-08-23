@@ -68,6 +68,35 @@ def record(prefix: str, value: dict) -> str:
 
 
 class CommandContractTest(unittest.TestCase):
+    def test_sx1262_irq_uses_latched_loop_polling_not_idf_ipc(self) -> None:
+        attach = cpp_function(
+            TRANSPORT_SOURCE,
+            'extern "C" void attachInterrupt(uint8_t pin, void (*handler)(void), int mode)',
+        )
+        self.assertIn("kitsuRadioIrqPoll.claim(pin, handler, mode)", attach)
+        self.assertIn("return;", attach)
+        self.assertIn("__attachInterrupt(pin, handler, mode)", attach)
+        self.assertLess(
+            attach.index("return;"),
+            attach.index("__attachInterrupt(pin, handler, mode)"),
+        )
+
+        driver_loop = cpp_function(TRANSPORT_SOURCE, "void loop() override")
+        self.assertIn("pollRadioDio1WithDiagnostics()", driver_loop)
+        self.assertIn("CustomSX1262Wrapper::loop()", driver_loop)
+        self.assertLess(
+            driver_loop.index("pollRadioDio1WithDiagnostics()"),
+            driver_loop.index("CustomSX1262Wrapper::loop()"),
+        )
+
+        configure = cpp_function(
+            TRANSPORT_SOURCE,
+            "TransportStatus configureRadio(const Settings& next)",
+        )
+        self.assertIn("client.begin();", configure)
+        self.assertIn("if (!kitsuRadioDio1Claimed())", configure)
+        self.assertIn("return TransportStatus::RadioInitFailed;", configure)
+
     def test_all_commands_are_canonical_ascii_and_fit_existing_input(self) -> None:
         commands = (
             mesh_status_command(),
@@ -381,26 +410,193 @@ class OneShotTransmitAuthorizationTest(unittest.TestCase):
         self.assertIn("settings_->txPolicy != TxPolicy::ExplicitSession", arm)
         self.assertIn("!sameRadioProfile(requested.radio, settings_->radio)", arm)
 
+    def test_authenticated_advert_uses_real_signed_meshcore_paths(self) -> None:
+        body = cpp_function(
+            TRANSPORT_SOURCE,
+            "TransportStatus KitsuMeshTransport::introduceOnce(",
+        )
+        approval = "if (!explicitUserApproval) return TransportStatus::TxLocked;"
+        self.assertIn(approval, body)
+        self.assertIn("impl_->makeAdvert(settings, current, packet)", body)
+        self.assertIn("impl_->driver.armOneShotForPacket(", body)
+        self.assertIn("packet->writeTo(expectedWire)", body)
+        self.assertIn("impl_->client.releasePacket(packet)", body)
+        self.assertIn("impl_->client.sendZeroHop(packet)", body)
+        self.assertIn("impl_->client.prepareFloodRoute(packet", body)
+        self.assertIn("ChannelRegionScope::Legacy", body)
+        self.assertIn("impl_->client.sendFloodRoute(packet", body)
+        self.assertIn("impl_->advertCooldownStarted = true", body)
+        self.assertLess(
+            body.index(approval), body.index("impl_->driver.armOneShotForPacket(")
+        )
+        self.assertLess(
+            body.index("impl_->makeAdvert(settings, current, packet)"),
+            body.index("impl_->client.sendZeroHop(packet)"),
+        )
+        self.assertLess(
+            body.index("impl_->client.prepareFloodRoute(packet"),
+            body.index("impl_->driver.armOneShotForPacket("),
+        )
+
+    def test_advert_readiness_is_authoritative_and_actionable(self) -> None:
+        body = cpp_function(
+            TRANSPORT_SOURCE,
+            "TransportStatus KitsuMeshTransport::advertiseReadiness(",
+        )
+        for required in (
+            "!impl_->identityReady",
+            "validateSettings(settings)",
+            "!impl_->active",
+            "settings.txPolicy != TxPolicy::ExplicitSession",
+            "!impl_->rtc.valid()",
+            "LocationMode::CurrentOnce",
+            "TransportStatus::AdvertiseCooldown",
+            "retryAfterMs = kMeshAdvertiseCooldownMs - elapsed",
+            "!impl_->driver.isInRecvMode()",
+            "impl_->packets.getOutboundTotal() != 0",
+            "TransportStatus::SendBusy",
+        ):
+            self.assertIn(required, body)
+        self.assertLess(
+            body.index("TransportStatus::AdvertiseCooldown"),
+            body.index("TransportStatus::SendBusy"),
+        )
+
     def test_locked_mode_permit_is_consumed_before_radio_start(self) -> None:
         body = cpp_function(TRANSPORT_SOURCE, "bool startSendRaw(")
-        self.assertIn("if (!sessionAllowed) revokeOneShot();", body)
+        self.assertIn("if (oneShotArmed_) revokeOneShot();", body)
         self.assertIn("CustomSX1262Wrapper::startSendRaw(bytes, length)", body)
         self.assertLess(
-            body.index("if (!sessionAllowed) revokeOneShot();"),
+            body.index("if (oneShotArmed_) revokeOneShot();"),
             body.index("CustomSX1262Wrapper::startSendRaw(bytes, length)"),
         )
 
-    def test_authenticated_text_reply_is_scoped_and_rate_limited(self) -> None:
+    def test_delayed_advert_permit_is_bound_to_exact_wire_packet(self) -> None:
+        arm = cpp_function(TRANSPORT_SOURCE, "bool armOneShotForPacket(")
+        self.assertIn("::mesh::Utils::sha256(oneShotPacketDigest_", arm)
+        self.assertIn(
+            "oneShotPermitLifetimeMs_ = kBoundOneShotPermitLifetimeMs", arm
+        )
+
+        start = cpp_function(TRANSPORT_SOURCE, "bool startSendRaw(")
+        self.assertIn("oneShotPacketBound_", start)
+        self.assertIn("::mesh::Utils::sha256(digest", start)
+        self.assertIn("difference |= digest[index] ^ oneShotPacketDigest_[index]", start)
+        self.assertIn("oneShotAllowed = difference == 0U", start)
+        self.assertIn("memset(digest, 0, sizeof(digest))", start)
+
+        revoke = cpp_function(TRANSPORT_SOURCE, "void revokeOneShot(")
+        self.assertIn("oneShotPacketBound_ = false", revoke)
+        self.assertIn(
+            "memset(oneShotPacketDigest_, 0, sizeof(oneShotPacketDigest_))",
+            revoke,
+        )
+
+    def test_delayed_message_permits_are_bound_to_exact_wire_packets(self) -> None:
+        direct = cpp_function(
+            TRANSPORT_SOURCE,
+            "TransportStatus sendDirectText(ContactEntry& recipient",
+        )
+        self.assertIn("bool bindOneShotToPacket = false", direct)
+        self.assertIn(
+            "prepareFloodRoute(packet, ChannelRegionScope::Legacy)", direct
+        )
+        self.assertIn("::mesh::Packet::copyPath(", direct)
+        self.assertIn("bindOneShotToPacket && !armOneShotForPacket(packet)", direct)
+        self.assertIn("releasePacket(packet)", direct)
+        self.assertLess(
+            direct.index("prepareFloodRoute(packet, ChannelRegionScope::Legacy)"),
+            direct.index("bindOneShotToPacket && !armOneShotForPacket(packet)"),
+        )
+        self.assertLess(
+            direct.index("bindOneShotToPacket && !armOneShotForPacket(packet)"),
+            direct.index("sendFloodRoute(packet, ChannelRegionScope::Legacy)"),
+        )
+
+        channel = cpp_function(
+            TRANSPORT_SOURCE,
+            "TransportStatus sendChannelText(const ChannelEntry& channel",
+        )
+        self.assertIn("bool bindOneShotToPacket = false", channel)
+        self.assertIn("prepareFloodRoute(packet, channel.regionScope)", channel)
+        self.assertIn("bindOneShotToPacket && !armOneShotForPacket(packet)", channel)
+        self.assertLess(
+            channel.index("prepareFloodRoute(packet, channel.regionScope)"),
+            channel.index("bindOneShotToPacket && !armOneShotForPacket(packet)"),
+        )
+        self.assertLess(
+            channel.index("bindOneShotToPacket && !armOneShotForPacket(packet)"),
+            channel.index("sendFloodRoute(packet, channel.regionScope)"),
+        )
+
+        exact = cpp_function(
+            TRANSPORT_SOURCE,
+            "bool armOneShotForPacket(::mesh::Packet* packet)",
+        )
+        self.assertIn("packet->writeTo(expectedWire)", exact)
+        self.assertIn("driver_->armOneShotForPacket(", exact)
+        self.assertIn("memset(expectedWire, 0, sizeof(expectedWire))", exact)
+
+        for signature in (
+            "TransportStatus KitsuMeshTransport::sendDirectTextOnce(",
+            "TransportStatus KitsuMeshTransport::sendChannelTextOnce(",
+        ):
+            once = cpp_function(TRANSPORT_SOURCE, signature)
+            self.assertIn("!impl_->driver.isInRecvMode()", once)
+            self.assertNotIn("impl_->driver.armOneShot(", once)
+
+    def test_delivery_repeater_count_is_confirmed_path_evidence_only(self) -> None:
+        begin = cpp_function(TRANSPORT_SOURCE, "void beginPending(")
+        self.assertIn("route == MessageRoute::Direct", begin)
+        self.assertIn("recipient.outPathLen & 63U", begin)
+
+        accept = cpp_function(TRANSPORT_SOURCE, "bool acceptAck(")
+        self.assertIn("authenticatedPathCountKnown", accept)
+        self.assertIn("pendingRoute_ == MessageRoute::Flood", accept)
+        self.assertNotIn("!authenticatedPathCountKnown", accept)
+        self.assertIn("pendingRepeaterCount_", accept)
+        self.assertIn("DeliveryState::Delivered, countKnown, count", accept)
+
+        # A matching simple ACK is valid delivery evidence even when a
+        # flood-routed send has no authenticated PATH count to attach.
+        simple_ack = cpp_function(TRANSPORT_SOURCE, "void onAckRecv(")
+        self.assertIn(
+            "messaging_->acceptAck(reinterpret_cast<const uint8_t*>(&ack), 4U)",
+            simple_ack,
+        )
+
+        path = cpp_function(TRANSPORT_SOURCE, "bool onPeerPathRecv(")
+        self.assertIn("messaging_->acceptAck(extra, extraBytes, true", path)
+        self.assertIn("pathLen & 63U", path)
+
+    def test_channel_receive_contract_rejects_non_flood_routes(self) -> None:
+        receive = cpp_function(TRANSPORT_SOURCE, "void onGroupDataRecv(")
+        route_gate = receive.index("!packet->isRouteFlood()")
+        decode = receive.index("decodeChannelTextPayload(")
+        enqueue = receive.index("messaging_->enqueueMessage(event)")
+        self.assertLess(route_gate, decode)
+        self.assertLess(route_gate, enqueue)
+        self.assertIn("event.route = MessageRoute::Flood", receive)
+        self.assertNotIn("packet->isRouteDirect()", receive)
+
+    def test_authenticated_text_reply_is_legacy_and_rate_limited(self) -> None:
         admission = cpp_function(TRANSPORT_SOURCE, "bool armAuthenticatedReply(")
         self.assertIn("requested.txPolicy != TxPolicy::ExplicitSession", admission)
         self.assertIn("settings_->txPolicy != TxPolicy::ExplicitSession", admission)
         self.assertIn("!sameRadioProfile(requested.radio, settings_->radio)", admission)
         self.assertIn("!takeProtocolReplyToken()", admission)
+        self.assertIn(
+            "oneShotPermitLifetimeMs_ = kOneShotPermitLifetimeMs", admission
+        )
 
         callback = cpp_function(TRANSPORT_SOURCE, "void onPeerDataRecv(")
         authenticated = callback.index("decodeDirectTextPayload(")
         reply = callback.index("authorizeAuthenticatedReply(path)")
         self.assertLess(authenticated, reply)
+        self.assertIn("sendFloodRoute(path, ChannelRegionScope::Legacy", callback)
+
+        ack = cpp_function(TRANSPORT_SOURCE, "void sendAckTo(")
+        self.assertIn("sendFloodRoute(packet, ChannelRegionScope::Legacy", ack)
 
         binding = cpp_function(
             TRANSPORT_SOURCE, "bool authorizeAuthenticatedReply(::mesh::Packet* packet)"

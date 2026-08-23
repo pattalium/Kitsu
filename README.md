@@ -19,10 +19,10 @@ certificate runtime.
 - [Signed USB/Web Serial bootstrap and recovery](https://flash.k32.run)
 - [Public release-surface status](https://status.k32.run)
 
-The product page exposes the signed local-first Android 2.0.0 release. The
-firmware installer remains fail-closed until the matching local-only firmware
-finishes physical acceptance; an unaccepted candidate is never presented as a
-public stable release.
+The product page exposes only the currently accepted, signed, local-first
+Android release. The firmware installer remains fail-closed until the matching
+local-only firmware finishes physical acceptance; an unaccepted candidate is
+never presented as a public stable release.
 
 ## What is included
 

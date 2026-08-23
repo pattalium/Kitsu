@@ -331,6 +331,7 @@ bool parseKind(const Field* field, BleActionKind& output) {
       {"feed", BleActionKind::Feed},
       {"play", BleActionKind::Play},
       {"listen_once", BleActionKind::ListenOnce},
+      {"advertise_once", BleActionKind::AdvertiseOnce},
       {"send_message", BleActionKind::SendMessage},
   };
   for (size_t i = 0U; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
@@ -529,6 +530,23 @@ BleActionDecodeResult decodeParams(const Field* params,
                        output.durationMs) ||
           output.durationMs < kBleActionMinimumListenMs ||
           output.durationMs > kBleActionMaximumListenMs) {
+        return BleActionDecodeResult::InvalidParams;
+      }
+      return BleActionDecodeResult::Ok;
+    }
+
+    case BleActionKind::AdvertiseOnce: {
+      static const char* const schema[] = {"scope"};
+      const Field* scope = findField(fields, count, "scope");
+      if (!exactSchema(fields, count, schema, 1U) || !scope ||
+          scope->kind != ValueKind::String || scope->value.escaped) {
+        return BleActionDecodeResult::InvalidParams;
+      }
+      if (spanEquals(scope->value, "nearby")) {
+        output.advertScope = BleAdvertScope::Nearby;
+      } else if (spanEquals(scope->value, "mesh")) {
+        output.advertScope = BleAdvertScope::Mesh;
+      } else {
         return BleActionDecodeResult::InvalidParams;
       }
       return BleActionDecodeResult::Ok;
@@ -805,6 +823,15 @@ bool validReplayCommand(const BleActionCommand& command) {
     return false;
   }
 
+  if (command.kind == BleActionKind::AdvertiseOnce) {
+    if (command.advertScope != BleAdvertScope::Nearby &&
+        command.advertScope != BleAdvertScope::Mesh) {
+      return false;
+    }
+  } else if (command.advertScope != BleAdvertScope::None) {
+    return false;
+  }
+
   if (command.kind != BleActionKind::SendMessage) {
     return command.messageRoute == BleMessageRoute::None &&
         command.messageTargetBytes == 0U &&
@@ -872,6 +899,14 @@ bool commandDigest(const BleActionCommand& command,
   sha256Update(context,
       reinterpret_cast<const uint8_t*>(command.messageText),
       command.messageTextBytes);
+  // The original v1 digest layout is frozen for every pre-existing action,
+  // especially SendMessage=6. AdvertiseOnce was previously unavailable, so
+  // append its newly retained scope only for kind 5; nearby and mesh can no
+  // longer collide without changing any accepted historical digest.
+  if (command.kind == BleActionKind::AdvertiseOnce) {
+    const uint8_t scope = static_cast<uint8_t>(command.advertScope);
+    sha256Update(context, &scope, sizeof(scope));
+  }
   return sha256Finish(context, output);
 }
 
@@ -906,6 +941,7 @@ const char* bleActionKindName(BleActionKind kind) {
     case BleActionKind::Feed: return "feed";
     case BleActionKind::Play: return "play";
     case BleActionKind::ListenOnce: return "listen_once";
+    case BleActionKind::AdvertiseOnce: return "advertise_once";
     case BleActionKind::SendMessage: return "send_message";
   }
   return "unknown";
@@ -914,6 +950,7 @@ const char* bleActionKindName(BleActionKind kind) {
 bool bleActionKindAvailable(BleActionKind kind) {
   return kind == BleActionKind::Pet || kind == BleActionKind::Feed ||
          kind == BleActionKind::Play || kind == BleActionKind::ListenOnce ||
+         kind == BleActionKind::AdvertiseOnce ||
          kind == BleActionKind::SendMessage;
 }
 

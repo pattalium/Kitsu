@@ -1,0 +1,3 @@
+# Local release activation bundles contain large binaries and detached signatures.
+# They are reviewed and deployed explicitly; never add them to the source repository.
+release-staging/

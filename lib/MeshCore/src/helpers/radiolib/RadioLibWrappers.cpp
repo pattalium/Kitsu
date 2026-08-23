@@ -106,7 +106,7 @@ void RadioLibWrapper::loop() {
   }
 }
 
-void RadioLibWrapper::startRecv() {
+int16_t RadioLibWrapper::startRecvWithStatus() {
   #if defined(USE_LR2021)
   _radio->standby(); // without this LR2021 can throw -706 when calling startReceive after hardware CAD when side detectors are enabled
   #endif
@@ -114,29 +114,98 @@ void RadioLibWrapper::startRecv() {
   if (err == RADIOLIB_ERR_NONE) {
     state = STATE_RX;
   } else {
+    // A retry can follow a nominally successful start whose physical status
+    // was not RX. Never retain that first attempt's software RX state if the
+    // retry itself fails.
+    state = STATE_IDLE;
     MESH_DEBUG_PRINTLN("RadioLibWrapper: error: startReceive(%d)", err);
   }
+  return err;
 }
+
+void RadioLibWrapper::startRecv() {
+  (void)startRecvWithStatus();
+}
+
+#if !RADIOLIB_EXCLUDE_SX126X
+bool RadioLibWrapper::readSx126xStatus(SX126x& radio, uint8_t& output) {
+  output = 0U;
+  Module* module = radio.getMod();
+  if (!module) return false;
+
+  // The pinned SX126x transport is an 8-bit stream command interface with a
+  // one-byte status response at byte 1. Fail closed if a future RadioLib pin
+  // changes any part of that contract instead of issuing a differently shaped
+  // SPI transaction.
+  Module::SPIConfig_t& config = module->spiConfig;
+  if (!config.stream || config.statusPos != 1U ||
+      config.widths[RADIOLIB_MODULE_SPI_WIDTH_CMD] != Module::BITS_8 ||
+      config.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] != Module::BITS_8 ||
+      config.cmds[RADIOLIB_MODULE_SPI_COMMAND_STATUS] !=
+          RADIOLIB_SX126X_CMD_GET_STATUS ||
+      config.cmds[RADIOLIB_MODULE_SPI_COMMAND_NOP] !=
+          RADIOLIB_SX126X_CMD_NOP ||
+      config.parseStatusCb == nullptr) {
+    return false;
+  }
+
+  // SPIreadStream(C0, one byte) normally emits C0,00,00 because Module adds
+  // its configured status-width byte before the requested data. Temporarily
+  // adapting that width to zero emits exactly C0,00 and copies MISO byte 1 --
+  // the SX126x GetStatus response -- into received. Restore the tracked
+  // Module configuration immediately after the transaction and before using
+  // either its return code or the received byte.
+  const Module::BitWidth_t savedStatusWidth =
+      config.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS];
+  config.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] = Module::BITS_0;
+  uint8_t received = 0xFFU;
+  const int16_t result = module->SPIreadStream(
+      RADIOLIB_SX126X_CMD_GET_STATUS, &received, 1U, true, false);
+  config.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] = savedStatusWidth;
+
+  if (config.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] != savedStatusWidth ||
+      result != RADIOLIB_ERR_NONE || received == 0x00U ||
+      received == 0xFFU) {
+    return false;
+  }
+  output = received;
+  return true;
+}
+#endif
 
 bool RadioLibWrapper::isInRecvMode() const {
   return (state & ~STATE_INT_READY) == STATE_RX;
 }
 
 int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
+  incrementSaturating(_receiveDiagnostics.recvRawAttempts);
   int len = 0;
-  if (state & STATE_INT_READY) {
+  const bool interruptReady = (state & STATE_INT_READY) != 0;
+  if (interruptReady) {
+    incrementSaturating(_receiveDiagnostics.interruptReadyAttempts);
     len = _radio->getPacketLength();
+    incrementSaturating(_receiveDiagnostics.packetLengthSamples);
+    _receiveDiagnostics.lastPacketLengthAvailable = true;
+    _receiveDiagnostics.lastPacketLength =
+        len > 0 ? static_cast<uint16_t>(len) : 0U;
     if (len > 0) {
       if (len > sz) { len = sz; }
+      incrementSaturating(_receiveDiagnostics.readDataAttempts);
       int err = _radio->readData(bytes, len);
       if (err != RADIOLIB_ERR_NONE) {
         MESH_DEBUG_PRINTLN("RadioLibWrapper: error: readData(%d)", err);
         len = 0;
-        n_recv_errors++;
+        incrementSaturating(n_recv_errors);
+        incrementSaturating(_receiveDiagnostics.readDataErrors);
+        _receiveDiagnostics.lastReadDataErrorAvailable = true;
+        _receiveDiagnostics.lastReadDataError = err;
       } else {
       //  Serial.print("  readData() -> "); Serial.println(len);
-        n_recv++;
+        incrementSaturating(n_recv);
+        incrementSaturating(_receiveDiagnostics.successfulReads);
       }
+    } else if (len == 0) {
+      incrementSaturating(_receiveDiagnostics.packetLengthZero);
     }
     #if defined(USE_LR2021)
     state = STATE_RX;     // LR2021 stays in Rx after readData, calling startReceive while still in Rx throws -706 errors
@@ -146,11 +215,26 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
   }
 
   if (state != STATE_RX) {
+    if (interruptReady) {
+      incrementSaturating(_receiveDiagnostics.rxRestartAttempts);
+    }
     int err = _radio->startReceive();
+    if (interruptReady) {
+      _receiveDiagnostics.lastRxRestartResultAvailable = true;
+      _receiveDiagnostics.lastRxRestartResult = err;
+    }
     if (err == RADIOLIB_ERR_NONE) {
       state = STATE_RX;
+      if (interruptReady) {
+        incrementSaturating(_receiveDiagnostics.rxRestartSuccesses);
+      }
     } else {
       MESH_DEBUG_PRINTLN("RadioLibWrapper: error: startReceive(%d)", err);
+      if (interruptReady) {
+        incrementSaturating(_receiveDiagnostics.rxRestartErrors);
+        _receiveDiagnostics.lastRxRestartErrorAvailable = true;
+        _receiveDiagnostics.lastRxRestartError = err;
+      }
     }
   }
   return len;

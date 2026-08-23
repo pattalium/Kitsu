@@ -82,6 +82,11 @@ class KitsuBleGattLink {
   void closePairingWindow();
   bool confirmNumericComparison(bool accept);
 
+  // Stops advertising, rejects new links, and disconnects the current link
+  // while the owner is using the physical controller-recovery UI. This lock
+  // is RAM-only and does not grant or expose any BLE operation.
+  bool setLocalControllerRecoveryLocked(bool locked);
+
   // Switches the inbound bound from the 1 KiB pre-auth/handshake maximum to
   // the frozen 16 KiB envelope maximum.  This also drops any partial frame.
   bool setApplicationAuthenticated(bool authenticated);

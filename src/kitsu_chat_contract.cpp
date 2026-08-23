@@ -35,6 +35,18 @@ bool tokenEquals(const Token& token, const char* expected) {
   return true;
 }
 
+bool tokenEqualsExact(const Token& token, const char* expected) {
+  const size_t expectedLength = strlen(expected);
+  return token.length == expectedLength &&
+      memcmp(token.data, expected, expectedLength) == 0;
+}
+
+bool tokenStartsWithExact(const Token& token, const char* prefix) {
+  const size_t prefixLength = strlen(prefix);
+  return token.length >= prefixLength &&
+      memcmp(token.data, prefix, prefixLength) == 0;
+}
+
 bool nextToken(Cursor& cursor, Token& token) {
   while (cursor.offset < cursor.length &&
          asciiSpace(cursor.data[cursor.offset])) {
@@ -177,6 +189,7 @@ const char* parseStatusName(ParseStatus status) {
     case ParseStatus::BadHex: return "bad_hex";
     case ParseStatus::IntegerOverflow: return "integer_overflow";
     case ParseStatus::InvalidRole: return "invalid_role";
+    case ParseStatus::InvalidRegionScope: return "invalid_region_scope";
     case ParseStatus::InvalidChannel: return "invalid_channel";
     case ParseStatus::PublicChannelImmutable:
       return "public_channel_immutable";
@@ -350,6 +363,13 @@ ParseStatus parseCommand(const char* input, size_t inputLength,
     if (!tokenEquals(action, "set")) return ParseStatus::BadSyntax;
     Token secret{};
     if (!nextToken(cursor, secret)) return ParseStatus::BadSyntax;
+    if (tokenStartsWithExact(secret, "region_scope=")) {
+      if (!tokenEqualsExact(secret, "region_scope=EU")) {
+        return ParseStatus::InvalidRegionScope;
+      }
+      output.channelRegionScope = ChannelRegionScope::Eu;
+      if (!nextToken(cursor, secret)) return ParseStatus::BadSyntax;
+    }
     if (!decodeHex(secret, output.channelSecret, kChannelSecretBytes)) {
       return ParseStatus::BadHex;
     }

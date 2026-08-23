@@ -29,12 +29,19 @@ jobs:
         run: >-
           python -m unittest
           tests.test_companion_brain_model
+          tests.test_advert_repeat_tracking
+          tests.test_channel_repeat_tracking
+          tests.test_channel_region_scope
           tests.test_connectivity_foundation
           tests.test_gateway_main_integration_source
           tests.test_kitsu_chat_contract
           tests.test_kitsu_mesh_contract
           tests.test_portrait_ui_layout
+          tests.test_rx_rearm
+          tests.test_rx_observability
           tests.test_stable_release_tooling
+          tests.test_transport_scope
+          tests.test_tx_turnaround
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -79,6 +86,16 @@ jobs:
           call tools\test_kitsu_ble_session.cmd || exit /b 1
           call tools\test_kitsu_ble_action.cmd || exit /b 1
           call tools\test_kitsu_ble_ota.cmd || exit /b 1
+          call tools\test_kitsu_advert_repeat_tracker.cmd || exit /b 1
+          call tools\test_kitsu_channel_repeat_tracker.cmd || exit /b 1
+          call tools\test_kitsu_endpoint_dispatcher.cmd || exit /b 1
+          call tools\test_kitsu_endpoint_rx_policy.cmd || exit /b 1
+          call tools\test_kitsu_message_read_contract.cmd || exit /b 1
+          call tools\test_kitsu_radio_irq_poll.cmd || exit /b 1
+          call tools\test_kitsu_repeat_wire.cmd || exit /b 1
+          call tools\test_kitsu_rx_rearm.cmd || exit /b 1
+          call tools\test_kitsu_transport_scope.cmd || exit /b 1
+          call tools\test_kitsu_tx_turnaround.cmd || exit /b 1
       - name: Owner-reflashable and no-eFuse release audits
         shell: cmd
         run: |
@@ -98,14 +115,20 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
+      - name: Permit the checked Gradle wrapper to run
+        run: chmod +x gradlew
       - name: Unit, launcher-resource, and release-policy tests
-        run: gradle --no-daemon testDebugUnitTest testReleaseUnitTest
+        run: >-
+          ./gradlew --no-daemon --dependency-verification strict
+          testDebugUnitTest testReleaseUnitTest
       - name: Android lint
-        run: gradle --no-daemon lintDebug lintRelease
+        run: >-
+          ./gradlew --no-daemon --dependency-verification strict
+          lintDebug lintRelease
       - name: Assemble testable application artifacts
-        run: gradle --no-daemon assembleDebug assembleAndroidTest
+        run: >-
+          ./gradlew --no-daemon --dependency-verification strict
+          assembleDebug assembleAndroidTest verifyDebug16KbPageCompatibility
 
   android-instrumentation:
     # A pinned AGP-managed virtual device executes the instrumentation contract.
@@ -128,13 +151,13 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
-      - name: API 35 managed-device instrumentation contract
+      - name: Permit the checked Gradle wrapper to run
+        run: chmod +x gradlew
+      - name: API 36 managed-device instrumentation contract
         run: >-
-          gradle --no-daemon
+          ./gradlew --no-daemon --dependency-verification strict
           -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
-          kitsuCiApi35DebugAndroidTest
+          kitsuCiApi36DebugAndroidTest
       - name: Preserve managed-device reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

@@ -24,13 +24,23 @@ enum class BleMessageRoute : uint8_t {
   Channel = 2,
 };
 
+enum class BleAdvertScope : uint8_t {
+  None = 0,
+  Nearby = 1,
+  Mesh = 2,
+};
+
 enum class BleActionKind : uint8_t {
   Pet = 1,
   Feed = 2,
   Play = 3,
   ListenOnce = 4,
-  // Value 5 was used by a withdrawn action. Keep SendMessage at 6 so an
-  // update cannot reinterpret a still-live persisted replay digest.
+  // Value 5 historically named this exact action. Restoring the same value
+  // and semantics is safe; the withdrawn implementation never made it
+  // available and therefore could not persist an accepted replay record.
+  AdvertiseOnce = 5,
+  // Keep SendMessage at 6 so an update cannot reinterpret a still-live
+  // persisted replay digest.
   SendMessage = 6,
 };
 
@@ -60,6 +70,9 @@ struct BleActionCommand {
   uint32_t expiresAtEpoch = 0U;
   // Populated only for listen_once. It stays zero for every other kind.
   uint32_t durationMs = 0U;
+  // Populated only for advertise_once. The scope is explicit on the wire so
+  // zero-hop and flood requests have distinct durable replay bindings.
+  BleAdvertScope advertScope = BleAdvertScope::None;
   // Populated only for send_message. Direct targets are canonical unpadded
   // base64url 32-byte MeshCore public keys (43 characters). Channel targets
   // are canonical decimal slots 0..3. Text is decoded UTF-8, not JSON source.

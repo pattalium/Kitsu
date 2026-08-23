@@ -18,7 +18,10 @@
 #include "kitsu_esp32_security.h"
 #include "kitsu_legacy_connectivity_retirement.h"
 #include "kitsu_mesh_config.h"
+#include "kitsu_message_read_contract.h"
 #include "kitsu_mesh_transport.h"
+#include "kitsu_rx_rearm_policy.h"
+#include "kitsu_transport_scope.h"
 #include "mesh_discovery_journal.h"
 #include "mini_games.h"
 #include "portrait_font.h"
@@ -27,7 +30,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.12.0";
+constexpr char FIRMWARE_VERSION[] = "0.16.5";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 
@@ -49,6 +52,10 @@ constexpr uint8_t PIN_BATTERY_CTRL = 37;  // Divider enable, active-low
 
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 30;
 constexpr uint32_t BUTTON_HOLD_MS = 750;
+constexpr uint32_t CONTROLLER_RECOVERY_HOLD_MS = 5000UL;
+constexpr uint32_t CONTROLLER_RECOVERY_CONFIRM_TIMEOUT_MS = 15000UL;
+constexpr uint32_t CONTROLLER_RECOVERY_BROWSE_TIMEOUT_MS = 30000UL;
+constexpr uint32_t CONTROLLER_RECOVERY_RESULT_TIMEOUT_MS = 8000UL;
 constexpr uint32_t SCREEN_TIMEOUT_MS = 9000;
 constexpr uint32_t LISTEN_TIME_MS = 60UL * 1000UL;
 constexpr uint32_t ENERGY_TICK_MS = 30UL * 60UL * 1000UL;
@@ -108,11 +115,23 @@ enum class Screen : uint8_t {
   Sleep,
   Status,
   PairPhone,
+  ControllerManager,
+  ControllerConfirm,
+  ControllerResult,
 };
 
 enum class ConnectionAction : uint8_t {
   Bluetooth = 0,
+  Controllers,
   Back,
+};
+
+enum class ControllerRecoveryResult : uint8_t {
+  None = 0,
+  RemovedSlot,
+  RemovedAll,
+  Unchanged,
+  StorageNeedsReboot,
 };
 
 enum class ActiveGame : uint8_t { None, SignalCatch, PounceFetch };
@@ -235,6 +254,12 @@ enum class ChatJournalState : uint8_t {
 
 struct ChatJournalEntry {
   uint32_t id = 0;
+  // Entries retain their journal generation so a uint32 ID/revision rollover
+  // can never relabel old rows under the new response-level session.
+  uint32_t journalSession = 0;
+  // Stable message identity and mutable record revision are deliberately
+  // separate. Delivery transitions keep id unchanged and advance revision.
+  uint32_t revision = 0;
   uint32_t timestamp = 0;
   uint32_t expectedAck = 0;
   uint32_t queuedAt = 0;
@@ -245,18 +270,37 @@ struct ChatJournalEntry {
   ChatJournalState state = ChatJournalState::Received;
   bool authenticated = false;
   bool unread = false;
+  bool repeaterCountKnown = false;
+  uint8_t repeaterCount = 0;
+  // Outbound channel rebroadcast copies observed locally through MeshCore's
+  // pre-dedup receive hook. Not a unique-repeater or delivery count.
+  bool repeatCountKnown = false;
+  uint8_t repeatCount = 0;
+  bool repeatObservationOpen = false;
+  uint8_t repeatSourceCount = 0U;
+  kitsu868::mesh::ChannelRepeatSource
+      repeatSources[kitsu868::mesh::kChannelRepeatSourceCapacity]{};
+  bool repeatSourcesTruncated = false;
   uint8_t contactPublicKey[32]{};
   uint8_t channelSlot = 0xff;
   char senderName[33]{};
   char text[kitsu868::mesh::kMeshTextCapacity]{};
+  float rssi = 0.0f;
   float snr = 0.0f;
 };
 
 ChatJournalEntry chatJournal[kitsu868::chat::kInboxCapacity]{};
+static_assert(kitsu868::chat::kInboxCapacity ==
+                  kitsu868::message_read::kMaximumMessageIds,
+              "BLE read batch must cover the bounded message journal");
+static_assert(kitsu868::chat::kInboxCapacity ==
+                  kitsu868::mesh::kChannelRepeatTrackerCapacity,
+              "every visible channel row needs a repeat lifecycle slot");
 uint8_t chatJournalStart = 0;
 uint8_t chatJournalCount = 0;
 uint32_t chatJournalDropped = 0;
 uint32_t nextChatMessageId = 1;
+uint32_t chatJournalRevision = 0;
 uint32_t chatSession = 0;
 uint8_t unreadChatMessages = 0;
 uint8_t inboxSelection = 0;
@@ -267,8 +311,25 @@ uint32_t companionBleRefreshSequence = 0U;
 
 bool rawButton = false;
 bool stableButton = false;
+bool buttonHoldConsumed = false;
 uint32_t buttonChangedAt = 0;
 uint32_t buttonPressedAt = 0;
+constexpr uint8_t CONTROLLER_RECOVERY_RESET_INDEX =
+    kitsu868::connectivity::kKitsuControllerCapacity;
+constexpr uint8_t CONTROLLER_RECOVERY_BACK_INDEX =
+    CONTROLLER_RECOVERY_RESET_INDEX + 1U;
+constexpr uint8_t CONTROLLER_RECOVERY_OPTION_COUNT =
+    CONTROLLER_RECOVERY_BACK_INDEX + 1U;
+static_assert(kitsu868::connectivity::kKitsuControllerCapacity == 4U,
+              "physical controller manager requires four bounded slots");
+uint8_t controllerRecoverySelection = 0U;
+uint8_t controllerRecoveryTargetSlot = 0U;
+uint8_t controllerRecoveryTargetId[
+    kitsu868::connectivity::kKitsuControllerIdBytes]{};
+uint8_t controllerRecoveryOriginalCount = 0U;
+uint32_t controllerRecoveryDeadline = 0U;
+ControllerRecoveryResult controllerRecoveryResult =
+    ControllerRecoveryResult::None;
 String serialLine;
 bool serialOverflow = false;
 bool serialControlRejected = false;
@@ -283,6 +344,10 @@ bool playKitsu();
 bool startListening(uint32_t durationMs = LISTEN_TIME_MS);
 kitsu868::CompanionVitals companionVitals();
 ChatJournalEntry& appendChatJournal();
+void advanceChatJournalGeneration();
+void touchChatJournal(ChatJournalEntry& entry);
+uint8_t applyChatJournalReadPlan(const uint8_t* journalIndexes,
+                                 uint8_t indexCount);
 bool commitMeshRadioSettings(const kitsu868::mesh::Settings& candidate,
                              const char*& error);
 void enterScreen(Screen next);
@@ -307,6 +372,7 @@ class FirmwareBleBridge final
  public:
   bool begin() {
     begun_ = false;
+    localControllerRecoveryLocked_ = false;
     if (!connectivitySecurityReady || wisp.uid.length() != 6U ||
         !session_.begin(deviceSecurity, crypto_, *this, *this,
                         wisp.uid.c_str())) {
@@ -342,11 +408,31 @@ class FirmwareBleBridge final
     session_.cancelPendingPairing();
   }
 
+  bool disconnectForLocalControllerRecovery() {
+    if (!begun_) return true;
+    link_.closePairingWindow();
+    session_.setPairingWindow(false, 0U, millis());
+    session_.cancelPendingPairing();
+    localControllerRecoveryLocked_ =
+        link_.setLocalControllerRecoveryLocked(true);
+    return localControllerRecoveryLocked_;
+  }
+
+  bool endLocalControllerRecovery() {
+    if (!begun_) return true;
+    if (!link_.setLocalControllerRecoveryLocked(false)) return false;
+    localControllerRecoveryLocked_ = false;
+    return true;
+  }
+
   bool confirmNumeric() { return begun_ && link_.confirmNumericComparison(true); }
   bool confirmController(uint32_t now) {
     return begun_ && session_.confirmPendingPairing(now);
   }
   bool ready() const { return begun_; }
+  bool localControllerRecoveryLocked() const {
+    return !begun_ || localControllerRecoveryLocked_;
+  }
   kitsu868::connectivity::BleLinkStatus linkStatus(uint32_t now) const {
     return link_.status(now);
   }
@@ -409,6 +495,7 @@ class FirmwareBleBridge final
   kitsu868::connectivity::KitsuBleSession session_{};
   kitsu868::connectivity::Esp32CompanionCrypto crypto_{};
   bool begun_ = false;
+  bool localControllerRecoveryLocked_ = false;
 };
 
 FirmwareBleBridge companionBle;
@@ -460,6 +547,8 @@ String jsonEscaped(const String& value) {
 }
 
 const char* chatStateName(ChatJournalState state);
+const char* chatLocalTxName(const ChatJournalEntry& entry);
+const char* chatDeliveryAckName(const ChatJournalEntry& entry);
 
 namespace companion_api {
 
@@ -759,6 +848,10 @@ const char* bleMeshErrorName(kitsu868::mesh::TransportStatus status) {
   using kitsu868::mesh::TransportStatus;
   switch (status) {
     case TransportStatus::Disabled: return "mesh_disabled";
+    case TransportStatus::IdentityStorageFailed:
+      return "mesh_identity_unavailable";
+    case TransportStatus::RadioInitFailed:
+      return "mesh_radio_unavailable";
     case TransportStatus::TimeUnset: return "time_unset";
     case TransportStatus::TxLocked: return "tx_policy_locked";
     case TransportStatus::PacketPoolFull: return "queue_full";
@@ -772,6 +865,20 @@ const char* bleMeshErrorName(kitsu868::mesh::TransportStatus status) {
     case TransportStatus::InvalidArgument: return "invalid_argument";
     default: return kitsu868::mesh::transportStatusName(status);
   }
+}
+
+const char* bleAdvertiseReadinessError(uint32_t& retryAfterMs) {
+  retryAfterMs = 0U;
+  if (!companionPack.valid()) return "companion_unavailable";
+  if (!meshTransport.identityReady()) return "mesh_identity_unavailable";
+  if (!meshSettings.enabled) return "mesh_disabled";
+  if (!meshTransport.active()) return "mesh_radio_unavailable";
+  const kitsu868::mesh::TransportStatus status =
+      meshTransport.advertiseReadiness(
+          meshSettings, meshCurrentLocation, retryAfterMs);
+  return status == kitsu868::mesh::TransportStatus::Ok
+             ? nullptr
+             : bleMeshErrorName(status);
 }
 
 bool decodeCanonicalPeerKey(
@@ -890,6 +997,29 @@ kitsu868::mesh::TransportStatus queueBleMessage(
   return TransportStatus::Ok;
 }
 
+kitsu868::mesh::TransportStatus queueBleAdvert(
+    const kitsu868::connectivity::BleActionCommand& command) {
+  using kitsu868::connectivity::BleAdvertScope;
+  using kitsu868::mesh::AdvertScope;
+  using kitsu868::mesh::TransportStatus;
+
+  AdvertScope scope = AdvertScope::Nearby;
+  if (command.advertScope == BleAdvertScope::Mesh) {
+    scope = AdvertScope::Flood;
+  } else if (command.advertScope != BleAdvertScope::Nearby) {
+    return TransportStatus::InvalidArgument;
+  }
+  const TransportStatus status = meshTransport.introduceOnce(
+      scope, meshSettings, meshCurrentLocation, true);
+  if (status != TransportStatus::Ok) return status;
+  if (meshSettings.locationMode ==
+      kitsu868::mesh::LocationMode::CurrentOnce) {
+    kitsu868::mesh::clearCurrentLocationOnce(meshCurrentLocation);
+  }
+  companionBleRefreshDirty = true;
+  return TransportStatus::Ok;
+}
+
 bool rejectAction(const kitsu868::connectivity::BleActionCommand& command,
                   const char* errorCode, uint8_t* output, size_t capacity,
                   size_t& outputBytes) {
@@ -967,11 +1097,19 @@ bool applyAction(const uint8_t* payload, size_t payloadBytes,
     return rejected("action_id_conflict");
   }
   if (replay == BleActionReplayDecision::DuplicateApplied) {
-    return accepted(command.kind == BleActionKind::SendMessage
+    return accepted(command.kind == BleActionKind::SendMessage ||
+                            command.kind == BleActionKind::AdvertiseOnce
                         ? "queued" : "applied");
   }
   if (replay == BleActionReplayDecision::DuplicateIndeterminate) {
     return rejected("action_result_unknown");
+  }
+
+  if (command.kind == BleActionKind::AdvertiseOnce) {
+    uint32_t retryAfterMs = 0U;
+    const char* const readiness =
+        bleAdvertiseReadinessError(retryAfterMs);
+    if (readiness) return rejected(readiness);
   }
 
   // Persist the idempotency reservation before invoking a side effect. Keep
@@ -996,6 +1134,20 @@ bool applyAction(const uint8_t* payload, size_t payloadBytes,
     case BleActionKind::ListenOnce:
       applied = startListening(command.durationMs);
       break;
+    case BleActionKind::AdvertiseOnce: {
+      const kitsu868::mesh::TransportStatus status =
+          queueBleAdvert(command);
+      if (status != kitsu868::mesh::TransportStatus::Ok) {
+        if (!restoreActionReplaySnapshot()) {
+          bleActionReplayReady = false;
+          Serial.println("KITSU_WARN ble_action_rollback=flush_failed");
+          return rejected("action_result_unknown");
+        }
+        return rejected(bleMeshErrorName(status));
+      }
+      applied = true;
+      break;
+    }
     case BleActionKind::SendMessage: {
       const kitsu868::mesh::TransportStatus status =
           queueBleMessage(command, queuedMessage);
@@ -1033,18 +1185,299 @@ bool applyAction(const uint8_t* payload, size_t payloadBytes,
     return rejected("action_result_unknown");
   }
   memset(bleActionReplayScratch, 0, sizeof(bleActionReplayScratch));
-  return accepted(command.kind == BleActionKind::SendMessage
+  return accepted(command.kind == BleActionKind::SendMessage ||
+                          command.kind == BleActionKind::AdvertiseOnce
                       ? "queued" : "applied");
+}
+
+const char* advertTransmitStateName(
+    kitsu868::mesh::AdvertTransmitState state) {
+  using kitsu868::mesh::AdvertTransmitState;
+  switch (state) {
+    case AdvertTransmitState::Queued: return "queued";
+    case AdvertTransmitState::Sent: return "sent";
+    case AdvertTransmitState::TxFailed: return "tx_failed";
+  }
+  return nullptr;
+}
+
+bool validFloodAdvertStatus(const kitsu868::mesh::FloodAdvertStatus& status) {
+  using kitsu868::mesh::AdvertTransmitState;
+  if (!status.available ||
+      status.emittedAt < kitsu868::mesh::kAdvertMinimumEmittedAt ||
+      status.emittedAt > kitsu868::mesh::kAdvertMaximumEmittedAt) {
+    return false;
+  }
+  switch (status.state) {
+    case AdvertTransmitState::Sent:
+      if (!status.repeatCountKnown ||
+          status.sourceCount >
+              kitsu868::mesh::kAdvertRepeatSourceCapacity ||
+          status.sourceCount > status.repeatCount ||
+          (status.sourcesTruncated &&
+           (status.sourceCount !=
+                kitsu868::mesh::kAdvertRepeatSourceCapacity ||
+            status.repeatCount <
+                kitsu868::mesh::kAdvertRepeatSourceCapacity + 1U)) ||
+          (status.repeatCount == 0U && status.sourcesTruncated)) {
+        return false;
+      }
+      for (uint8_t index = 0U; index < status.sourceCount; ++index) {
+        const kitsu868::mesh::AdvertRepeatSource& source =
+            status.sources[index];
+        if (source.tokenBytes == 0U ||
+            source.tokenBytes >
+                kitsu868::mesh::kAdvertRepeatSourceTokenBytes) {
+          return false;
+        }
+        for (uint8_t prior = 0U; prior < index; ++prior) {
+          const kitsu868::mesh::AdvertRepeatSource& candidate =
+              status.sources[prior];
+          if (candidate.tokenBytes == source.tokenBytes &&
+              memcmp(candidate.token, source.token, source.tokenBytes) == 0) {
+            return false;
+          }
+        }
+      }
+      return true;
+    case AdvertTransmitState::Queued:
+    case AdvertTransmitState::TxFailed:
+      return !status.repeatCountKnown && status.repeatCount == 0U &&
+          !status.observationOpen && status.sourceCount == 0U &&
+          !status.sourcesTruncated;
+  }
+  return false;
+}
+
+bool validNearbyAdvertStatus(
+    const kitsu868::mesh::NearbyAdvertStatus& status) {
+  if (!status.available ||
+      status.emittedAt < kitsu868::mesh::kAdvertMinimumEmittedAt ||
+      status.emittedAt > kitsu868::mesh::kAdvertMaximumEmittedAt) {
+    return false;
+  }
+  return advertTransmitStateName(status.state) != nullptr;
+}
+
+const char* repeatDiagnosticResultName(
+    kitsu868::mesh::RepeatDiagnosticResult result) {
+  using kitsu868::mesh::RepeatDiagnosticResult;
+  switch (result) {
+    case RepeatDiagnosticResult::None: return "none";
+    case RepeatDiagnosticResult::NoActiveHash: return "no_active_hash";
+    case RepeatDiagnosticResult::WireMismatch: return "wire_mismatch";
+    case RepeatDiagnosticResult::DigestMismatch: return "digest_mismatch";
+    case RepeatDiagnosticResult::Recorded: return "recorded";
+    case RepeatDiagnosticResult::Saturated: return "saturated";
+  }
+  return nullptr;
+}
+
+void appendUpperHex(String& output, const uint8_t* bytes, size_t byteCount) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  for (size_t index = 0U; index < byteCount; ++index) {
+    output += kHex[(bytes[index] >> 4U) & 0x0fU];
+    output += kHex[bytes[index] & 0x0fU];
+  }
+}
+
+void appendIrqFlagsOrNull(String& output, uint32_t samples, uint16_t flags) {
+  if (samples == 0U) {
+    output += "null";
+    return;
+  }
+  const uint8_t bytes[2] = {
+      static_cast<uint8_t>(flags >> 8U), static_cast<uint8_t>(flags)};
+  output += '"';
+  appendUpperHex(output, bytes, sizeof(bytes));
+  output += '"';
+}
+
+void appendReceiveObservability(
+    String& output, const kitsu868::mesh::RepeatDiagnostics& diagnostics) {
+  output += ",\"dio1_poll_calls\":";
+  output += String(diagnostics.dio1Polls);
+  output += ",\"dio1_high_polls\":";
+  output += String(diagnostics.dio1HighPolls);
+  output += ",\"dio1_high_edges\":";
+  output += String(diagnostics.dio1HighEdges);
+  output += ",\"dio1_callback_calls\":";
+  output += String(diagnostics.dio1Callbacks);
+  output += ",\"irq_samples\":";
+  output += String(diagnostics.irqSamples);
+  output += ",\"irq_dio_asserted_samples\":";
+  output += String(diagnostics.irqDioAssertedSamples);
+  output += ",\"irq_low_rate_samples\":";
+  output += String(diagnostics.irqLowRateSamples);
+  output += ",\"irq_observation_open\":";
+  output += diagnostics.irqObservationOpen ? "true" : "false";
+  output += ",\"irq_observation_remaining_ms\":";
+  output += String(diagnostics.irqObservationRemainingMs);
+  output += ",\"last_irq_flags\":";
+  appendIrqFlagsOrNull(output, diagnostics.irqSamples,
+                       diagnostics.lastIrqFlags);
+  output += ",\"last_dio_irq_flags\":";
+  appendIrqFlagsOrNull(output, diagnostics.irqDioAssertedSamples,
+                       diagnostics.lastDioIrqFlags);
+  output += ",\"last_low_rate_irq_flags\":";
+  appendIrqFlagsOrNull(output, diagnostics.irqLowRateSamples,
+                       diagnostics.lastLowRateIrqFlags);
+  output += ",\"irq_rx_done_observations\":";
+  output += String(diagnostics.irqRxDoneObservations);
+  output += ",\"irq_crc_error_observations\":";
+  output += String(diagnostics.irqCrcErrorObservations);
+  output += ",\"irq_header_error_observations\":";
+  output += String(diagnostics.irqHeaderErrorObservations);
+  output += ",\"irq_timeout_observations\":";
+  output += String(diagnostics.irqTimeoutObservations);
+  output += ",\"irq_preamble_observations\":";
+  output += String(diagnostics.irqPreambleObservations);
+  output += ",\"irq_header_valid_observations\":";
+  output += String(diagnostics.irqHeaderValidObservations);
+  output += ",\"irq_sync_word_valid_observations\":";
+  output += String(diagnostics.irqSyncWordValidObservations);
+  output += ",\"dio_irq_rx_done_observations\":";
+  output += String(diagnostics.dioIrqRxDoneObservations);
+  output += ",\"dio_irq_crc_error_observations\":";
+  output += String(diagnostics.dioIrqCrcErrorObservations);
+  output += ",\"dio_irq_header_error_observations\":";
+  output += String(diagnostics.dioIrqHeaderErrorObservations);
+  output += ",\"dio_irq_timeout_observations\":";
+  output += String(diagnostics.dioIrqTimeoutObservations);
+  output += ",\"dio_irq_preamble_observations\":";
+  output += String(diagnostics.dioIrqPreambleObservations);
+  output += ",\"dio_irq_header_valid_observations\":";
+  output += String(diagnostics.dioIrqHeaderValidObservations);
+  output += ",\"dio_irq_sync_word_valid_observations\":";
+  output += String(diagnostics.dioIrqSyncWordValidObservations);
+  output += ",\"low_rate_irq_rx_done_observations\":";
+  output += String(diagnostics.lowRateIrqRxDoneObservations);
+  output += ",\"low_rate_irq_crc_error_observations\":";
+  output += String(diagnostics.lowRateIrqCrcErrorObservations);
+  output += ",\"low_rate_irq_header_error_observations\":";
+  output += String(diagnostics.lowRateIrqHeaderErrorObservations);
+  output += ",\"low_rate_irq_timeout_observations\":";
+  output += String(diagnostics.lowRateIrqTimeoutObservations);
+  output += ",\"low_rate_irq_preamble_observations\":";
+  output += String(diagnostics.lowRateIrqPreambleObservations);
+  output += ",\"low_rate_irq_header_valid_observations\":";
+  output += String(diagnostics.lowRateIrqHeaderValidObservations);
+  output += ",\"low_rate_irq_sync_word_valid_observations\":";
+  output += String(diagnostics.lowRateIrqSyncWordValidObservations);
+  output += ",\"recv_raw_attempts\":";
+  output += String(diagnostics.recvRawAttempts);
+  output += ",\"recv_interrupt_ready_attempts\":";
+  output += String(diagnostics.recvInterruptReadyAttempts);
+  output += ",\"recv_packet_length_samples\":";
+  output += String(diagnostics.recvPacketLengthSamples);
+  output += ",\"recv_packet_length_zero\":";
+  output += String(diagnostics.recvPacketLengthZero);
+  output += ",\"last_recv_packet_length\":";
+  if (diagnostics.lastRecvPacketLengthAvailable) {
+    output += String(diagnostics.lastRecvPacketLength);
+  } else {
+    output += "null";
+  }
+  output += ",\"recv_read_data_attempts\":";
+  output += String(diagnostics.recvReadDataAttempts);
+  output += ",\"recv_successful_reads\":";
+  output += String(diagnostics.recvSuccessfulReads);
+  output += ",\"recv_read_data_errors\":";
+  output += String(diagnostics.recvReadDataErrors);
+  output += ",\"last_recv_read_data_error\":";
+  if (diagnostics.lastRecvReadDataErrorAvailable) {
+    output += String(diagnostics.lastRecvReadDataError);
+  } else {
+    output += "null";
+  }
+  output += ",\"recv_rx_restart_attempts\":";
+  output += String(diagnostics.recvRxRestartAttempts);
+  output += ",\"recv_rx_restart_successes\":";
+  output += String(diagnostics.recvRxRestartSuccesses);
+  output += ",\"recv_rx_restart_errors\":";
+  output += String(diagnostics.recvRxRestartErrors);
+  output += ",\"last_recv_rx_restart_result\":";
+  if (diagnostics.lastRecvRxRestartResultAvailable) {
+    output += String(diagnostics.lastRecvRxRestartResult);
+  } else {
+    output += "null";
+  }
+  output += ",\"last_recv_rx_restart_error\":";
+  if (diagnostics.lastRecvRxRestartErrorAvailable) {
+    output += String(diagnostics.lastRecvRxRestartError);
+  } else {
+    output += "null";
+  }
+  output += ",\"short_frame_rejected\":";
+  output += String(diagnostics.shortFrameRejected);
+  output += ",\"last_short_frame_length\":";
+  if (diagnostics.lastShortFrameLengthAvailable) {
+    output += String(diagnostics.lastShortFrameLength);
+  } else {
+    output += "null";
+  }
+  output += ",\"max_mesh_loop_gap_ms\":";
+  output += String(diagnostics.maxMeshLoopGapMs);
 }
 
 bool buildState(const uint8_t* payload, size_t payloadBytes, String& output) {
   if (!emptyObject(payload, payloadBytes)) return false;
+  uint32_t advertiseRetryAfterMs = 0U;
+  const char* const advertiseError =
+      bleAdvertiseReadinessError(advertiseRetryAfterMs);
+  kitsu868::mesh::FloodAdvertStatus lastFloodAdvert{};
+  const bool hasLastFloodAdvert =
+      meshTransport.lastFloodAdvertStatus(lastFloodAdvert);
+  if (hasLastFloodAdvert && !validFloodAdvertStatus(lastFloodAdvert)) {
+    return false;
+  }
+  kitsu868::mesh::NearbyAdvertStatus lastNearbyAdvert{};
+  const bool hasLastNearbyAdvert =
+      meshTransport.lastNearbyAdvertStatus(lastNearbyAdvert);
+  if (hasLastNearbyAdvert && !validNearbyAdvertStatus(lastNearbyAdvert)) {
+    return false;
+  }
+  kitsu868::mesh::RepeatDiagnostics repeatDiagnostics{};
+  if (!meshTransport.repeatDiagnostics(repeatDiagnostics)) return false;
+  if (repeatDiagnostics.lastFloodTxAvailable &&
+      ((repeatDiagnostics.lastFloodTxScoped &&
+        (repeatDiagnostics.lastFloodTxTransportCode == 0U ||
+         repeatDiagnostics.lastFloodTxTransportCode == 0xffffU)) ||
+       (!repeatDiagnostics.lastFloodTxScoped &&
+        repeatDiagnostics.lastFloodTxTransportCode != 0U))) {
+    return false;
+  }
+  if (repeatDiagnostics.lastChannelAvailable &&
+      (repeatDiagnostics.lastPathHashSize < 1U ||
+       repeatDiagnostics.lastPathHashSize > 3U ||
+       repeatDiagnostics.lastPathCount == 0U ||
+       static_cast<size_t>(repeatDiagnostics.lastPathHashSize) *
+               repeatDiagnostics.lastPathCount !=
+           repeatDiagnostics.lastPathBytes ||
+       repeatDiagnostics.lastPathBytes >
+           kitsu868::mesh::kRepeatDiagnosticPathBytes ||
+       repeatDiagnosticResultName(repeatDiagnostics.lastResult) == nullptr)) {
+    return false;
+  }
+  if (repeatDiagnostics.lastAdvertAvailable &&
+      (repeatDiagnostics.lastAdvertPathHashSize < 1U ||
+       repeatDiagnostics.lastAdvertPathHashSize > 3U ||
+       repeatDiagnostics.lastAdvertPathCount == 0U ||
+       static_cast<size_t>(repeatDiagnostics.lastAdvertPathHashSize) *
+               repeatDiagnostics.lastAdvertPathCount !=
+           repeatDiagnostics.lastAdvertPathBytes ||
+       repeatDiagnostics.lastAdvertPathBytes >
+           kitsu868::mesh::kRepeatDiagnosticPathBytes ||
+       repeatDiagnosticResultName(repeatDiagnostics.lastAdvertResult) ==
+           nullptr)) {
+    return false;
+  }
   const kitsu868::discovery::JournalStatus journal = discoveryJournal.status();
   const kitsu868::connectivity::DeviceSecurityStatus security =
       deviceSecurity.status();
   const kitsu868::CompanionMood mood =
       companionBrain.mood(companionVitals());
-  output.reserve(960U);
+  output.reserve(5200U);
   output = "{\"schema\":\"kitsu.state.v1\",\"device_uid\":\"";
   output += wisp.uid;
   output += "\",\"firmware_version\":\"";
@@ -1105,6 +1538,308 @@ bool buildState(const uint8_t* payload, size_t payloadBytes, String& output) {
   output += meshSettings.enabled ? "true" : "false";
   output += ",\"mesh_time_valid\":";
   output += meshTransport.timeValid() ? "true" : "false";
+  output += ",\"mesh_identity_ready\":";
+  output += meshTransport.identityReady() ? "true" : "false";
+  output += ",\"mesh_advertise_ready\":";
+  output += advertiseError ? "false" : "true";
+  output += ",\"mesh_advertise_retry_after_ms\":";
+  output += String(advertiseRetryAfterMs);
+  output += ",\"mesh_advertise_error\":";
+  if (advertiseError) {
+    output += '"';
+    output += advertiseError;
+    output += '"';
+  } else {
+    output += "null";
+  }
+  output += ",\"mesh_last_flood_advert\":";
+  if (!hasLastFloodAdvert) {
+    output += "null";
+  } else {
+    output += "{\"emitted_at\":";
+    output += String(lastFloodAdvert.emittedAt);
+    output += ",\"state\":\"";
+    output += advertTransmitStateName(lastFloodAdvert.state);
+    output += "\",\"repeat_count\":";
+    if (lastFloodAdvert.repeatCountKnown) {
+      output += String(lastFloodAdvert.repeatCount);
+    } else {
+      output += "null";
+    }
+    output += ",\"observation_open\":";
+    output += lastFloodAdvert.observationOpen ? "true" : "false";
+    output += '}';
+  }
+  // Preserve mesh_last_flood_advert's strict legacy object byte shape. The
+  // versioned sibling adds bounded returned-path evidence for 0.16.1+ clients.
+  output += ",\"mesh_last_flood_advert_v2\":";
+  if (!hasLastFloodAdvert) {
+    output += "null";
+  } else {
+    output += "{\"emitted_at\":";
+    output += String(lastFloodAdvert.emittedAt);
+    output += ",\"state\":\"";
+    output += advertTransmitStateName(lastFloodAdvert.state);
+    output += "\",\"repeat_count\":";
+    if (lastFloodAdvert.repeatCountKnown) {
+      output += String(lastFloodAdvert.repeatCount);
+    } else {
+      output += "null";
+    }
+    output += ",\"observation_open\":";
+    output += lastFloodAdvert.observationOpen ? "true" : "false";
+    output += ",\"repeat_sources\":";
+    if (!lastFloodAdvert.repeatCountKnown) {
+      output += "null,\"repeat_sources_truncated\":null";
+    } else {
+      output += '[';
+      for (uint8_t index = 0U; index < lastFloodAdvert.sourceCount;
+           ++index) {
+        if (index != 0U) output += ',';
+        output += "{\"last_hop_token\":\"";
+        appendUpperHex(output, lastFloodAdvert.sources[index].token,
+                       lastFloodAdvert.sources[index].tokenBytes);
+        output += "\"}";
+      }
+      output += "],\"repeat_sources_truncated\":";
+      output += lastFloodAdvert.sourcesTruncated ? "true" : "false";
+    }
+    output += '}';
+  }
+  output += ",\"mesh_last_nearby_advert\":";
+  if (!hasLastNearbyAdvert) {
+    output += "null";
+  } else {
+    output += "{\"emitted_at\":";
+    output += String(lastNearbyAdvert.emittedAt);
+    output += ",\"state\":\"";
+    output += advertTransmitStateName(lastNearbyAdvert.state);
+    output += "\",\"repeat_count\":null,\"observation_open\":false}";
+  }
+  output += ",\"mesh_repeat_diagnostics\":{\"tx_done\":";
+  output += String(repeatDiagnostics.txDoneFrames);
+  output += ",\"tx_failed\":";
+  output += String(repeatDiagnostics.txFailedFrames);
+  output += ",\"rx_ready_after_tx\":";
+  output += String(repeatDiagnostics.rxReadyAfterTx);
+  output += ",\"physical_rx_confirmed_after_tx\":";
+  output += String(repeatDiagnostics.physicalRxConfirmedAfterTx);
+  output += ",\"sync_turnaround_completed\":";
+  output += String(repeatDiagnostics.syncTurnaroundCompleted);
+  output += ",\"sync_turnaround_start_failures\":";
+  output += String(repeatDiagnostics.syncTurnaroundStartFailures);
+  output += ",\"sync_turnaround_timeouts\":";
+  output += String(repeatDiagnostics.syncTurnaroundTimeouts);
+  output += ",\"rx_rearm_attempts\":";
+  output += String(repeatDiagnostics.rxRearmAttempts);
+  output += ",\"rx_rearm_retries\":";
+  output += String(repeatDiagnostics.rxRearmRetries);
+  output += ",\"rx_rearm_failures\":";
+  output += String(repeatDiagnostics.rxRearmFailures);
+  output += ",\"last_rx_start_attempts\":";
+  output += String(repeatDiagnostics.lastRxStartAttempts);
+  output += ",\"last_rx_start_code\":";
+  if (!repeatDiagnostics.lastRxStartCodeAvailable) {
+    output += "null";
+  } else {
+    output += String(repeatDiagnostics.lastRxStartCode);
+  }
+  output += ",\"last_rx_start_software_state\":";
+  if (!repeatDiagnostics.lastRxStartCodeAvailable) {
+    output += "null";
+  } else {
+    output += repeatDiagnostics.lastRxStartSoftwareState ? "true" : "false";
+  }
+  output += ",\"last_rx_chip_status_available\":";
+  output += repeatDiagnostics.lastRxChipStatusAvailable ? "true" : "false";
+  output += ",\"last_rx_chip_status\":";
+  if (!repeatDiagnostics.lastRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    const uint8_t status = repeatDiagnostics.lastRxChipStatus;
+    output += "\"";
+    appendUpperHex(output, &status, 1U);
+    output += "\"";
+  }
+  output += ",\"last_rx_chip_mode\":";
+  if (!repeatDiagnostics.lastRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    output += String(kitsu868::mesh::sx126xChipMode(
+        repeatDiagnostics.lastRxChipStatus));
+  }
+  output += ",\"last_tx_done_to_start_receive_us\":";
+  if (!repeatDiagnostics.lastTxDoneToStartReceiveMicrosAvailable) {
+    output += "null";
+  } else {
+    output += String(repeatDiagnostics.lastTxDoneToStartReceiveMicros);
+  }
+  output += ",\"last_tx_done_to_rx_confirmed_us\":";
+  if (!repeatDiagnostics.lastTxDoneToRxConfirmedMicrosAvailable) {
+    output += "null";
+  } else {
+    output += String(repeatDiagnostics.lastTxDoneToRxConfirmedMicros);
+  }
+  output += ",\"current_rx_software_state\":";
+  output += repeatDiagnostics.currentRxSoftwareState ? "true" : "false";
+  output += ",\"current_rx_chip_status_available\":";
+  output += repeatDiagnostics.currentRxChipStatusAvailable ? "true" : "false";
+  output += ",\"current_rx_chip_status\":";
+  if (!repeatDiagnostics.currentRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    const uint8_t status = repeatDiagnostics.currentRxChipStatus;
+    output += "\"";
+    appendUpperHex(output, &status, 1U);
+    output += "\"";
+  }
+  output += ",\"current_rx_chip_mode\":";
+  if (!repeatDiagnostics.currentRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    output += String(kitsu868::mesh::sx126xChipMode(
+        repeatDiagnostics.currentRxChipStatus));
+  }
+  appendReceiveObservability(output, repeatDiagnostics);
+  output += ",\"scoped_flood_tx_done\":";
+  output += String(repeatDiagnostics.scopedFloodTxDoneFrames);
+  output += ",\"unscoped_flood_tx_done\":";
+  output += String(repeatDiagnostics.unscopedFloodTxDoneFrames);
+  output += ",\"raw_frames\":";
+  output += String(repeatDiagnostics.rawFrames);
+  output += ",\"parsed_frames\":";
+  output += String(repeatDiagnostics.parsedFrames);
+  output += ",\"raw_rejected\":";
+  output += String(repeatDiagnostics.rawRejected);
+  output += ",\"channel_forward_candidates\":";
+  output += String(repeatDiagnostics.channelForwardCandidates);
+  output += ",\"channel_hash_matches\":";
+  output += String(repeatDiagnostics.channelHashMatches);
+  output += ",\"channel_wire_mismatches\":";
+  output += String(repeatDiagnostics.channelWireMismatches);
+  output += ",\"channel_digest_mismatches\":";
+  output += String(repeatDiagnostics.channelDigestMismatches);
+  output += ",\"channel_exact_matches\":";
+  output += String(repeatDiagnostics.channelExactMatches);
+  output += ",\"channel_recorded\":";
+  output += String(repeatDiagnostics.channelRecorded);
+  output += ",\"channel_saturated\":";
+  output += String(repeatDiagnostics.channelSaturated);
+  output += ",\"advert_forward_candidates\":";
+  output += String(repeatDiagnostics.advertForwardCandidates);
+  output += ",\"advert_hash_matches\":";
+  output += String(repeatDiagnostics.advertHashMatches);
+  output += ",\"advert_wire_mismatches\":";
+  output += String(repeatDiagnostics.advertWireMismatches);
+  output += ",\"advert_digest_mismatches\":";
+  output += String(repeatDiagnostics.advertDigestMismatches);
+  output += ",\"advert_exact_matches\":";
+  output += String(repeatDiagnostics.advertExactMatches);
+  output += ",\"advert_recorded\":";
+  output += String(repeatDiagnostics.advertRecorded);
+  output += ",\"advert_saturated\":";
+  output += String(repeatDiagnostics.advertSaturated);
+  output += ",\"last_flood_tx\":";
+  if (!repeatDiagnostics.lastFloodTxAvailable) {
+    output += "null";
+  } else {
+    output += "{\"payload_type\":";
+    output += String(repeatDiagnostics.lastFloodTxPayloadType);
+    output += ",\"scoped\":";
+    output += repeatDiagnostics.lastFloodTxScoped ? "true" : "false";
+    output += ",\"scope\":";
+    if (repeatDiagnostics.lastFloodTxScoped) {
+      output += "\"";
+      output += kitsu868::mesh::kDefaultTransportScopeName;
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += ",\"transport_code\":";
+    if (repeatDiagnostics.lastFloodTxScoped) {
+      const uint8_t codeBytes[2] = {
+          static_cast<uint8_t>(repeatDiagnostics.lastFloodTxTransportCode),
+          static_cast<uint8_t>(repeatDiagnostics.lastFloodTxTransportCode >>
+                               8U)};
+      output += "\"";
+      appendUpperHex(output, codeBytes, sizeof(codeBytes));
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += ",\"scope_tag\":";
+    if (repeatDiagnostics.lastFloodTxScoped) {
+      output += "\"";
+      output += kitsu868::mesh::kDefaultTransportScopeTag;
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += ",\"scope_key_fingerprint\":";
+    if (repeatDiagnostics.lastFloodTxScoped) {
+      output += "\"";
+      output += kitsu868::mesh::kDefaultTransportScopeKeyFingerprint;
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += '}';
+  }
+  output += ",\"last_channel\":";
+  if (!repeatDiagnostics.lastChannelAvailable) {
+    output += "null";
+  } else {
+    output += "{\"packet_hash\":\"";
+    appendUpperHex(output, repeatDiagnostics.lastChannelHash,
+                   sizeof(repeatDiagnostics.lastChannelHash));
+    output += "\",\"path\":\"";
+    appendUpperHex(output, repeatDiagnostics.lastPath,
+                   repeatDiagnostics.lastPathBytes);
+    output += "\",\"last_hop_token\":\"";
+    const size_t lastTokenAt = repeatDiagnostics.lastPathBytes -
+        repeatDiagnostics.lastPathHashSize;
+    appendUpperHex(output, repeatDiagnostics.lastPath + lastTokenAt,
+                   repeatDiagnostics.lastPathHashSize);
+    output += "\",\"path_hash_bytes\":";
+    output += String(repeatDiagnostics.lastPathHashSize);
+    output += ",\"path_count\":";
+    output += String(repeatDiagnostics.lastPathCount);
+    output += ",\"rssi_dbm\":";
+    output += String(repeatDiagnostics.lastRssi, 1);
+    output += ",\"snr_db\":";
+    output += String(repeatDiagnostics.lastSnr, 1);
+    output += ",\"result\":\"";
+    output += repeatDiagnosticResultName(repeatDiagnostics.lastResult);
+    output += "\"}";
+  }
+  output += ",\"last_advert\":";
+  if (!repeatDiagnostics.lastAdvertAvailable) {
+    output += "null";
+  } else {
+    output += "{\"packet_hash\":\"";
+    appendUpperHex(output, repeatDiagnostics.lastAdvertHash,
+                   sizeof(repeatDiagnostics.lastAdvertHash));
+    output += "\",\"path\":\"";
+    appendUpperHex(output, repeatDiagnostics.lastAdvertPath,
+                   repeatDiagnostics.lastAdvertPathBytes);
+    output += "\",\"last_hop_token\":\"";
+    const size_t lastTokenAt = repeatDiagnostics.lastAdvertPathBytes -
+        repeatDiagnostics.lastAdvertPathHashSize;
+    appendUpperHex(output, repeatDiagnostics.lastAdvertPath + lastTokenAt,
+                   repeatDiagnostics.lastAdvertPathHashSize);
+    output += "\",\"path_hash_bytes\":";
+    output += String(repeatDiagnostics.lastAdvertPathHashSize);
+    output += ",\"path_count\":";
+    output += String(repeatDiagnostics.lastAdvertPathCount);
+    output += ",\"rssi_dbm\":";
+    output += String(repeatDiagnostics.lastAdvertRssi, 1);
+    output += ",\"snr_db\":";
+    output += String(repeatDiagnostics.lastAdvertSnr, 1);
+    output += ",\"result\":\"";
+    output += repeatDiagnosticResultName(repeatDiagnostics.lastAdvertResult);
+    output += "\"}";
+  }
+  output += '}';
   output += ",\"mesh_tx_unlocked\":";
   output += meshTransport.transmitAllowed(meshSettings) ? "true" : "false";
   output += ",\"mesh_one_shot_ready\":";
@@ -1129,7 +1864,8 @@ bool buildState(const uint8_t* payload, size_t payloadBytes, String& output) {
   output += ",\"hardware_root_protected\":false";
   output += ",\"application_encrypted\":true";
   output += '}';
-  return true;
+  return output.length() <=
+      kitsu868::companion::kMaximumEnvelopePayloadBytes;
 }
 
 void appendObservationTime(String& output,
@@ -1312,6 +2048,75 @@ bool buildChannels(const uint8_t* payload, size_t payloadBytes,
   return true;
 }
 
+bool buildChannelsV2(const uint8_t* payload, size_t payloadBytes,
+                     String& output) {
+  if (!emptyObject(payload, payloadBytes)) return false;
+  output.reserve(440U);
+  output = "{\"schema\":\"kitsu.channels.v2\",\"items\":[";
+  for (uint8_t slot = 0U; slot < kitsu868::mesh::kMeshChannelCapacity;
+       ++slot) {
+    if (slot != 0U) output += ',';
+    kitsu868::mesh::ChannelRecord channel{};
+    const bool available = meshTransport.channelAt(slot, channel);
+    output += "{\"slot\":";
+    output += String(slot);
+    output += ",\"configured\":";
+    output += available && channel.configured ? "true" : "false";
+    output += ",\"name\":";
+    if (available && channel.configured) {
+      output += '"';
+      output += jsonEscaped(String(channel.name));
+      output += '"';
+    } else {
+      output += "null";
+    }
+    output += ",\"region_scope\":";
+    if (available && channel.configured &&
+        channel.regionScope == kitsu868::mesh::ChannelRegionScope::Eu) {
+      output += "\"EU\"";
+    } else {
+      output += "null";
+    }
+    output += '}';
+  }
+  output += "]}";
+  return true;
+}
+
+bool buildChatStorage(const uint8_t* payload, size_t payloadBytes,
+                      String& output) {
+  if (!emptyObject(payload, payloadBytes)) return false;
+  kitsu868::mesh::MessagingStorageStatus status{};
+  if (!meshTransport.messagingStorageStatus(status)) return false;
+  output.reserve(280U);
+  output = "{\"schema\":\"kitsu.chat-storage.v1\",\"usable\":";
+  output += status.usable ? "true" : "false";
+  output += ",\"persisted_schema\":";
+  if (status.persistedSchema == 0U) output += "null";
+  else output += String(status.persistedSchema);
+  output += ",\"migration_pending\":";
+  output += status.migrationPending ? "true" : "false";
+  output += ",\"cleanup_pending\":";
+  output += status.cleanupPending ? "true" : "false";
+  output += ",\"generation\":";
+  if (status.generation == 0U) output += "null";
+  else output += String(static_cast<unsigned long>(status.generation));
+  output += ",\"writable_last_result\":";
+  if (status.lastWriteResult ==
+      kitsu868::mesh::MessagingStorageWriteResult::NotAttempted) {
+    output += "null";
+  } else {
+    output += '"';
+    output += kitsu868::mesh::messagingStorageWriteResultName(
+        status.lastWriteResult);
+    output += '"';
+  }
+  output += ",\"reason\":\"";
+  output += kitsu868::mesh::messagingStorageReasonName(status.reason);
+  output += "\"}";
+  return true;
+}
+
 bool syncClock(const uint8_t* payload, size_t payloadBytes, String& output) {
   uint32_t epoch = 0U;
   if (!parseClockSync(payload, payloadBytes, epoch)) return false;
@@ -1363,8 +2168,17 @@ bool configureMesh(const uint8_t* payload, size_t payloadBytes,
   return true;
 }
 
-bool buildMessages(const uint8_t* payload, size_t payloadBytes,
-                    String& output) {
+constexpr uint8_t kMessagesV1PageItems = 8U;
+constexpr uint8_t kMessagesV2PageItems = 12U;
+constexpr uint8_t kMessagesV3PageItems = 12U;
+constexpr uint8_t kMessagesV4PageItems = 8U;
+// The final cursor/has_more/gap object is shorter than this even with a
+// UINT32_MAX cursor. Keeping the reserve explicit lets item admission remain
+// byte-bounded rather than relying only on a record-count estimate.
+constexpr size_t kMessagesPageTailReserveBytes = 96U;
+
+bool buildMessagesV1(const uint8_t* payload, size_t payloadBytes,
+                      String& output) {
   CursorQuery query{};
   if (!parseCursorQuery(payload, payloadBytes, query)) return false;
   output.reserve(6000U);
@@ -1379,7 +2193,7 @@ bool buildMessages(const uint8_t* payload, size_t payloadBytes,
         (chatJournalStart + ordinal) % kitsu868::chat::kInboxCapacity);
     const ChatJournalEntry& entry = chatJournal[index];
     if (query.hasAfter && !sequenceAfter(entry.id, query.after)) continue;
-    if (count >= query.limit) {
+    if (count >= query.limit || count >= kMessagesV1PageItems) {
       hasMore = true;
       break;
     }
@@ -1435,6 +2249,427 @@ bool buildMessages(const uint8_t* payload, size_t payloadBytes,
       firstReturnedId != expectedFirstId;
   output += gap ? "true" : "false";
   output += '}';
+  return output.length() <=
+      kitsu868::companion::kMaximumEnvelopePayloadBytes;
+}
+
+const ChatJournalEntry* nextMessageById(bool hasAfter, uint32_t after) {
+  const ChatJournalEntry* selected = nullptr;
+  for (uint8_t ordinal = 0U; ordinal < chatJournalCount; ++ordinal) {
+    const uint8_t index = static_cast<uint8_t>(
+        (chatJournalStart + ordinal) % kitsu868::chat::kInboxCapacity);
+    const ChatJournalEntry& candidate = chatJournal[index];
+    if (candidate.journalSession != chatSession) continue;
+    if (hasAfter && !sequenceAfter(candidate.id, after)) continue;
+    if (!selected || sequenceAfter(selected->id, candidate.id)) {
+      selected = &candidate;
+    }
+  }
+  return selected;
+}
+
+bool appendMessageV2Item(const ChatJournalEntry& entry, String& output) {
+  output = "{\"message_id\":\"";
+  output += String(entry.id);
+  output += "\",\"revision\":\"";
+  output += String(entry.revision);
+  output += "\",\"timestamp\":";
+  output += String(entry.timestamp);
+  output += ",\"inbound\":";
+  output += entry.inbound ? "true" : "false";
+  output += ",\"kind\":\"";
+  output += entry.kind == kitsu868::mesh::MessageKind::Direct
+                ? "direct"
+                : "channel";
+  output += "\",\"peer_id\":";
+  if (entry.kind == kitsu868::mesh::MessageKind::Direct) {
+    const String key = publicKeyBase64(entry.contactPublicKey);
+    if (key.length() != 43U) return false;
+    output += '"';
+    output += key;
+    output += '"';
+  } else {
+    output += "null";
+  }
+  output += ",\"channel_slot\":";
+  if (entry.kind == kitsu868::mesh::MessageKind::Channel) {
+    output += String(entry.channelSlot);
+  } else {
+    output += "null";
+  }
+  output += ",\"authenticated\":";
+  output += entry.authenticated ? "true" : "false";
+  output += ",\"unread\":";
+  output += entry.unread ? "true" : "false";
+  output += ",\"sender_name\":\"";
+  output += jsonEscaped(String(entry.senderName));
+  output += "\",\"text\":\"";
+  output += jsonEscaped(String(entry.text));
+  output += "\",\"state\":\"";
+  output += chatStateName(entry.state);
+  output += "\",\"route\":\"";
+  output += entry.route == kitsu868::mesh::MessageRoute::Direct
+                ? "direct"
+                : "flood";
+  output += "\",\"local_tx\":\"";
+  output += chatLocalTxName(entry);
+  output += "\",\"delivery_ack\":\"";
+  output += chatDeliveryAckName(entry);
+  output += "\",\"repeater_count\":";
+  if (entry.repeaterCountKnown) output += String(entry.repeaterCount);
+  else output += "null";
+  // MeshCore has no fan-out receipt. A confirmed route count above says how
+  // many path relays carried one delivered direct message; it cannot say how
+  // many other repeaters heard the RF packet.
+  output += ",\"repeaters_heard\":null,\"rssi_dbm\":";
+  if (entry.inbound && isfinite(entry.rssi)) output += String(entry.rssi, 1);
+  else output += "null";
+  output += ",\"snr_db\":";
+  if (entry.inbound && isfinite(entry.snr)) output += String(entry.snr, 1);
+  else output += "null";
+  output += '}';
+  return true;
+}
+
+bool buildMessagesV2(const uint8_t* payload, size_t payloadBytes,
+                     String& output) {
+  CursorQuery query{};
+  if (!parseCursorQuery(payload, payloadBytes, query)) return false;
+  const uint32_t snapshotRevision = chatJournalRevision;
+  bool hasCursor = query.hasAfter;
+  uint32_t cursor = query.after;
+  uint32_t firstReturnedId = 0U;
+  const uint8_t pageLimit = query.limit < kMessagesV2PageItems
+      ? query.limit
+      : kMessagesV2PageItems;
+
+  output.reserve(kitsu868::companion::kMaximumEnvelopePayloadBytes);
+  output = "{\"schema\":\"kitsu.messages.v2\",\"journal_session\":\"";
+  output += String(chatSession);
+  output += "\",\"journal_revision\":\"";
+  output += String(snapshotRevision);
+  output += "\",\"items\":[";
+
+  uint8_t count = 0U;
+  while (count < pageLimit) {
+    const ChatJournalEntry* entry = nextMessageById(hasCursor, cursor);
+    if (!entry) break;
+    String item;
+    item.reserve(900U);
+    if (!appendMessageV2Item(*entry, item)) return false;
+    const size_t commaBytes = count == 0U ? 0U : 1U;
+    if (output.length() + commaBytes + item.length() +
+            kMessagesPageTailReserveBytes >
+        kitsu868::companion::kMaximumEnvelopePayloadBytes) {
+      // One protocol-valid item is proven to fit by the host worst-case
+      // contract test. Failing here therefore means the bound drifted and is
+      // safer than returning a truncated or unparseable snapshot.
+      if (count == 0U) return false;
+      break;
+    }
+    if (count != 0U) output += ',';
+    if (count == 0U) firstReturnedId = entry->id;
+    output += item;
+    // Page traversal remains in stable journal/message identity order.
+    // Per-item revision is mutation evidence, never a pagination cursor.
+    cursor = entry->id;
+    hasCursor = true;
+    ++count;
+  }
+
+  const bool hasMore = nextMessageById(hasCursor, cursor) != nullptr;
+  uint32_t expectedFirstId = query.after + 1U;
+  if (expectedFirstId == 0U) expectedFirstId = 1U;
+  const bool gap = query.hasAfter && count != 0U &&
+      firstReturnedId != expectedFirstId;
+  output += "],\"cursor\":";
+  appendCursor(output, hasCursor, cursor);
+  output += ",\"has_more\":";
+  output += hasMore ? "true" : "false";
+  output += ",\"gap\":";
+  output += gap ? "true" : "false";
+  output += '}';
+  return output.length() <=
+      kitsu868::companion::kMaximumEnvelopePayloadBytes;
+}
+
+bool appendMessageV3Item(const ChatJournalEntry& entry, String& output) {
+  // Keep the v2 serializer untouched for strict 2.1.3 clients. v3 is exactly
+  // that item plus one negotiated field placed before the existing
+  // repeaters_heard:null compatibility field.
+  if (!appendMessageV2Item(entry, output)) return false;
+  constexpr char marker[] = ",\"repeaters_heard\":";
+  const int markerAt = output.indexOf(marker);
+  if (markerAt < 0) return false;
+  const String suffix = output.substring(static_cast<unsigned>(markerAt));
+  output.remove(static_cast<unsigned>(markerAt));
+  output += ",\"repeat_count\":";
+  if (!entry.inbound &&
+      entry.kind == kitsu868::mesh::MessageKind::Channel &&
+      entry.state == ChatJournalState::Sent && entry.repeatCountKnown) {
+    output += String(entry.repeatCount);
+  } else {
+    output += "null";
+  }
+  output += suffix;
+  return true;
+}
+
+bool buildMessagesV3(const uint8_t* payload, size_t payloadBytes,
+                     String& output) {
+  CursorQuery query{};
+  if (!parseCursorQuery(payload, payloadBytes, query)) return false;
+  const uint32_t snapshotRevision = chatJournalRevision;
+  bool hasCursor = query.hasAfter;
+  uint32_t cursor = query.after;
+  uint32_t firstReturnedId = 0U;
+  const uint8_t pageLimit = query.limit < kMessagesV3PageItems
+      ? query.limit
+      : kMessagesV3PageItems;
+
+  output.reserve(kitsu868::companion::kMaximumEnvelopePayloadBytes);
+  output = "{\"schema\":\"kitsu.messages.v3\",\"journal_session\":\"";
+  output += String(chatSession);
+  output += "\",\"journal_revision\":\"";
+  output += String(snapshotRevision);
+  output += "\",\"items\":[";
+
+  uint8_t count = 0U;
+  while (count < pageLimit) {
+    const ChatJournalEntry* entry = nextMessageById(hasCursor, cursor);
+    if (!entry) break;
+    String item;
+    item.reserve(920U);
+    if (!appendMessageV3Item(*entry, item)) return false;
+    const size_t commaBytes = count == 0U ? 0U : 1U;
+    if (output.length() + commaBytes + item.length() +
+            kMessagesPageTailReserveBytes >
+        kitsu868::companion::kMaximumEnvelopePayloadBytes) {
+      if (count == 0U) return false;
+      break;
+    }
+    if (count != 0U) output += ',';
+    if (count == 0U) firstReturnedId = entry->id;
+    output += item;
+    cursor = entry->id;
+    hasCursor = true;
+    ++count;
+  }
+
+  const bool hasMore = nextMessageById(hasCursor, cursor) != nullptr;
+  uint32_t expectedFirstId = query.after + 1U;
+  if (expectedFirstId == 0U) expectedFirstId = 1U;
+  const bool gap = query.hasAfter && count != 0U &&
+      firstReturnedId != expectedFirstId;
+  output += "],\"cursor\":";
+  appendCursor(output, hasCursor, cursor);
+  output += ",\"has_more\":";
+  output += hasMore ? "true" : "false";
+  output += ",\"gap\":";
+  output += gap ? "true" : "false";
+  output += '}';
+  return output.length() <=
+      kitsu868::companion::kMaximumEnvelopePayloadBytes;
+}
+
+bool validMessageV4RepeatSources(const ChatJournalEntry& entry) {
+  if (entry.repeatSourceCount >
+      kitsu868::mesh::kChannelRepeatSourceCapacity) {
+    return false;
+  }
+  if (entry.repeatSourceCount > entry.repeatCount) return false;
+  if (entry.repeatSourcesTruncated &&
+      (entry.repeatSourceCount !=
+           kitsu868::mesh::kChannelRepeatSourceCapacity ||
+       entry.repeatCount <
+           kitsu868::mesh::kChannelRepeatSourceCapacity + 1U)) {
+    return false;
+  }
+  if (entry.repeatCount == 0U && entry.repeatSourcesTruncated) return false;
+  for (uint8_t index = 0U; index < entry.repeatSourceCount; ++index) {
+    const kitsu868::mesh::ChannelRepeatSource& source =
+        entry.repeatSources[index];
+    if (source.tokenBytes == 0U ||
+        source.tokenBytes >
+            kitsu868::mesh::kChannelRepeatSourceTokenBytes) {
+      return false;
+    }
+    for (uint8_t prior = 0U; prior < index; ++prior) {
+      const kitsu868::mesh::ChannelRepeatSource& candidate =
+          entry.repeatSources[prior];
+      if (candidate.tokenBytes == source.tokenBytes &&
+          memcmp(candidate.token, source.token, source.tokenBytes) == 0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool appendMessageV4Item(const ChatJournalEntry& entry, String& output) {
+  // v1/v2/v3 are immutable compatibility surfaces. v4 extends the exact v3
+  // object only at the negotiated operation/schema pair.
+  if (!appendMessageV3Item(entry, output)) return false;
+  constexpr char marker[] = ",\"repeaters_heard\":";
+  const int markerAt = output.indexOf(marker);
+  if (markerAt < 0) return false;
+  const String suffix = output.substring(static_cast<unsigned>(markerAt));
+  output.remove(static_cast<unsigned>(markerAt));
+
+  const bool applicable = !entry.inbound &&
+      entry.kind == kitsu868::mesh::MessageKind::Channel &&
+      entry.state == ChatJournalState::Sent && entry.repeatCountKnown;
+  output += ",\"repeat_observation_open\":";
+  if (!applicable) {
+    output += "null,\"repeat_sources\":null,"
+              "\"repeat_sources_truncated\":null";
+    output += suffix;
+    return true;
+  }
+  if (!validMessageV4RepeatSources(entry)) return false;
+  output += entry.repeatObservationOpen ? "true" : "false";
+  output += ",\"repeat_sources\":[";
+  for (uint8_t index = 0U; index < entry.repeatSourceCount; ++index) {
+    if (index != 0U) output += ',';
+    output += "{\"last_hop_token\":\"";
+    appendUpperHex(output, entry.repeatSources[index].token,
+                   entry.repeatSources[index].tokenBytes);
+    output += "\"}";
+  }
+  output += "],\"repeat_sources_truncated\":";
+  output += entry.repeatSourcesTruncated ? "true" : "false";
+  output += suffix;
+  return true;
+}
+
+bool buildMessagesV4(const uint8_t* payload, size_t payloadBytes,
+                     String& output) {
+  CursorQuery query{};
+  if (!parseCursorQuery(payload, payloadBytes, query)) return false;
+  const uint32_t snapshotRevision = chatJournalRevision;
+  bool hasCursor = query.hasAfter;
+  uint32_t cursor = query.after;
+  uint32_t firstReturnedId = 0U;
+  const uint8_t pageLimit = query.limit < kMessagesV4PageItems
+      ? query.limit
+      : kMessagesV4PageItems;
+
+  output.reserve(kitsu868::companion::kMaximumEnvelopePayloadBytes);
+  output = "{\"schema\":\"kitsu.messages.v4\",\"journal_session\":\"";
+  output += String(chatSession);
+  output += "\",\"journal_revision\":\"";
+  output += String(snapshotRevision);
+  output += "\",\"items\":[";
+
+  uint8_t count = 0U;
+  while (count < pageLimit) {
+    const ChatJournalEntry* entry = nextMessageById(hasCursor, cursor);
+    if (!entry) break;
+    String item;
+    item.reserve(1050U);
+    if (!appendMessageV4Item(*entry, item)) return false;
+    const size_t commaBytes = count == 0U ? 0U : 1U;
+    if (output.length() + commaBytes + item.length() +
+            kMessagesPageTailReserveBytes >
+        kitsu868::companion::kMaximumEnvelopePayloadBytes) {
+      if (count == 0U) return false;
+      break;
+    }
+    if (count != 0U) output += ',';
+    if (count == 0U) firstReturnedId = entry->id;
+    output += item;
+    cursor = entry->id;
+    hasCursor = true;
+    ++count;
+  }
+
+  const bool hasMore = nextMessageById(hasCursor, cursor) != nullptr;
+  uint32_t expectedFirstId = query.after + 1U;
+  if (expectedFirstId == 0U) expectedFirstId = 1U;
+  const bool gap = query.hasAfter && count != 0U &&
+      firstReturnedId != expectedFirstId;
+  output += "],\"cursor\":";
+  appendCursor(output, hasCursor, cursor);
+  output += ",\"has_more\":";
+  output += hasMore ? "true" : "false";
+  output += ",\"gap\":";
+  output += gap ? "true" : "false";
+  output += '}';
+  return output.length() <=
+      kitsu868::companion::kMaximumEnvelopePayloadBytes;
+}
+
+void buildMarkReadResponse(bool accepted, const char* error,
+                           uint8_t markedCount, uint8_t unchangedCount,
+                           String& output) {
+  output.reserve(280U);
+  output = "{\"schema\":\"kitsu.messages-mark-read.v1\",\"accepted\":";
+  output += accepted ? "true" : "false";
+  output += ",\"error\":";
+  if (error) {
+    output += '"';
+    output += error;
+    output += '"';
+  } else {
+    output += "null";
+  }
+  output += ",\"marked_count\":";
+  output += String(markedCount);
+  output += ",\"unchanged_count\":";
+  output += String(unchangedCount);
+  output += ",\"journal_session\":\"";
+  output += String(chatSession);
+  output += "\",\"journal_revision\":\"";
+  output += String(chatJournalRevision);
+  output += "\"}";
+}
+
+bool markMessagesRead(const uint8_t* payload, size_t payloadBytes,
+                      String& output) {
+  using kitsu868::message_read::Command;
+  using kitsu868::message_read::ParseStatus;
+  using kitsu868::message_read::Plan;
+  using kitsu868::message_read::PlanStatus;
+  using kitsu868::message_read::Record;
+
+  Command command{};
+  if (kitsu868::message_read::parseCommand(payload, payloadBytes, command) !=
+      ParseStatus::Ok) {
+    buildMarkReadResponse(false, "request_rejected", 0U, 0U, output);
+    return true;
+  }
+
+  Record records[kitsu868::message_read::kMaximumMessageIds]{};
+  uint8_t journalIndexes[kitsu868::message_read::kMaximumMessageIds]{};
+  uint8_t visibleCount = 0U;
+  for (uint8_t ordinal = 0U; ordinal < chatJournalCount; ++ordinal) {
+    const uint8_t journalIndex = static_cast<uint8_t>(
+        (chatJournalStart + ordinal) % kitsu868::chat::kInboxCapacity);
+    if (chatJournal[journalIndex].journalSession != chatSession) continue;
+    records[visibleCount].messageId = chatJournal[journalIndex].id;
+    records[visibleCount].inbound = chatJournal[journalIndex].inbound;
+    records[visibleCount].unread = chatJournal[journalIndex].unread;
+    journalIndexes[visibleCount] = journalIndex;
+    ++visibleCount;
+  }
+
+  Plan plan{};
+  const PlanStatus status = kitsu868::message_read::plan(
+      chatSession, command, records, visibleCount, plan);
+  if (status != PlanStatus::Ok) {
+    buildMarkReadResponse(false,
+                          kitsu868::message_read::planStatusError(status),
+                          0U, 0U, output);
+    return true;
+  }
+
+  uint8_t selected[kitsu868::message_read::kMaximumMessageIds]{};
+  for (uint8_t index = 0U; index < plan.messageCount; ++index) {
+    selected[index] = journalIndexes[plan.recordIndexes[index]];
+  }
+  const uint8_t marked =
+      applyChatJournalReadPlan(selected, plan.messageCount);
+  buildMarkReadResponse(true, nullptr, marked, plan.unchangedCount, output);
   return true;
 }
 
@@ -1458,9 +2693,21 @@ __attribute__((noinline)) bool handleCompanionBleRequest(
   } else if (strcmp(request.operation, "peers.get") == 0) {
     handled = companion_api::buildPeers(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "messages.get") == 0) {
-    handled = companion_api::buildMessages(payload, payloadBytes, response);
+    handled = companion_api::buildMessagesV1(payload, payloadBytes, response);
+  } else if (strcmp(request.operation, "messages.get.v2") == 0) {
+    handled = companion_api::buildMessagesV2(payload, payloadBytes, response);
+  } else if (strcmp(request.operation, "messages.get.v3") == 0) {
+    handled = companion_api::buildMessagesV3(payload, payloadBytes, response);
+  } else if (strcmp(request.operation, "messages.get.v4") == 0) {
+    handled = companion_api::buildMessagesV4(payload, payloadBytes, response);
+  } else if (strcmp(request.operation, "messages.mark_read") == 0) {
+    handled = companion_api::markMessagesRead(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "channels.get") == 0) {
     handled = companion_api::buildChannels(payload, payloadBytes, response);
+  } else if (strcmp(request.operation, "channels.get.v2") == 0) {
+    handled = companion_api::buildChannelsV2(payload, payloadBytes, response);
+  } else if (strcmp(request.operation, "chat.storage.get") == 0) {
+    handled = companion_api::buildChatStorage(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "clock.sync") == 0) {
     handled = companion_api::syncClock(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "mesh.configure") == 0) {
@@ -1487,6 +2734,41 @@ const char* chatStateName(ChatJournalState state) {
   return "failed";
 }
 
+const char* chatLocalTxName(const ChatJournalEntry& entry) {
+  if (entry.inbound || entry.state == ChatJournalState::Received) {
+    return "not_applicable";
+  }
+  switch (entry.state) {
+    case ChatJournalState::Queued: return "pending";
+    case ChatJournalState::Sent:
+    case ChatJournalState::Delivered:
+    case ChatJournalState::Unconfirmed:
+      return "sent";
+    case ChatJournalState::Failed: return "failed";
+    case ChatJournalState::Cancelled: return "cancelled";
+    case ChatJournalState::Received: return "not_applicable";
+  }
+  return "failed";
+}
+
+const char* chatDeliveryAckName(const ChatJournalEntry& entry) {
+  if (entry.inbound ||
+      entry.kind != kitsu868::mesh::MessageKind::Direct) {
+    return "not_applicable";
+  }
+  switch (entry.state) {
+    case ChatJournalState::Sent: return "pending";
+    case ChatJournalState::Delivered: return "received";
+    case ChatJournalState::Unconfirmed: return "not_received";
+    case ChatJournalState::Received:
+    case ChatJournalState::Queued:
+    case ChatJournalState::Failed:
+    case ChatJournalState::Cancelled:
+      return "not_applicable";
+  }
+  return "not_applicable";
+}
+
 const char* chatKindName(kitsu868::mesh::MessageKind kind) {
   return kind == kitsu868::mesh::MessageKind::Direct ? "direct" : "channel";
 }
@@ -1506,13 +2788,46 @@ String shortHex(const uint8_t* bytes, size_t byteCount) {
   return result;
 }
 
+void advanceChatJournalGeneration() {
+  chatSession = kitsu868::message_read::advanceJournalSession(chatSession);
+  chatJournalRevision = 0U;
+  // Rows retained from the old generation remain available to the physical
+  // Inbox and legacy v1 reader, but v2 never relabels them as current. Clear
+  // their physical unread state so the OLED badge cannot refer to rows that a
+  // current-generation Android snapshot is unable to acknowledge.
+  for (uint8_t ordinal = 0U; ordinal < chatJournalCount; ++ordinal) {
+    const uint8_t index = static_cast<uint8_t>(
+        (chatJournalStart + ordinal) % kitsu868::chat::kInboxCapacity);
+    chatJournal[index].unread = false;
+  }
+  unreadChatMessages = 0U;
+  companionBleRefreshDirty = true;
+}
+
 uint32_t allocateChatMessageId() {
   uint32_t id = nextChatMessageId++;
   if (id == 0U) {
     id = 1U;
     nextChatMessageId = 2U;
+    advanceChatJournalGeneration();
   }
   return id;
+}
+
+uint32_t allocateChatRevision() {
+  uint32_t revision = chatJournalRevision + 1U;
+  if (revision == 0U) {
+    revision = 1U;
+    advanceChatJournalGeneration();
+  }
+  chatJournalRevision = revision;
+  return revision;
+}
+
+void touchChatJournal(ChatJournalEntry& entry) {
+  entry.revision = allocateChatRevision();
+  entry.journalSession = chatSession;
+  companionBleRefreshDirty = true;
 }
 
 ChatJournalEntry& appendChatJournal() {
@@ -1534,16 +2849,65 @@ ChatJournalEntry& appendChatJournal() {
   }
   chatJournal[writeIndex] = ChatJournalEntry{};
   chatJournal[writeIndex].id = allocateChatMessageId();
+  touchChatJournal(chatJournal[writeIndex]);
   return chatJournal[writeIndex];
 }
 
-void markChatJournalRead() {
-  for (uint8_t ordinal = 0; ordinal < chatJournalCount; ++ordinal) {
+uint8_t applyChatJournalReadPlan(const uint8_t* journalIndexes,
+                                 uint8_t indexCount) {
+  uint8_t marked = 0U;
+  if (!journalIndexes || indexCount > kitsu868::chat::kInboxCapacity) {
+    return marked;
+  }
+  bool shouldMark[kitsu868::chat::kInboxCapacity]{};
+  for (uint8_t ordinal = 0U; ordinal < indexCount; ++ordinal) {
+    const uint8_t index = journalIndexes[ordinal];
+    if (index >= kitsu868::chat::kInboxCapacity ||
+        !chatJournal[index].inbound || !chatJournal[index].unread) {
+      continue;
+    }
+    shouldMark[ordinal] = true;
+    ++marked;
+  }
+
+  // Reserve the complete revision range before changing any unread bit. If
+  // the batch would cross UINT32_MAX, rotate generation once up front; never
+  // split one authenticated atomic request across two journal sessions.
+  if (kitsu868::message_read::revisionBatchRequiresGenerationAdvance(
+          chatJournalRevision, marked)) {
+    advanceChatJournalGeneration();
+  }
+
+  for (uint8_t ordinal = 0U; ordinal < indexCount; ++ordinal) {
+    if (!shouldMark[ordinal]) continue;
+    const uint8_t index = journalIndexes[ordinal];
+    chatJournal[index].unread = false;
+    touchChatJournal(chatJournal[index]);
+  }
+
+  // Recount from the source of truth so the physical OLED badge converges
+  // after either a selective Android acknowledgement or local Inbox open.
+  uint8_t unread = 0U;
+  for (uint8_t ordinal = 0U; ordinal < chatJournalCount; ++ordinal) {
     const uint8_t index = static_cast<uint8_t>(
         (chatJournalStart + ordinal) % kitsu868::chat::kInboxCapacity);
-    chatJournal[index].unread = false;
+    if (chatJournal[index].inbound && chatJournal[index].unread) ++unread;
   }
-  unreadChatMessages = 0;
+  unreadChatMessages = unread;
+  return marked;
+}
+
+void markChatJournalRead() {
+  uint8_t selected[kitsu868::chat::kInboxCapacity]{};
+  uint8_t selectedCount = 0U;
+  for (uint8_t ordinal = 0U; ordinal < chatJournalCount; ++ordinal) {
+    const uint8_t index = static_cast<uint8_t>(
+        (chatJournalStart + ordinal) % kitsu868::chat::kInboxCapacity);
+    if (chatJournal[index].inbound && chatJournal[index].unread) {
+      selected[selectedCount++] = index;
+    }
+  }
+  (void)applyChatJournalReadPlan(selected, selectedCount);
 }
 
 ChatJournalEntry* chatJournalNewest(uint8_t newestOffset) {
@@ -1560,6 +2924,7 @@ ChatJournalEntry* findChatByDelivery(
     ChatJournalEntry* entry = chatJournalNewest(offset);
     if (entry && !entry->inbound &&
         entry->kind == kitsu868::mesh::MessageKind::Direct &&
+        entry->timestamp == delivery.messageTimestamp &&
         entry->expectedAck == delivery.expectedAck &&
         memcmp(entry->contactPublicKey, delivery.recipientPublicKey,
                sizeof(entry->contactPublicKey)) == 0 &&
@@ -1936,6 +3301,7 @@ const char* bluetoothStatusLabel(uint32_t now) {
 const char* connectionActionLabel(ConnectionAction action) {
   switch (action) {
     case ConnectionAction::Bluetooth: return "BLUETOOTH";
+    case ConnectionAction::Controllers: return "CONTROLLERS";
     case ConnectionAction::Back: return "BACK";
   }
   return "BACK";
@@ -1945,7 +3311,175 @@ const char* connectionActionPrompt(ConnectionAction action, uint32_t now) {
   if (action == ConnectionAction::Bluetooth) {
     return companionBle.linkStatus(now).connected ? "HOLD VIEW" : "HOLD OPEN";
   }
+  if (action == ConnectionAction::Controllers) return "HOLD MANAGE";
   return "HOLD BACK";
+}
+
+bool controllerRecoveryDeadlineReached(uint32_t now, uint32_t deadline) {
+  return deadline != 0U && static_cast<int32_t>(now - deadline) >= 0;
+}
+
+uint32_t controllerRecoverySecondsRemaining(uint32_t now,
+                                            uint32_t deadline) {
+  if (controllerRecoveryDeadlineReached(now, deadline)) return 0U;
+  return (deadline - now + 999U) / 1000U;
+}
+
+bool controllerRecoveryBleDisconnected(uint32_t now) {
+  return !companionBle.ready() ||
+      (companionBle.localControllerRecoveryLocked() &&
+       !companionBle.linkStatus(now).connected);
+}
+
+String controllerFingerprint(
+    const uint8_t id[kitsu868::connectivity::kKitsuControllerIdBytes]) {
+  static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+  constexpr size_t fingerprintBytes[] = {0U, 1U, 14U, 15U};
+  char output[9]{};
+  size_t cursor = 0U;
+  for (size_t index : fingerprintBytes) {
+    output[cursor++] = HEX_DIGITS[id[index] >> 4U];
+    output[cursor++] = HEX_DIGITS[id[index] & 0x0fU];
+  }
+  return String(output);
+}
+
+void clearControllerRecoveryTarget() {
+  memset(controllerRecoveryTargetId, 0, sizeof(controllerRecoveryTargetId));
+  controllerRecoveryTargetSlot = 0U;
+  controllerRecoveryOriginalCount = 0U;
+}
+
+void leaveControllerRecovery() {
+  clearControllerRecoveryTarget();
+  controllerRecoveryDeadline = 0U;
+  controllerRecoveryResult = ControllerRecoveryResult::None;
+  if (!companionBle.endLocalControllerRecovery()) {
+    Serial.println("KITSU_WARN controller_recovery_ble_unlock=false");
+  }
+  enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
+}
+
+void showControllerManager(uint32_t now, bool resetSelection) {
+  clearControllerRecoveryTarget();
+  controllerRecoveryResult = ControllerRecoveryResult::None;
+  if (resetSelection) controllerRecoverySelection = 0U;
+  controllerRecoveryDeadline = now + CONTROLLER_RECOVERY_BROWSE_TIMEOUT_MS;
+  enterScreen(Screen::ControllerManager);
+}
+
+void beginControllerRecovery(uint32_t now) {
+  // Physical recovery and pairing never share a live authorization moment.
+  companionBle.disconnectForLocalControllerRecovery();
+  showControllerManager(now, true);
+}
+
+bool controllerIdPresent(
+    const uint8_t id[kitsu868::connectivity::kKitsuControllerIdBytes]) {
+  uint8_t current[kitsu868::connectivity::kKitsuControllerIdBytes]{};
+  bool present = false;
+  for (size_t slot = 0U;
+       slot < kitsu868::connectivity::kKitsuControllerCapacity; ++slot) {
+    if (deviceSecurity.controllerAtSlot(slot, current) &&
+        memcmp(current, id, sizeof(current)) == 0) {
+      present = true;
+      break;
+    }
+  }
+  memset(current, 0, sizeof(current));
+  return present;
+}
+
+bool armControllerRecovery(uint32_t now, uint8_t selection) {
+  if (!connectivitySecurityReady ||
+      !controllerRecoveryBleDisconnected(now)) {
+    return false;
+  }
+  clearControllerRecoveryTarget();
+  controllerRecoveryOriginalCount = deviceSecurity.status().controllerCount;
+  if (selection < kitsu868::connectivity::kKitsuControllerCapacity) {
+    if (!deviceSecurity.controllerAtSlot(selection,
+                                         controllerRecoveryTargetId)) {
+      clearControllerRecoveryTarget();
+      return false;
+    }
+    controllerRecoveryTargetSlot = selection;
+  } else if (selection == CONTROLLER_RECOVERY_RESET_INDEX &&
+             controllerRecoveryOriginalCount != 0U) {
+    controllerRecoveryTargetSlot = CONTROLLER_RECOVERY_RESET_INDEX;
+  } else {
+    clearControllerRecoveryTarget();
+    return false;
+  }
+  controllerRecoveryResult = ControllerRecoveryResult::None;
+  controllerRecoveryDeadline =
+      now + CONTROLLER_RECOVERY_CONFIRM_TIMEOUT_MS;
+  enterScreen(Screen::ControllerConfirm);
+  return true;
+}
+
+void commitControllerRecovery(uint32_t now) {
+  companionBle.disconnectForLocalControllerRecovery();
+  if (!connectivitySecurityReady ||
+      !controllerRecoveryBleDisconnected(now)) {
+    showControllerManager(now, false);
+    return;
+  }
+
+  const bool resetAll =
+      controllerRecoveryTargetSlot == CONTROLLER_RECOVERY_RESET_INDEX;
+  if (!resetAll) {
+    uint8_t current[kitsu868::connectivity::kKitsuControllerIdBytes]{};
+    const bool targetUnchanged = deviceSecurity.controllerAtSlot(
+        controllerRecoveryTargetSlot, current) &&
+        memcmp(current, controllerRecoveryTargetId, sizeof(current)) == 0;
+    memset(current, 0, sizeof(current));
+    if (!targetUnchanged) {
+      controllerRecoveryResult = ControllerRecoveryResult::Unchanged;
+      controllerRecoveryDeadline =
+          now + CONTROLLER_RECOVERY_RESULT_TIMEOUT_MS;
+      enterScreen(Screen::ControllerResult);
+      return;
+    }
+  }
+
+  const kitsu868::connectivity::SecurityResult result = resetAll
+      ? deviceSecurity.revokeAllControllersAfterPhysicalConfirmation(true)
+      : deviceSecurity.revokeControllerAfterPhysicalConfirmation(
+            controllerRecoveryTargetId, true);
+  const bool authorityRemoved = resetAll
+      ? deviceSecurity.status().controllerCount == 0U
+      : !controllerIdPresent(controllerRecoveryTargetId);
+  if (result == kitsu868::connectivity::SecurityResult::Ok &&
+      authorityRemoved) {
+    controllerRecoveryResult = resetAll
+        ? ControllerRecoveryResult::RemovedAll
+        : ControllerRecoveryResult::RemovedSlot;
+  } else if (result ==
+                 kitsu868::connectivity::SecurityResult::StorageReadFailed ||
+             result ==
+                 kitsu868::connectivity::SecurityResult::StorageWriteFailed ||
+             result ==
+                 kitsu868::connectivity::SecurityResult::ReadbackFailed ||
+             authorityRemoved) {
+    controllerRecoveryResult = ControllerRecoveryResult::StorageNeedsReboot;
+  } else {
+    controllerRecoveryResult = ControllerRecoveryResult::Unchanged;
+  }
+  Serial.printf(
+      "KITSU_CONTROLLER_RECOVERY action=%s slot=%u count_before=%u "
+      "count_after=%u security=%s outcome=%u\n",
+      resetAll ? "all" : "slot",
+      resetAll ? 0U : static_cast<unsigned>(controllerRecoveryTargetSlot + 1U),
+      static_cast<unsigned>(controllerRecoveryOriginalCount),
+      static_cast<unsigned>(deviceSecurity.status().controllerCount),
+      kitsu868::connectivity::securityResultName(result),
+      static_cast<unsigned>(controllerRecoveryResult));
+  controllerRecoveryDeadline =
+      controllerRecoveryResult == ControllerRecoveryResult::StorageNeedsReboot
+          ? 0U
+          : now + CONTROLLER_RECOVERY_RESULT_TIMEOUT_MS;
+  enterScreen(Screen::ControllerResult);
 }
 
 void uiWrappedText(const char* rawText, int16_t y, uint8_t maxLines) {
@@ -2049,7 +3583,9 @@ void sleepDisplay() {
       screen == Screen::Menu || screen == Screen::Connect ||
       screen == Screen::GameMenu ||
       (screen == Screen::Game && !gameRewarded) || screen == Screen::Status ||
-      screen == Screen::PairPhone) {
+      screen == Screen::PairPhone || screen == Screen::ControllerManager ||
+      screen == Screen::ControllerConfirm ||
+      screen == Screen::ControllerResult) {
     return;
   }
   display.displayOff();
@@ -2233,12 +3769,21 @@ void renderConnect() {
     case ConnectionAction::Bluetooth:
       uiTextCentered(bluetoothStatusLabel(now), 54);
       break;
+    case ConnectionAction::Controllers: {
+      if (!connectivitySecurityReady) {
+        uiTextCentered("UNAVAILABLE", 54);
+      } else {
+        const uint8_t count = deviceSecurity.status().controllerCount;
+        uiTextCentered(String(count) + " STORED", 54);
+      }
+      break;
+    }
     case ConnectionAction::Back:
       uiTextCentered("RETURN", 54);
       break;
   }
   uiTextCentered(connectionActionPrompt(connectionAction, now), 76);
-  uiMenuDots(static_cast<uint8_t>(connectionAction), 2, 94);
+  uiMenuDots(static_cast<uint8_t>(connectionAction), 3, 94);
   uiTextCentered("TAP NEXT", 108);
 }
 
@@ -2475,6 +4020,129 @@ void renderPairPhone() {
   }
 }
 
+void renderControllerManager() {
+  uiTextCentered("CONTROLLERS", 4);
+  const uint32_t now = millis();
+  if (!connectivitySecurityReady) {
+    uiTextCentered("SECURITY", 31, 2);
+    uiTextCentered("UNAVAILABLE", 54);
+    uiTextCentered("NO CHANGES", 79);
+    uiTextCentered("TAP BACK", 108);
+    return;
+  }
+  if (!controllerRecoveryBleDisconnected(now)) {
+    uiTextCentered("CLOSING BLE", 34);
+    uiTextCentered("WAIT", 55, 2);
+    uiTextCentered("NO CHANGES", 82);
+    uiTextCentered("TAP BACK", 108);
+    return;
+  }
+
+  const uint8_t count = deviceSecurity.status().controllerCount;
+  if (controllerRecoverySelection <
+      kitsu868::connectivity::kKitsuControllerCapacity) {
+    uint8_t id[kitsu868::connectivity::kKitsuControllerIdBytes]{};
+    const bool occupied = deviceSecurity.controllerAtSlot(
+        controllerRecoverySelection, id);
+    uiTextCentered("SLOT " + String(controllerRecoverySelection + 1U), 28,
+                   2);
+    if (occupied) {
+      uiTextCentered("ID " + controllerFingerprint(id), 54);
+      uiTextCentered("HOLD REMOVE", 78);
+    } else {
+      uiTextCentered("EMPTY", 54, 2);
+      uiTextCentered("NO ACTION", 78);
+    }
+    memset(id, 0, sizeof(id));
+  } else if (controllerRecoverySelection ==
+             CONTROLLER_RECOVERY_RESET_INDEX) {
+    uiTextCentered("RESET ALL", 31, 2);
+    uiTextCentered(String(count) + " STORED", 56);
+    uiTextCentered(count == 0U ? "NO ACTION" : "HOLD SELECT", 78);
+  } else {
+    uiTextCentered("BACK", 36, 2);
+    uiTextCentered("HOLD RETURN", 69);
+  }
+  uiMenuDots(controllerRecoverySelection,
+             CONTROLLER_RECOVERY_OPTION_COUNT, 94);
+  uiTextCentered("TAP NEXT", 108);
+}
+
+void renderControllerConfirm() {
+  const uint32_t now = millis();
+  const bool resetAll =
+      controllerRecoveryTargetSlot == CONTROLLER_RECOVERY_RESET_INDEX;
+  uiTextCentered(resetAll ? "REMOVE ALL" : "REMOVE", 4,
+                 resetAll ? 1 : 2);
+  if (resetAll) {
+    uiTextCentered(String(controllerRecoveryOriginalCount) + " STORED", 24);
+  } else {
+    uiTextCentered("SLOT " + String(controllerRecoveryTargetSlot + 1U), 23,
+                   2);
+    uiTextCentered("ID " + controllerFingerprint(controllerRecoveryTargetId),
+                   42);
+  }
+
+  if (!controllerRecoveryBleDisconnected(now)) {
+    uiTextCentered("BLE LINKED", resetAll ? 49 : 60);
+    uiTextCentered("CANCELLED", resetAll ? 67 : 76, 2);
+  } else if (stableButton) {
+    const uint32_t held = now - buttonPressedAt;
+    const uint32_t holdRemaining = held >= CONTROLLER_RECOVERY_HOLD_MS
+        ? 0U
+        : (CONTROLLER_RECOVERY_HOLD_MS - held + 999U) / 1000U;
+    uiTextCentered("KEEP HOLDING", resetAll ? 48 : 60);
+    uiTextCentered(String(holdRemaining) + "S", resetAll ? 65 : 76, 2);
+  } else {
+    uiTextCentered("HOLD PRG", resetAll ? 48 : 58, 2);
+    uiTextCentered("5S TO REMOVE", resetAll ? 69 : 76);
+  }
+  uiTextCentered("TAP CANCEL", 95);
+  uiTextCentered("EXPIRES " +
+                     String(controllerRecoverySecondsRemaining(
+                         now, controllerRecoveryDeadline)) +
+                     "S",
+                 109);
+}
+
+void renderControllerResult() {
+  uiTextCentered("CONTROLLERS", 4);
+  switch (controllerRecoveryResult) {
+    case ControllerRecoveryResult::RemovedSlot:
+      uiTextCentered("REMOVED", 29, 2);
+      uiTextCentered("SLOT " + String(controllerRecoveryTargetSlot + 1U),
+                     53);
+      uiTextCentered("REOPEN PAIR", 79);
+      break;
+    case ControllerRecoveryResult::RemovedAll:
+      uiTextCentered("ALL REMOVED", 29, 2);
+      uiTextCentered(String(controllerRecoveryOriginalCount) + " CLEARED",
+                     53);
+      uiTextCentered("REOPEN PAIR", 79);
+      break;
+    case ControllerRecoveryResult::StorageNeedsReboot:
+      uiTextCentered("UNCERTAIN", 23, 2);
+      uiTextCentered("STORAGE ERR", 43);
+      uiTextCentered("REBOOT KITSU", 64, 2);
+      uiTextCentered("BEFORE PAIR", 88);
+      break;
+    case ControllerRecoveryResult::Unchanged:
+      uiTextCentered("NOT REMOVED", 29, 2);
+      uiTextCentered("STORAGE ERROR", 57);
+      uiTextCentered("TRY AGAIN", 82);
+      break;
+    case ControllerRecoveryResult::None:
+      uiTextCentered("CANCELLED", 40, 2);
+      uiTextCentered("NO CHANGES", 70);
+      break;
+  }
+  uiTextCentered(
+      controllerRecoveryResult == ControllerRecoveryResult::StorageNeedsReboot
+          ? "REBOOT NOW"
+          : "TAP CONTINUE",
+      108);
+}
+
 void renderDisplay(bool force = false) {
   if (!oledDetected || displaySleeping) return;
   if (!force && millis() - lastRenderAt < 100) return;
@@ -2492,6 +4160,9 @@ void renderDisplay(bool force = false) {
     case Screen::Sleep: renderSleep(); break;
     case Screen::Status: renderStatus(); break;
     case Screen::PairPhone: renderPairPhone(); break;
+    case Screen::ControllerManager: renderControllerManager(); break;
+    case Screen::ControllerConfirm: renderControllerConfirm(); break;
+    case Screen::ControllerResult: renderControllerResult(); break;
   }
   display.display();
 }
@@ -2835,6 +4506,9 @@ void executeConnectionAction() {
     const bool opened = openBluetoothControl(now);
     Serial.printf("KITSU_CONNECT_ACTION action=bluetooth result=%s\n",
                   opened ? "opened" : "unavailable");
+  } else if (connectionAction == ConnectionAction::Controllers) {
+    beginControllerRecovery(now);
+    Serial.println("KITSU_CONNECT_ACTION action=controllers result=opened");
   }
 }
 
@@ -2853,7 +4527,7 @@ void handleShortPress(uint32_t actionAt) {
       break;
     case Screen::Connect:
       connectionAction = static_cast<ConnectionAction>(
-          (static_cast<uint8_t>(connectionAction) + 1U) % 2U);
+          (static_cast<uint8_t>(connectionAction) + 1U) % 3U);
       screenEnteredAt = millis();
       break;
     case Screen::Inbox:
@@ -2889,6 +4563,29 @@ void handleShortPress(uint32_t actionAt) {
     case Screen::PairPhone:
       companionBle.closePairing();
       enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
+      break;
+    case Screen::ControllerManager:
+      if (!connectivitySecurityReady ||
+          !controllerRecoveryBleDisconnected(millis())) {
+        leaveControllerRecovery();
+      } else {
+        controllerRecoverySelection = static_cast<uint8_t>(
+            (controllerRecoverySelection + 1U) %
+            CONTROLLER_RECOVERY_OPTION_COUNT);
+        controllerRecoveryDeadline =
+            millis() + CONTROLLER_RECOVERY_BROWSE_TIMEOUT_MS;
+        screenEnteredAt = millis();
+      }
+      break;
+    case Screen::ControllerConfirm:
+      showControllerManager(millis(), false);
+      Serial.println("KITSU_CONTROLLER_RECOVERY confirmation=cancelled");
+      break;
+    case Screen::ControllerResult:
+      if (controllerRecoveryResult !=
+          ControllerRecoveryResult::StorageNeedsReboot) {
+        showControllerManager(millis(), false);
+      }
       break;
   }
 }
@@ -2931,6 +4628,37 @@ void handleLongPress() {
       screenEnteredAt = now;
       break;
     }
+    case Screen::ControllerManager: {
+      const uint32_t now = millis();
+      if (!connectivitySecurityReady ||
+          !controllerRecoveryBleDisconnected(now)) {
+        break;
+      }
+      if (controllerRecoverySelection == CONTROLLER_RECOVERY_BACK_INDEX) {
+        leaveControllerRecovery();
+      } else {
+        const bool armed = armControllerRecovery(
+            now, controllerRecoverySelection);
+        Serial.printf("KITSU_CONTROLLER_RECOVERY selection=%u armed=%s\n",
+                      static_cast<unsigned>(controllerRecoverySelection),
+                      armed ? "true" : "false");
+        if (!armed) {
+          controllerRecoveryDeadline =
+              now + CONTROLLER_RECOVERY_BROWSE_TIMEOUT_MS;
+        }
+      }
+      break;
+    }
+    case Screen::ControllerConfirm:
+      // A partial hold is intentionally inert. Only the continuous five-second
+      // service below may dispatch the destructive operation; tap cancels.
+      break;
+    case Screen::ControllerResult:
+      if (controllerRecoveryResult !=
+          ControllerRecoveryResult::StorageNeedsReboot) {
+        showControllerManager(millis(), false);
+      }
+      break;
   }
 }
 
@@ -2946,14 +4674,58 @@ void pollButton() {
   stableButton = current;
   if (stableButton) {
     wakeDisplay();
+    buttonHoldConsumed = false;
     buttonPressedAt = millis();
     Serial.println("KITSU_BUTTON pressed");
   } else {
     const uint32_t duration = millis() - buttonPressedAt;
     Serial.printf("KITSU_BUTTON released duration_ms=%lu\n",
                   static_cast<unsigned long>(duration));
-    if (duration >= BUTTON_HOLD_MS) handleLongPress();
-    else handleShortPress(buttonPressedAt);
+    if (buttonHoldConsumed) {
+      buttonHoldConsumed = false;
+    } else if (duration >= BUTTON_HOLD_MS) {
+      handleLongPress();
+    } else {
+      handleShortPress(buttonPressedAt);
+    }
+  }
+}
+
+void serviceControllerRecovery(uint32_t now) {
+  if (screen != Screen::ControllerManager &&
+      screen != Screen::ControllerConfirm &&
+      screen != Screen::ControllerResult) {
+    return;
+  }
+
+  if (!controllerRecoveryBleDisconnected(now)) {
+    companionBle.disconnectForLocalControllerRecovery();
+    if (screen == Screen::ControllerConfirm) {
+      showControllerManager(now, false);
+      Serial.println(
+          "KITSU_CONTROLLER_RECOVERY confirmation=cancelled_ble_link");
+    }
+    return;
+  }
+
+  if (controllerRecoveryDeadlineReached(now, controllerRecoveryDeadline)) {
+    if (screen == Screen::ControllerResult) {
+      leaveControllerRecovery();
+    } else if (screen == Screen::ControllerConfirm) {
+      showControllerManager(now, false);
+      Serial.println(
+          "KITSU_CONTROLLER_RECOVERY confirmation=expired");
+    } else {
+      leaveControllerRecovery();
+    }
+    return;
+  }
+
+  if (screen == Screen::ControllerConfirm && stableButton &&
+      !buttonHoldConsumed &&
+      now - buttonPressedAt >= CONTROLLER_RECOVERY_HOLD_MS) {
+    buttonHoldConsumed = true;
+    commitControllerRecovery(now);
   }
 }
 
@@ -3133,6 +4905,14 @@ void processMeshAdvert() {
   }
 }
 
+void processFloodAdvertStatus() {
+  const bool floodChanged = meshTransport.takeFloodAdvertStatusChanged();
+  const bool nearbyChanged = meshTransport.takeNearbyAdvertStatusChanged();
+  if (floodChanged || nearbyChanged) {
+    companionBleRefreshDirty = true;
+  }
+}
+
 void tickDiscoveryJournal(uint32_t now) {
   if (!discoveryJournalReady) return;
   const kitsu868::discovery::JournalStatus status = discoveryJournal.status();
@@ -3151,18 +4931,19 @@ void tickDiscoveryJournal(uint32_t now) {
   }
 }
 
-ChatJournalEntry* findPendingChannelJournal(uint8_t channelSlot) {
-  // Transport lifecycle events are emitted in queue order. Match the oldest
-  // queued send first so a cancel/requeue burst cannot swap two same-channel
-  // journal entries.
-  for (uint8_t ordinal = 0; ordinal < chatJournalCount; ++ordinal) {
-    const uint8_t index = static_cast<uint8_t>(
-        (chatJournalStart + ordinal) % kitsu868::chat::kInboxCapacity);
-    ChatJournalEntry* entry = &chatJournal[index];
+ChatJournalEntry* findChannelJournalByDelivery(
+    const kitsu868::mesh::DeliveryEvent& delivery) {
+  // getCurrentTimeUnique() gives every locally queued MeshCore message a
+  // distinct timestamp. Match both it and the slot so overlapping recent
+  // sends can never transfer a repeat observation to the wrong chat row.
+  for (uint8_t offset = 0U; offset < chatJournalCount; ++offset) {
+    ChatJournalEntry* entry = chatJournalNewest(offset);
     if (entry && !entry->inbound &&
         entry->kind == kitsu868::mesh::MessageKind::Channel &&
-        entry->channelSlot == channelSlot &&
-        entry->state == ChatJournalState::Queued) {
+        entry->channelSlot == delivery.channelSlot &&
+        entry->timestamp == delivery.messageTimestamp &&
+        (entry->state == ChatJournalState::Queued ||
+         entry->state == ChatJournalState::Sent)) {
       return entry;
     }
   }
@@ -3241,7 +5022,17 @@ void processMeshMessages() {
     entry.senderName[sizeof(entry.senderName) - 1U] = '\0';
     memcpy(entry.text, normalizedText,
            strnlen(normalizedText, sizeof(entry.text) - 1U) + 1U);
+    entry.rssi = received.rssi;
     entry.snr = received.snr;
+    // Flood path hashes are the repeaters that actually forwarded this copy
+    // before Kitsu received it. Direct routing consumes path hashes hop by
+    // hop, so a zero count at the destination cannot distinguish zero-hop
+    // delivery from a longer consumed route and must remain unknown.
+    entry.repeaterCountKnown =
+        received.route == kitsu868::mesh::MessageRoute::Flood;
+    entry.repeaterCount = entry.repeaterCountKnown
+        ? received.hopCount
+        : 0U;
 
     entry.unread = screen != Screen::Inbox;
     if (!entry.unread) {
@@ -3260,8 +5051,7 @@ void processMeshMessages() {
   while (meshTransport.takeDelivery(delivery)) {
     ChatJournalEntry* entry = delivery.kind == kitsu868::mesh::MessageKind::Direct
                                   ? findChatByDelivery(delivery)
-                                  : findPendingChannelJournal(
-                                        delivery.channelSlot);
+                                  : findChannelJournalByDelivery(delivery);
     if (!entry) {
       Serial.println("KITSU_WARN chat_delivery_unmatched=true");
       continue;
@@ -3272,24 +5062,90 @@ void processMeshMessages() {
       case kitsu868::mesh::DeliveryState::Sent:
         entry->state = ChatJournalState::Sent;
         entry->sentAt = millis();
+        if (entry->kind == kitsu868::mesh::MessageKind::Channel) {
+          entry->repeatCountKnown = delivery.repeatCountKnown;
+          entry->repeatCount = 0U;
+          entry->repeatObservationOpen = delivery.repeatObservationOpen;
+          entry->repeatSourceCount = 0U;
+          memset(entry->repeatSources, 0, sizeof(entry->repeatSources));
+          entry->repeatSourcesTruncated = false;
+        }
+        touchChatJournal(*entry);
         emitChatEvent("tx", *entry, "sent");
+        break;
+      case kitsu868::mesh::DeliveryState::RepeatObserved:
+        // The pre-dedup hook can only emit this after logTx installed a
+        // successful-sent tracker. Preserve Sent: a returned flood copy is
+        // useful reception evidence, but it is neither a channel ACK nor a
+        // proof of delivery to any intended human recipient.
+        if (entry->kind != kitsu868::mesh::MessageKind::Channel ||
+            !delivery.repeatCountKnown) {
+          Serial.println("KITSU_WARN chat_repeat_invalid=true");
+          break;
+        }
+        if (entry->state == ChatJournalState::Queued) {
+          // Recover honestly if a bounded delivery queue dropped the earlier
+          // Sent transition; RepeatObserved itself is only armed by logTx.
+          entry->state = ChatJournalState::Sent;
+          entry->sentAt = millis();
+        }
+        entry->repeatCountKnown = true;
+        entry->repeatCount = delivery.repeatCount;
+        entry->repeatObservationOpen = delivery.repeatObservationOpen;
+        entry->repeatSourceCount = delivery.repeatSourceCount;
+        memcpy(entry->repeatSources, delivery.repeatSources,
+               sizeof(entry->repeatSources));
+        entry->repeatSourcesTruncated = delivery.repeatSourcesTruncated;
+        touchChatJournal(*entry);
+        emitChatEvent("repeat", *entry,
+                      delivery.repeatObservationOpen ? "observed" : "closed");
         break;
       case kitsu868::mesh::DeliveryState::Delivered:
         entry->state = ChatJournalState::Delivered;
+        entry->repeaterCountKnown = delivery.repeaterCountKnown;
+        entry->repeaterCount = delivery.repeaterCountKnown
+            ? delivery.repeaterCount
+            : 0U;
+        touchChatJournal(*entry);
         emitChatEvent("delivery", *entry, "delivered",
                       elapsed > INT32_MAX ? INT32_MAX
                                           : static_cast<int32_t>(elapsed));
         break;
       case kitsu868::mesh::DeliveryState::TimedOut:
         entry->state = ChatJournalState::Unconfirmed;
+        entry->repeaterCountKnown = false;
+        entry->repeaterCount = 0U;
+        touchChatJournal(*entry);
         emitChatEvent("delivery", *entry, "unconfirmed");
         break;
       case kitsu868::mesh::DeliveryState::Cancelled:
         entry->state = ChatJournalState::Cancelled;
+        entry->repeaterCountKnown = false;
+        entry->repeaterCount = 0U;
+        if (entry->kind == kitsu868::mesh::MessageKind::Channel) {
+          entry->repeatCountKnown = false;
+          entry->repeatCount = 0U;
+          entry->repeatObservationOpen = false;
+          entry->repeatSourceCount = 0U;
+          memset(entry->repeatSources, 0, sizeof(entry->repeatSources));
+          entry->repeatSourcesTruncated = false;
+        }
+        touchChatJournal(*entry);
         emitChatEvent("tx", *entry, "cancelled");
         break;
       case kitsu868::mesh::DeliveryState::TxFailed:
         entry->state = ChatJournalState::Failed;
+        entry->repeaterCountKnown = false;
+        entry->repeaterCount = 0U;
+        if (entry->kind == kitsu868::mesh::MessageKind::Channel) {
+          entry->repeatCountKnown = false;
+          entry->repeatCount = 0U;
+          entry->repeatObservationOpen = false;
+          entry->repeatSourceCount = 0U;
+          memset(entry->repeatSources, 0, sizeof(entry->repeatSources));
+          entry->repeatSourcesTruncated = false;
+        }
+        touchChatJournal(*entry);
         emitChatEvent("tx", *entry, "failed");
         break;
     }
@@ -3725,6 +5581,252 @@ void printMeshStatus() {
       static_cast<unsigned long>(meshTransport.queuedAdvertCount()));
 }
 
+void printMeshRepeatStatus() {
+  kitsu868::mesh::RepeatDiagnostics diagnostics{};
+  if (!meshTransport.repeatDiagnostics(diagnostics)) {
+    Serial.println("KITSU_MESH_REPEAT {\"protocol\":1,\"error\":\"unavailable\"}");
+    return;
+  }
+  const auto resultName = [](kitsu868::mesh::RepeatDiagnosticResult value) {
+    switch (value) {
+      case kitsu868::mesh::RepeatDiagnosticResult::None: return "none";
+      case kitsu868::mesh::RepeatDiagnosticResult::NoActiveHash:
+        return "no_active_hash";
+      case kitsu868::mesh::RepeatDiagnosticResult::WireMismatch:
+        return "wire_mismatch";
+      case kitsu868::mesh::RepeatDiagnosticResult::DigestMismatch:
+        return "digest_mismatch";
+      case kitsu868::mesh::RepeatDiagnosticResult::Recorded:
+        return "recorded";
+      case kitsu868::mesh::RepeatDiagnosticResult::Saturated:
+        return "saturated";
+    }
+    return "unknown";
+  };
+  String output;
+  output.reserve(3600U);
+  output = "KITSU_MESH_REPEAT {\"protocol\":1,\"journal_revision\":\"";
+  output += String(chatJournalRevision);
+  output += "\",\"tx_done\":";
+  output += String(diagnostics.txDoneFrames);
+  output += ",\"tx_failed\":";
+  output += String(diagnostics.txFailedFrames);
+  output += ",\"rx_rearmed\":";
+  output += String(diagnostics.rxReadyAfterTx);
+  output += ",\"physical_rx_confirmed_after_tx\":";
+  output += String(diagnostics.physicalRxConfirmedAfterTx);
+  output += ",\"sync_turnaround_completed\":";
+  output += String(diagnostics.syncTurnaroundCompleted);
+  output += ",\"sync_turnaround_start_failures\":";
+  output += String(diagnostics.syncTurnaroundStartFailures);
+  output += ",\"sync_turnaround_timeouts\":";
+  output += String(diagnostics.syncTurnaroundTimeouts);
+  output += ",\"rx_rearm_attempts\":";
+  output += String(diagnostics.rxRearmAttempts);
+  output += ",\"rx_rearm_retries\":";
+  output += String(diagnostics.rxRearmRetries);
+  output += ",\"rx_rearm_failures\":";
+  output += String(diagnostics.rxRearmFailures);
+  output += ",\"last_rx_start_attempts\":";
+  output += String(diagnostics.lastRxStartAttempts);
+  output += ",\"last_rx_start_code\":";
+  if (!diagnostics.lastRxStartCodeAvailable) {
+    output += "null";
+  } else {
+    output += String(diagnostics.lastRxStartCode);
+  }
+  output += ",\"last_rx_start_software_state\":";
+  if (!diagnostics.lastRxStartCodeAvailable) {
+    output += "null";
+  } else {
+    output += diagnostics.lastRxStartSoftwareState ? "true" : "false";
+  }
+  output += ",\"last_rx_chip_status_available\":";
+  output += diagnostics.lastRxChipStatusAvailable ? "true" : "false";
+  output += ",\"last_rx_chip_status\":";
+  if (!diagnostics.lastRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    const uint8_t status = diagnostics.lastRxChipStatus;
+    output += "\"";
+    output += shortHex(&status, 1U);
+    output += "\"";
+  }
+  output += ",\"last_rx_chip_mode\":";
+  if (!diagnostics.lastRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    output += String(kitsu868::mesh::sx126xChipMode(
+        diagnostics.lastRxChipStatus));
+  }
+  output += ",\"last_tx_done_to_start_receive_us\":";
+  if (!diagnostics.lastTxDoneToStartReceiveMicrosAvailable) {
+    output += "null";
+  } else {
+    output += String(diagnostics.lastTxDoneToStartReceiveMicros);
+  }
+  output += ",\"last_tx_done_to_rx_confirmed_us\":";
+  if (!diagnostics.lastTxDoneToRxConfirmedMicrosAvailable) {
+    output += "null";
+  } else {
+    output += String(diagnostics.lastTxDoneToRxConfirmedMicros);
+  }
+  output += ",\"current_rx_software_state\":";
+  output += diagnostics.currentRxSoftwareState ? "true" : "false";
+  output += ",\"current_rx_chip_status_available\":";
+  output += diagnostics.currentRxChipStatusAvailable ? "true" : "false";
+  output += ",\"current_rx_chip_status\":";
+  if (!diagnostics.currentRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    const uint8_t status = diagnostics.currentRxChipStatus;
+    output += "\"";
+    output += shortHex(&status, 1U);
+    output += "\"";
+  }
+  output += ",\"current_rx_chip_mode\":";
+  if (!diagnostics.currentRxChipStatusAvailable) {
+    output += "null";
+  } else {
+    output += String(kitsu868::mesh::sx126xChipMode(
+        diagnostics.currentRxChipStatus));
+  }
+  companion_api::appendReceiveObservability(output, diagnostics);
+  output += ",\"scoped_flood_tx_done\":";
+  output += String(diagnostics.scopedFloodTxDoneFrames);
+  output += ",\"unscoped_flood_tx_done\":";
+  output += String(diagnostics.unscopedFloodTxDoneFrames);
+  output += ",\"raw_frames\":";
+  output += String(diagnostics.rawFrames);
+  output += ",\"parsed_frames\":";
+  output += String(diagnostics.parsedFrames);
+  output += ",\"raw_rejected\":";
+  output += String(diagnostics.rawRejected);
+  output += ",\"channel_candidates\":";
+  output += String(diagnostics.channelForwardCandidates);
+  output += ",\"channel_hash_matches\":";
+  output += String(diagnostics.channelHashMatches);
+  output += ",\"channel_wire_mismatches\":";
+  output += String(diagnostics.channelWireMismatches);
+  output += ",\"channel_exact_matches\":";
+  output += String(diagnostics.channelExactMatches);
+  output += ",\"channel_recorded\":";
+  output += String(diagnostics.channelRecorded);
+  output += ",\"channel_digest_mismatches\":";
+  output += String(diagnostics.channelDigestMismatches);
+  output += ",\"channel_saturated\":";
+  output += String(diagnostics.channelSaturated);
+  output += ",\"advert_candidates\":";
+  output += String(diagnostics.advertForwardCandidates);
+  output += ",\"advert_hash_matches\":";
+  output += String(diagnostics.advertHashMatches);
+  output += ",\"advert_wire_mismatches\":";
+  output += String(diagnostics.advertWireMismatches);
+  output += ",\"advert_exact_matches\":";
+  output += String(diagnostics.advertExactMatches);
+  output += ",\"advert_recorded\":";
+  output += String(diagnostics.advertRecorded);
+  output += ",\"advert_digest_mismatches\":";
+  output += String(diagnostics.advertDigestMismatches);
+  output += ",\"advert_saturated\":";
+  output += String(diagnostics.advertSaturated);
+  output += ",\"last_flood_tx\":";
+  if (!diagnostics.lastFloodTxAvailable) {
+    output += "null";
+  } else {
+    output += "{\"payload_type\":";
+    output += String(diagnostics.lastFloodTxPayloadType);
+    output += ",\"scoped\":";
+    output += diagnostics.lastFloodTxScoped ? "true" : "false";
+    output += ",\"scope\":";
+    if (diagnostics.lastFloodTxScoped) {
+      output += "\"";
+      output += kitsu868::mesh::kDefaultTransportScopeName;
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += ",\"transport_code\":";
+    if (diagnostics.lastFloodTxScoped) {
+      const uint8_t codeBytes[2] = {
+          static_cast<uint8_t>(diagnostics.lastFloodTxTransportCode),
+          static_cast<uint8_t>(diagnostics.lastFloodTxTransportCode >> 8U)};
+      output += "\"";
+      output += shortHex(codeBytes, sizeof(codeBytes));
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += ",\"scope_tag\":";
+    if (diagnostics.lastFloodTxScoped) {
+      output += "\"";
+      output += kitsu868::mesh::kDefaultTransportScopeTag;
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += ",\"scope_key_fingerprint\":";
+    if (diagnostics.lastFloodTxScoped) {
+      output += "\"";
+      output += kitsu868::mesh::kDefaultTransportScopeKeyFingerprint;
+      output += "\"";
+    } else {
+      output += "null";
+    }
+    output += '}';
+  }
+  output += ",\"last_channel\":";
+  if (!diagnostics.lastChannelAvailable ||
+      diagnostics.lastPathHashSize == 0U ||
+      diagnostics.lastPathBytes < diagnostics.lastPathHashSize) {
+    output += "null";
+  } else {
+    const String token = shortHex(
+        diagnostics.lastPath + diagnostics.lastPathBytes -
+            diagnostics.lastPathHashSize,
+        diagnostics.lastPathHashSize);
+    output += "{\"last_hop_token\":\"";
+    output += token;
+    output += "\",\"path_hash_bytes\":";
+    output += String(diagnostics.lastPathHashSize);
+    output += ",\"path_count\":";
+    output += String(diagnostics.lastPathCount);
+    output += ",\"rssi_dbm\":";
+    output += String(diagnostics.lastRssi, 1);
+    output += ",\"snr_db\":";
+    output += String(diagnostics.lastSnr, 1);
+    output += ",\"result\":\"";
+    output += resultName(diagnostics.lastResult);
+    output += "\"}";
+  }
+  output += ",\"last_advert\":";
+  if (!diagnostics.lastAdvertAvailable ||
+      diagnostics.lastAdvertPathHashSize == 0U ||
+      diagnostics.lastAdvertPathBytes < diagnostics.lastAdvertPathHashSize) {
+    output += "null";
+  } else {
+    const String token = shortHex(
+        diagnostics.lastAdvertPath + diagnostics.lastAdvertPathBytes -
+            diagnostics.lastAdvertPathHashSize,
+        diagnostics.lastAdvertPathHashSize);
+    output += "{\"last_hop_token\":\"";
+    output += token;
+    output += "\",\"path_hash_bytes\":";
+    output += String(diagnostics.lastAdvertPathHashSize);
+    output += ",\"path_count\":";
+    output += String(diagnostics.lastAdvertPathCount);
+    output += ",\"rssi_dbm\":";
+    output += String(diagnostics.lastAdvertRssi, 1);
+    output += ",\"snr_db\":";
+    output += String(diagnostics.lastAdvertSnr, 1);
+    output += ",\"result\":\"";
+    output += resultName(diagnostics.lastAdvertResult);
+    output += "\"}";
+  }
+  output += '}';
+  Serial.println(output);
+}
+
 bool consumeCurrentLocationOnce() {
   if (meshSettings.locationMode !=
       kitsu868::mesh::LocationMode::CurrentOnce) {
@@ -3948,6 +6050,8 @@ void publishKitsuMapCard() {
 bool executeMeshCommand(const String& command) {
   if (command == "mesh status") {
     printMeshStatus();
+  } else if (command == "mesh repeat-status") {
+    printMeshRepeatStatus();
   } else if (command == "mesh config on" ||
              command == "mesh config off" ||
              command.startsWith("mesh config ")) {
@@ -4051,6 +6155,37 @@ size_t configuredChannelCount() {
   return count;
 }
 
+void printChatStorageStatus() {
+  kitsu868::mesh::MessagingStorageStatus status{};
+  (void)meshTransport.messagingStorageStatus(status);
+  Serial.print(
+      "KITSU_CHAT_STORAGE {\"protocol\":1,\"usable\":");
+  Serial.print(status.usable ? "true" : "false");
+  Serial.print(",\"persisted_schema\":");
+  if (status.persistedSchema == 0U) Serial.print("null");
+  else Serial.print(status.persistedSchema);
+  Serial.print(",\"migration_pending\":");
+  Serial.print(status.migrationPending ? "true" : "false");
+  Serial.print(",\"cleanup_pending\":");
+  Serial.print(status.cleanupPending ? "true" : "false");
+  Serial.print(",\"generation\":");
+  if (status.generation == 0U) Serial.print("null");
+  else Serial.print(static_cast<unsigned long>(status.generation));
+  Serial.print(",\"writable_last_result\":");
+  if (status.lastWriteResult ==
+      kitsu868::mesh::MessagingStorageWriteResult::NotAttempted) {
+    Serial.print("null");
+  } else {
+    Serial.print('"');
+    Serial.print(kitsu868::mesh::messagingStorageWriteResultName(
+        status.lastWriteResult));
+    Serial.print('"');
+  }
+  Serial.print(",\"reason\":\"");
+  Serial.print(kitsu868::mesh::messagingStorageReasonName(status.reason));
+  Serial.println("\"}");
+}
+
 void printChatStatus() {
   const bool txUnlocked = meshTransport.transmitAllowed(meshSettings);
   Serial.printf(
@@ -4077,6 +6212,7 @@ void printChatStatus() {
       txUnlocked && meshTransport.timeValid() ? "true" : "false",
       static_cast<unsigned>(kitsu868::chat::kDirectTextMaxBytes),
       static_cast<unsigned>(kitsu868::chat::kKitsuChannelTextMaxBytes));
+  printChatStorageStatus();
 }
 
 void printChatContacts() {
@@ -4134,6 +6270,13 @@ void printChatChannels() {
         slot == 0U ? "true" : "false");
     if (channel.configured) Serial.printf("\"%02X\"", channel.hash);
     else Serial.print("null");
+    Serial.print(",\"region_scope\":");
+    if (channel.configured &&
+        channel.regionScope == kitsu868::mesh::ChannelRegionScope::Eu) {
+      Serial.print("\"EU\"");
+    } else {
+      Serial.print("null");
+    }
     Serial.println("}");
   }
   Serial.printf("KITSU_CHANNEL_END {\"protocol\":1,\"count\":%u}\n",
@@ -4244,6 +6387,16 @@ void executeChatCommand(const kitsu868::chat::Command& command) {
       for (uint8_t offset = 0; offset < chatJournalCount; ++offset) {
         ChatJournalEntry* entry = chatJournalNewest(offset);
         if (!entry || entry->inbound) continue;
+        if (entry->kind == kitsu868::mesh::MessageKind::Channel &&
+            entry->state == ChatJournalState::Sent &&
+            entry->repeatCountKnown && entry->repeatObservationOpen) {
+          // Messaging reset discards the RAM correlation fingerprints. Close
+          // the app-visible observation explicitly before that irreversible
+          // context change so the row cannot remain "listening" forever.
+          entry->repeatObservationOpen = false;
+          touchChatJournal(*entry);
+          emitChatEvent("repeat", *entry, "closed");
+        }
         const bool pendingDirect =
             entry->kind == kitsu868::mesh::MessageKind::Direct &&
             (entry->state == ChatJournalState::Queued ||
@@ -4257,9 +6410,23 @@ void executeChatCommand(const kitsu868::chat::Command& command) {
           // The packet was already physically transmitted; only its ACK
           // tracker is being discarded, so "unconfirmed" is honest.
           entry->state = ChatJournalState::Unconfirmed;
+          entry->repeaterCountKnown = false;
+          entry->repeaterCount = 0U;
+          touchChatJournal(*entry);
           emitChatEvent("delivery", *entry, "unconfirmed");
         } else {
           entry->state = ChatJournalState::Cancelled;
+          entry->repeaterCountKnown = false;
+          entry->repeaterCount = 0U;
+          if (entry->kind == kitsu868::mesh::MessageKind::Channel) {
+            entry->repeatCountKnown = false;
+            entry->repeatCount = 0U;
+            entry->repeatObservationOpen = false;
+            entry->repeatSourceCount = 0U;
+            memset(entry->repeatSources, 0, sizeof(entry->repeatSources));
+            entry->repeatSourcesTruncated = false;
+          }
+          touchChatJournal(*entry);
           emitChatEvent("tx", *entry, "cancelled");
         }
       }
@@ -4301,8 +6468,14 @@ void executeChatCommand(const kitsu868::chat::Command& command) {
     case CommandKind::SetChannel: {
       uint8_t secret[32]{};
       memcpy(secret, command.channelSecret, sizeof(command.channelSecret));
+      const kitsu868::mesh::ChannelRegionScope regionScope =
+          command.channelRegionScope ==
+                  kitsu868::chat::ChannelRegionScope::Eu
+              ? kitsu868::mesh::ChannelRegionScope::Eu
+              : kitsu868::mesh::ChannelRegionScope::Legacy;
       const kitsu868::mesh::TransportStatus status =
-          meshTransport.setChannel(command.channelIndex, command.name, secret);
+          meshTransport.setChannel(command.channelIndex, command.name, secret,
+                                   regionScope);
       memset(secret, 0, sizeof(secret));
       printChatResult("channel_set",
                       status == kitsu868::mesh::TransportStatus::Ok
@@ -4699,13 +6872,16 @@ void setup() {
                        companionPack.valid() ? companionPack.id() : 0);
   companionBrain.syncSleeping(wisp.sleeping);
   initMesh();
+  printChatStorageStatus();
+  // Establish the boot-scoped journal identity before BLE starts accepting
+  // requests; every v2 page, including an empty first page, requires it.
+  chatSession = esp_random();
+  if (chatSession == 0U) chatSession = 1U;
   const bool bleReady = legacyConnectivityRetirementReady &&
       companionBle.begin();
   Serial.printf("KITSU_BLE_COMPANION ready=%s service=%s\n",
                 bleReady ? "true" : "false",
                 kitsu868::connectivity::kKitsuGattServiceUuid);
-  chatSession = esp_random();
-  if (chatSession == 0U) chatSession = 1U;
   sampleBattery(true);
   showHatchSequence();
 
@@ -4747,10 +6923,12 @@ void loop() {
   pollSerial();
   const uint32_t now = millis();
   companionBle.loop(now);
+  serviceControllerRecovery(now);
   bleOta.loop(now, legacyConnectivityRetirementReady &&
                        connectivitySecurityReady && companionBle.ready(),
               companionBle.bleTransmitIdle());
   meshTransport.loop();
+  processFloodAdvertStatus();
   processMeshAdvert();
   processMeshMessages();
   serviceCompanionBleRefresh(now);

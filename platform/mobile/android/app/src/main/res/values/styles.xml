@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Kitsu" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.Kitsu.Base" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#D35F2A</item>
-        <item name="android:navigationBarColor">#17120F</item>
-        <item name="android:statusBarColor">#17120F</item>
+        <item name="android:windowBackground">@color/kitsu_window_background</item>
+        <item name="android:colorAccent">@color/kitsu_brand_copper</item>
+        <item name="android:navigationBarColor">@color/kitsu_window_background</item>
+        <item name="android:statusBarColor">@color/kitsu_window_background</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <style name="Theme.Kitsu" parent="Theme.Kitsu.Base" />
 </resources>

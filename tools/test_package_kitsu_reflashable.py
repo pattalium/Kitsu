@@ -180,7 +180,7 @@ build_flags =
     source = project / "src"
     source.mkdir(exist_ok=True)
     (source / "main.cpp").write_text(
-        'constexpr char FIRMWARE_VERSION[] = "0.12.0";\n', encoding="utf-8"
+        'constexpr char FIRMWARE_VERSION[] = "0.14.0";\n', encoding="utf-8"
     )
 
 
@@ -279,7 +279,7 @@ def fixture(root: Path) -> tuple[Path, Path, Path]:
     make_esp_image(
         build / "firmware.bin",
         [
-            (0x3C000020, b"A" * 128 + b"0.12.0\x00" + b"A" * 121),
+            (0x3C000020, b"A" * 128 + b"0.14.0\x00" + b"A" * 121),
             (0x40374000, b"C" * 191),
         ],
     )
@@ -297,7 +297,7 @@ def command(
     output: Path,
     tool: Path,
     *,
-    version: str = "0.12.0",
+    version: str = "0.14.0",
 ) -> list[str]:
     return [
         sys.executable,
@@ -356,7 +356,7 @@ def test_success_exact_v2_contract() -> None:
         assert manifest["schema"] == packager.SCHEMA
         assert manifest["artifact_status"] == packager.ARTIFACT_STATUS
         assert manifest["release_channel"] == packager.RELEASE_CHANNEL
-        assert manifest["firmware_version"] == "0.12.0"
+        assert manifest["firmware_version"] == "0.14.0"
         assert "device_id" not in manifest
         assert manifest["build_profile"]["environment"] == packager.ENVIRONMENT
         assert manifest["build_profile"]["platform"] == packager.PLATFORM_PACKAGE
@@ -366,7 +366,7 @@ def test_success_exact_v2_contract() -> None:
         )
 
         identity = manifest["firmware_identity"]
-        assert identity["version"] == "0.12.0"
+        assert identity["version"] == "0.14.0"
         assert identity["source"] == "src/main.cpp"
         assert identity["image_marker_verified"] is True
         assert packager.SHA256_PATTERN.fullmatch(identity["source_sha256"])
@@ -618,9 +618,9 @@ def test_version_relabel_and_image_marker_rejected() -> None:
         project, build, tool = fixture(root)
         output = root / "release"
         completed = run(
-            command(project, build, output, tool, version="0.12.1"), success=False
+            command(project, build, output, tool, version="0.14.1"), success=False
         )
-        assert "does not match source version 0.12.0" in completed.stderr
+        assert "does not match source version 0.14.0" in completed.stderr
         assert_no_committed_output(output)
 
     with tempfile.TemporaryDirectory(prefix="kitsu-reflashable-version-image-") as temp:
@@ -703,7 +703,7 @@ def test_signed_or_padded_images_rejected() -> None:
         project, build, tool = fixture(root)
         make_esp_image(
             build / "firmware.bin",
-            [(0x3C000020, b"0.12.0\x00" + b"A" * 64), (0, b"P" * 64)],
+            [(0x3C000020, b"0.14.0\x00" + b"A" * 64), (0, b"P" * 64)],
         )
         output = root / "release"
         completed = run(command(project, build, output, tool), success=False)
@@ -828,7 +828,7 @@ def test_legacy_production_entrypoints_withdrawn() -> None:
 
 def test_historical_stable_offset_imports_remain_defined() -> None:
     # The pinned 0.11.1 stable packager remains the public rollback path until
-    # physical acceptance promotes 0.12.0. Its imports must stay loadable even
+    # physical acceptance promotes 0.16.5. Its imports must stay loadable even
     # though the v2 candidate does not write OTA selection data.
     assert packager.OTA_DATA_OFFSET == 0x00E000
     assert packager.APP_OFFSET == packager.APP0_OFFSET == 0x010000
@@ -837,7 +837,7 @@ def test_historical_stable_offset_imports_remain_defined() -> None:
 def test_runner_pins_candidate_and_reviewed_runtime() -> None:
     runner = (TOOLS / "package_kitsu_reflashable.cmd").read_text(encoding="utf-8")
     normalized = runner.replace("/", "\\").lower()
-    assert 'if "%firmware_version%"=="" set "firmware_version=0.12.0"' in normalized
+    assert 'if "%firmware_version%"=="" set "firmware_version=0.16.5"' in normalized
     assert "esptool411-runtime\\scripts\\python.exe" in normalized
     assert "esptool411-runtime\\scripts\\esptool.exe" in normalized
     assert (

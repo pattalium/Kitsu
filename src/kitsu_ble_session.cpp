@@ -317,7 +317,12 @@ bool writeQuoted(JsonWriter& writer, const char* input, size_t bytes) {
 bool operationAllowed(const char* operation) {
   static const char* const operations[] = {
       "state.get",          "history.get",       "peers.get",
-      "messages.get",       "channels.get",      "clock.sync",
+      "messages.get",       "messages.get.v2",   "messages.get.v3",
+      "messages.get.v4",
+      "messages.mark_read",
+      "channels.get",       "channels.get.v2",
+      "chat.storage.get",
+      "clock.sync",
       "mesh.configure",     "action.apply",      "controller.forget",
       "firmware.update.status", "firmware.update.begin",
       "firmware.update.write",  "firmware.update.finish",

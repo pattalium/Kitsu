@@ -1,0 +1,185 @@
+package ptl.kitsu.app
+
+import android.Manifest
+import android.content.ComponentName
+import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.os.Build
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import ptl.kitsu.app.connection.AndroidReconnectSuppressionStore
+import ptl.kitsu.app.connection.ConnectionCoordinator
+import ptl.kitsu.app.model.ActionCommand
+import ptl.kitsu.app.model.ActionKind
+import ptl.kitsu.app.model.ActionReceipt
+import ptl.kitsu.app.model.ControllerForgetReceipt
+import ptl.kitsu.app.model.EventEnvelope
+import ptl.kitsu.app.model.HistoryPage
+import ptl.kitsu.app.model.KitsuStatus
+import ptl.kitsu.app.model.MessagePage
+import ptl.kitsu.app.model.MeshChannel
+import ptl.kitsu.app.model.MeshConfigurationReceipt
+import ptl.kitsu.app.model.PeerPage
+import ptl.kitsu.app.transport.ConnectResult
+import ptl.kitsu.app.transport.ConnectionMode
+import ptl.kitsu.app.transport.KitsuTransport
+import ptl.kitsu.app.ui.MeshUserPolicy
+import ptl.kitsu.app.ui.ModerationPreferences
+import ptl.kitsu.app.update.FirmwareUpdateReceipt
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class ReleaseContractInstrumentationTest {
+    @Test fun launcherLoadsAsAnAdaptiveIconOnEverySupportedApi() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val icon = context.packageManager.getApplicationIcon(context.applicationInfo)
+        assertTrue(icon is AdaptiveIconDrawable)
+        icon as AdaptiveIconDrawable
+        assertNotNull(icon.background)
+        assertNotNull(icon.foreground)
+        if (Build.VERSION.SDK_INT >= 33) assertNotNull(icon.monochrome)
+    }
+
+    @Test fun productionIdentityAndProvenanceAreExact() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        assertEquals(AUTHORITATIVE_APPLICATION_ID, context.packageName.removeSuffix(".debug"))
+        assertEquals(context.packageName, BuildConfig.APPLICATION_ID)
+        assertTrue(
+            context.packageName == AUTHORITATIVE_APPLICATION_ID ||
+                context.packageName == "$AUTHORITATIVE_APPLICATION_ID.debug",
+        )
+        assertEquals(36, context.applicationInfo.targetSdkVersion)
+        val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        assertEquals(packageInfo.longVersionCode.toInt(), BuildConfig.VERSION_CODE)
+        assertEquals(packageInfo.versionName, BuildConfig.VERSION_NAME)
+        assertEquals(19, BuildConfig.VERSION_CODE)
+        assertEquals(
+            if (context.packageName.endsWith(".debug")) "2.1.5-debug" else "2.1.5",
+            BuildConfig.VERSION_NAME,
+        )
+        assertTrue(
+            BuildConfig.KITSU_SOURCE_ARCHIVE_SHA256 == "unbound" ||
+                Regex("^[0-9a-f]{64}$").matches(BuildConfig.KITSU_SOURCE_ARCHIVE_SHA256),
+        )
+        val applicationInfo = context.packageManager.getApplicationInfo(
+            context.packageName,
+            PackageManager.GET_META_DATA,
+        )
+        assertEquals(
+            BuildConfig.KITSU_SOURCE_ARCHIVE_SHA256,
+            applicationInfo.metaData.getString(SOURCE_ARCHIVE_METADATA),
+        )
+    }
+
+    @Test fun packagedAppHasOnlyTheRequiredBluetoothPermissionSurface() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val packageInfo = context.packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.GET_PERMISSIONS or PackageManager.GET_SERVICES,
+        )
+        val permissions = packageInfo.requestedPermissions?.toSet().orEmpty()
+        assertFalse(Manifest.permission.INTERNET in permissions)
+        assertFalse(Manifest.permission.FOREGROUND_SERVICE in permissions)
+        assertFalse(Manifest.permission.ACCESS_COARSE_LOCATION in permissions)
+        assertTrue(Manifest.permission.BLUETOOTH_SCAN in permissions)
+        assertTrue(Manifest.permission.BLUETOOTH_CONNECT in permissions)
+        assertTrue(packageInfo.services.isNullOrEmpty())
+    }
+
+    @Test fun launcherActivityIsNotLockedToPortrait() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val activityInfo = context.packageManager.getActivityInfo(
+            ComponentName(context, MainActivity::class.java),
+            0,
+        )
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, activityInfo.screenOrientation)
+    }
+
+    @Test fun moderationAcceptanceAndBlocksPersistAcrossStoreRecreation() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val rawPreferences = context.getSharedPreferences(
+            MODERATION_PREFERENCES,
+            Context.MODE_PRIVATE,
+        )
+        try {
+            rawPreferences.edit().clear().commit()
+            val first = ModerationPreferences(context)
+            assertEquals(0, first.acceptedPolicyVersion())
+            assertTrue(first.blockedPeerIds().isEmpty())
+
+            first.acceptCurrentPolicy()
+            first.blockPeer("  peer-alpha  ")
+
+            val recreated = ModerationPreferences(context)
+            assertEquals(MeshUserPolicy.VERSION, recreated.acceptedPolicyVersion())
+            assertEquals(setOf("peer-alpha"), recreated.blockedPeerIds())
+
+            recreated.unblockPeer("peer-alpha")
+            assertTrue(ModerationPreferences(context).blockedPeerIds().isEmpty())
+        } finally {
+            rawPreferences.edit().clear().commit()
+        }
+    }
+
+    @Test fun disconnectSuppressionSurvivesColdServiceRecreation() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferences = context.getSharedPreferences("kitsu_disconnect_${System.nanoTime()}", 0)
+        try {
+            ConnectionCoordinator(ProbeTransport(), AndroidReconnectSuppressionStore(preferences))
+                .disconnect(suppressAutomaticReconnect = true)
+            val direct = ProbeTransport()
+            val cold = ConnectionCoordinator(direct, AndroidReconnectSuppressionStore(preferences))
+            assertEquals("user_disconnected", cold.connect(userInitiated = false).detail)
+            assertEquals(0, direct.connectCount)
+            assertTrue(cold.connect(userInitiated = true).connected)
+        } finally {
+            preferences.edit().clear().commit()
+        }
+    }
+
+    private class ProbeTransport : KitsuTransport {
+        override val mode = ConnectionMode.DIRECT_BLE
+        var connectCount = 0
+        override suspend fun connect() = ConnectResult.Connected.also { connectCount++ }
+        override suspend fun disconnect() = Unit
+        override suspend fun synchronizeClock() = Unit
+        override suspend fun status() = KitsuStatus(deviceId = "KTDEAD", companionName = "Kitsu", updatedAt = 1)
+        override suspend fun history(after: String?, limit: Int) = HistoryPage()
+        override suspend fun peers() = PeerPage()
+        override suspend fun messages(after: String?, limit: Int) = MessagePage()
+        override suspend fun action(command: ActionCommand) = ActionReceipt(
+            command.clientRequestId,
+            true,
+            if (command.kind in setOf(ActionKind.SEND_MESSAGE, ActionKind.ADVERTISE_ONCE)) "queued" else "applied",
+        )
+        override fun events(after: String?): Flow<EventEnvelope> = emptyFlow()
+        override suspend fun channels(firmwareVersion: String?): List<MeshChannel> = emptyList()
+        override suspend fun configureMesh(enabled: Boolean) = MeshConfigurationReceipt(enabled, "uk_eu_narrow", 22)
+        override suspend fun forgetController() = ControllerForgetReceipt("kitsu.controller-forget.v1", true)
+        override suspend fun firmwareUpdateStatus() = updateReceipt()
+        override suspend fun beginFirmwareUpdate(manifest: ByteArray, signature: ByteArray) = updateReceipt()
+        override suspend fun writeFirmwareUpdate(updateId: String, offset: Int, data: ByteArray) = updateReceipt()
+        override suspend fun finishFirmwareUpdate(updateId: String) = updateReceipt()
+        override suspend fun rebootFirmwareUpdate(updateId: String) = updateReceipt().copy(scheduled = true)
+        override suspend fun abortFirmwareUpdate(updateId: String) = updateReceipt()
+        private fun updateReceipt() = FirmwareUpdateReceipt(
+            true, 1, "idle", null, "0.0.0", 0, 0, 4_096, false, false, false,
+        )
+    }
+
+    private companion object {
+        const val AUTHORITATIVE_APPLICATION_ID = "ptl.kitsu.app"
+        const val SOURCE_ARCHIVE_METADATA = "ptl.kitsu.app.SOURCE_ARCHIVE_SHA256"
+        const val MODERATION_PREFERENCES = "kitsu_mesh_moderation"
+    }
+}

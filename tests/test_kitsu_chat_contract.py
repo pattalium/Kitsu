@@ -151,6 +151,18 @@ class CommandContractTest(unittest.TestCase):
             command,
             f"chat channel set 3 {PRIVATE_SECRET} Team Alpha",
         )
+        self.assertEqual(
+            chat_channel_set_command(
+                3, PRIVATE_SECRET.lower(), "Team Alpha", "EU"
+            ),
+            f"chat channel set 3 region_scope=EU {PRIVATE_SECRET} Team Alpha",
+        )
+        for invalid_scope in ("eu", "US", "", "#EU"):
+            with self.subTest(region_scope=invalid_scope):
+                with self.assertRaisesRegex(ContractError, "EU or absent"):
+                    chat_channel_set_command(
+                        3, PRIVATE_SECRET, "Team Alpha", invalid_scope
+                    )
         self.assertLessEqual(len(command.encode("utf-8")), MAX_INPUT_BYTES)
         self.assertEqual(chat_channel_clear_command(1), "chat channel clear 1")
         for invalid in (0, 4, -1):
@@ -165,8 +177,27 @@ class CommandContractTest(unittest.TestCase):
         )
         self.assertEqual(
             chat_channel_command_from_uri(uri, 1),
+            f"chat channel set 1 region_scope=EU {PRIVATE_SECRET} Team Alpha",
+        )
+        self.assertEqual(
+            chat_channel_command_from_uri(
+                "meshcore://channel/add?name=Team+Alpha"
+                f"&secret={PRIVATE_SECRET.lower()}",
+                1,
+            ),
             f"chat channel set 1 {PRIVATE_SECRET} Team Alpha",
         )
+        # Decoded scope comparison remains exact/case-sensitive. Absent scope
+        # is legacy; only explicit EU opts this channel into #EU routing.
+        for non_eu_scope in ("US", "eu", "", "EU%00", "%EF%BC%A5%EF%BC%B5"):
+            with self.subTest(region_scope=non_eu_scope):
+                with self.assertRaises(ContractError):
+                    chat_channel_command_from_uri(
+                        "meshcore://channel/add?name=Team+Alpha"
+                        f"&secret={PRIVATE_SECRET.lower()}"
+                        f"&region_scope={non_eu_scope}",
+                        1,
+                    )
         hashtag = chat_hashtag_channel_command("#test", 2)
         self.assertEqual(
             hashtag,
@@ -338,7 +369,9 @@ class RecordContractTest(unittest.TestCase):
             "hash": "11",
         }
         parsed = parse_device_line(record("KITSU_CHANNEL", value))
-        self.assertEqual(parsed, ChannelRecord(0, "Public", True, True, "11"))
+        self.assertEqual(
+            parsed, ChannelRecord(0, "Public", True, True, "11", None)
+        )
         self.assertNotIn("secret", value)
         self.assertEqual(
             parse_device_line(record("KITSU_CHANNEL_END", {"protocol": 1, "count": 4})),
@@ -346,6 +379,21 @@ class RecordContractTest(unittest.TestCase):
         )
         value["index"] = 1
         with self.assertRaisesRegex(ContractError, "only channel zero"):
+            parse_device_line(record("KITSU_CHANNEL", value))
+
+        value.update(
+            {
+                "index": 1,
+                "name": "Ops",
+                "public": False,
+                "region_scope": "EU",
+            }
+        )
+        parsed = parse_device_line(record("KITSU_CHANNEL", value))
+        assert isinstance(parsed, ChannelRecord)
+        self.assertEqual(parsed.region_scope, "EU")
+        value["region_scope"] = "eu"
+        with self.assertRaisesRegex(ContractError, "unsupported"):
             parse_device_line(record("KITSU_CHANNEL", value))
 
     def test_direct_messages_are_authenticated_but_channel_senders_are_not(self) -> None:

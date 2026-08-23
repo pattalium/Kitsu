@@ -1,10 +1,14 @@
 from pathlib import Path
+import json
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
 SESSION = (ROOT / "src" / "kitsu_ble_session.cpp").read_text(encoding="utf-8")
+MESSAGE_READ = (ROOT / "src" / "kitsu_message_read_contract.cpp").read_text(
+    encoding="utf-8"
+)
 PROFILE = (ROOT / "platformio.ini").read_text(encoding="utf-8")
 
 
@@ -52,7 +56,10 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             "history.get",
             "peers.get",
             "messages.get",
+            "messages.get.v2",
+            "messages.mark_read",
             "channels.get",
+            "channels.get.v2",
             "clock.sync",
             "mesh.configure",
             "action.apply",
@@ -157,6 +164,35 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, state)
 
+    def test_authenticated_advert_action_is_real_and_reports_readiness(self):
+        action = MAIN.split("bool applyAction", 1)[1].split(
+            "bool buildState", 1
+        )[0]
+        self.assertIn("BleActionKind::AdvertiseOnce", action)
+        self.assertIn("queueBleAdvert(command)", action)
+        self.assertIn('command.kind == BleActionKind::AdvertiseOnce', action)
+        self.assertIn('? "queued" : "applied"', action)
+
+        queue = MAIN.split("queueBleAdvert(", 1)[1].split(
+            "bool rejectAction", 1
+        )[0]
+        self.assertIn("BleAdvertScope::Nearby", queue)
+        self.assertIn("BleAdvertScope::Mesh", queue)
+        self.assertIn("AdvertScope::Nearby", queue)
+        self.assertIn("AdvertScope::Flood", queue)
+        self.assertIn("meshTransport.introduceOnce(", queue)
+
+        state = MAIN.split("bool buildState", 1)[1].split(
+            "void appendObservationTime", 1
+        )[0]
+        for field in (
+            "mesh_identity_ready",
+            "mesh_advertise_ready",
+            "mesh_advertise_retry_after_ms",
+            "mesh_advertise_error",
+        ):
+            self.assertIn(field, state)
+
     def test_message_gap_is_relative_to_the_requested_cursor(self):
         messages = MAIN.split("bool buildMessages", 1)[1].split(
             "}  // namespace companion_api", 1
@@ -170,6 +206,242 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             'output += chatJournalDropped != 0U ? "true" : "false"',
             messages,
         )
+
+    def test_message_v2_is_generation_stable_and_identity_paginated(self):
+        messages = MAIN.split("bool buildMessagesV2", 1)[1].split(
+            "}  // namespace companion_api", 1
+        )[0]
+        for required in (
+            "kitsu.messages.v2",
+            "journal_session",
+            "journal_revision",
+            "cursor = entry->id",
+        ):
+            self.assertIn(required, messages)
+        item = MAIN.split("bool appendMessageV2Item", 1)[1].split(
+            "bool buildMessagesV2", 1
+        )[0]
+        for required in (
+            "revision",
+            "unread",
+            "route",
+            "local_tx",
+            "delivery_ack",
+            "repeater_count",
+            "repeaters_heard",
+            "rssi_dbm",
+            "snr_db",
+        ):
+            self.assertIn(required, item)
+        self.assertNotIn("cursor = entry->revision", messages)
+        self.assertIn("kMessagesV2PageItems = 12U", MAIN)
+        self.assertIn("kMessagesPageTailReserveBytes", messages)
+        self.assertIn(
+            "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
+        )
+        self.assertIn('FIRMWARE_VERSION[] = "0.16.5"', MAIN)
+        setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
+        self.assertIn("chatSession = esp_random()", setup)
+        self.assertIn("if (chatSession == 0U) chatSession = 1U", setup)
+        self.assertLess(
+            setup.index("chatSession = esp_random()"),
+            setup.index("companionBle.begin()"),
+        )
+
+    def test_message_pages_fit_worst_case_escaped_payloads(self):
+        # Quotes are legal MeshCore text and double in JSON, so they are the
+        # byte-heavy valid ASCII case. Exercise all 24 retained rows even
+        # though the wire intentionally emits bounded 8/12-row pages.
+        escaped_name = '"' * 32
+        escaped_text = '"' * 160
+        # Canonical base64url for a valid, nonzero 32-byte MeshCore public key.
+        peer = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+        oldest_id = 4_294_967_272
+        v1_template = {
+            "timestamp": 4294967295,
+            "inbound": True,
+            "kind": "direct",
+            "peer_id": peer,
+            "channel_slot": None,
+            "authenticated": True,
+            "sender_name": escaped_name,
+            "text": escaped_text,
+            "state": "received",
+        }
+        v2_template = {
+            **v1_template,
+            "unread": True,
+            "route": "flood",
+            "local_tx": "not_applicable",
+            "delivery_ack": "not_applicable",
+            "repeater_count": 63,
+            "repeaters_heard": None,
+            "rssi_dbm": -164.0,
+            "snr_db": -20.0,
+        }
+        v1_items = [
+            {**v1_template, "message_id": str(oldest_id + ordinal)}
+            for ordinal in range(24)
+        ]
+        v2_items = [
+            {
+                **v2_template,
+                "message_id": str(oldest_id + ordinal),
+                "revision": str(oldest_id + ordinal),
+            }
+            for ordinal in range(24)
+        ]
+
+        def encoded(value):
+            return json.dumps(
+                value, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+
+        v1_page = {
+            "schema": "kitsu.messages.v1",
+            "items": v1_items[:8],
+            "cursor": v1_items[7]["message_id"],
+            "has_more": True,
+            "gap": False,
+        }
+        def v2_page(items, has_more):
+            return {
+                "schema": "kitsu.messages.v2",
+                "journal_session": "4294967295",
+                "journal_revision": "4294967295",
+                "items": items,
+                "cursor": items[-1]["message_id"],
+                "has_more": has_more,
+                "gap": False,
+            }
+
+        v2_pages = [v2_page(v2_items[:12], True),
+                    v2_page(v2_items[12:], False)]
+        unpaged_v2 = v2_page(v2_items, False)
+        self.assertLessEqual(len(encoded(v1_page)), 12_000)
+        for page in v2_pages:
+            self.assertLessEqual(len(encoded(page)), 12_000)
+        self.assertGreater(len(encoded(unpaged_v2)), 12_000)
+        drained_ids = [item["message_id"]
+                       for page in v2_pages for item in page["items"]]
+        self.assertEqual(drained_ids,
+                         [item["message_id"] for item in v2_items])
+
+    def test_message_mutations_advance_revision_before_refresh(self):
+        process = MAIN.split("void processMeshMessages", 1)[1].split(
+            "void tickProgression", 1
+        )[0]
+        for state in ("Sent", "Delivered", "TimedOut", "Cancelled", "TxFailed"):
+            branch = process.split(f"DeliveryState::{state}", 1)[1].split(
+                "break;", 1
+            )[0]
+            self.assertIn("touchChatJournal(*entry)", branch)
+            self.assertIn("emitChatEvent(", branch)
+        mark_read = MAIN.split("void markChatJournalRead", 1)[1].split(
+            "ChatJournalEntry* chatJournalNewest", 1
+        )[0]
+        self.assertIn("applyChatJournalReadPlan(selected, selectedCount)", mark_read)
+        apply_read = MAIN.split("uint8_t applyChatJournalReadPlan", 2)[2].split(
+            "void markChatJournalRead", 1
+        )[0]
+        self.assertIn("touchChatJournal(chatJournal[index])", apply_read)
+
+    def test_authenticated_mark_read_is_bounded_atomic_and_updates_physical_unread(self):
+        allowed = SESSION.split("bool operationAllowed", 1)[1].split(
+            "}  // namespace", 1
+        )[0]
+        self.assertIn('"messages.mark_read"', allowed)
+        authenticated = SESSION.split(
+            "bool KitsuBleSession::handleAuthenticatedEnvelope", 1
+        )[1].split("void KitsuBleSession::onFrame", 1)[0]
+        self.assertIn("operationAllowed(request.operation)", authenticated)
+        self.assertIn("operations_->handleBleRequest(", authenticated)
+        preauthenticated_dispatch = SESSION.split(
+            "bool KitsuBleSession::handleAuthenticatedEnvelope", 1
+        )[0].split("bool operationAllowed", 1)[0]
+        self.assertNotIn("messages.mark_read", preauthenticated_dispatch)
+
+        mark_read_contract = MAIN.split("void buildMarkReadResponse", 1)[1].split(
+            "}  // namespace companion_api", 1
+        )[0]
+        for required in (
+            "parseCommand(payload, payloadBytes, command)",
+            "message_read::plan(",
+            "chatSession, command, records, visibleCount, plan",
+            "status != PlanStatus::Ok",
+            "applyChatJournalReadPlan(selected, plan.messageCount)",
+            "kitsu.messages-mark-read.v1",
+            "marked_count",
+            "unchanged_count",
+            "journal_session",
+            "journal_revision",
+            "request_rejected",
+        ):
+            self.assertIn(required, mark_read_contract)
+        handler = mark_read_contract.split("bool markMessagesRead", 1)[1]
+        self.assertLess(
+            handler.index("status != PlanStatus::Ok"),
+            handler.index("applyChatJournalReadPlan(selected, plan.messageCount)"),
+        )
+
+        for error in (
+            "journal_session_mismatch",
+            "snapshot_changed",
+            "message_not_inbound",
+        ):
+            self.assertIn(f'return "{error}"', MESSAGE_READ)
+        self.assertIn("kMaximumMessageIds = 24U", (
+            ROOT / "src" / "kitsu_message_read_contract.h"
+        ).read_text(encoding="utf-8"))
+
+        apply_read = MAIN.split("uint8_t applyChatJournalReadPlan", 2)[2].split(
+            "void markChatJournalRead", 1
+        )[0]
+        self.assertIn("!chatJournal[index].inbound", apply_read)
+        self.assertIn("!chatJournal[index].unread", apply_read)
+        self.assertIn("touchChatJournal(chatJournal[index])", apply_read)
+        self.assertIn("unreadChatMessages = unread", apply_read)
+        self.assertIn("revisionBatchRequiresGenerationAdvance(", apply_read)
+        self.assertLess(
+            apply_read.index("revisionBatchRequiresGenerationAdvance("),
+            apply_read.index("chatJournal[index].unread = false"),
+        )
+        local_mark_all = MAIN.split("void markChatJournalRead", 1)[1].split(
+            "ChatJournalEntry* chatJournalNewest", 1
+        )[0]
+        self.assertIn("applyChatJournalReadPlan(selected, selectedCount)",
+                      local_mark_all)
+
+    def test_journal_generation_rotates_on_message_id_and_revision_wrap(self):
+        advance_generation = MAIN.split(
+            "void advanceChatJournalGeneration()", 1
+        )[1].split("uint32_t allocateChatMessageId", 1)[0]
+        self.assertIn("advanceJournalSession(chatSession)", advance_generation)
+        self.assertIn("chatJournalRevision = 0U", advance_generation)
+        self.assertIn("chatJournal[index].unread = false", advance_generation)
+        self.assertIn("unreadChatMessages = 0U", advance_generation)
+        allocate_id = MAIN.split("uint32_t allocateChatMessageId", 1)[1].split(
+            "uint32_t allocateChatRevision", 1
+        )[0]
+        allocate_revision = MAIN.split("uint32_t allocateChatRevision", 1)[1].split(
+            "void touchChatJournal", 1
+        )[0]
+        for allocator in (allocate_id, allocate_revision):
+            self.assertIn("advanceChatJournalGeneration()", allocator)
+        self.assertIn("return current == 0U ? 1U : current", MESSAGE_READ)
+
+        touch = MAIN.split("void touchChatJournal", 1)[1].split(
+            "ChatJournalEntry& appendChatJournal", 1
+        )[0]
+        self.assertIn("entry.journalSession = chatSession", touch)
+        v2_selection = MAIN.split("const ChatJournalEntry* nextMessageById", 1)[1].split(
+            "bool appendMessageV2Item", 1
+        )[0]
+        self.assertIn("candidate.journalSession != chatSession", v2_selection)
+        mark_read = MAIN.split("bool markMessagesRead", 1)[1].split(
+            "}  // namespace companion_api", 1
+        )[0]
+        self.assertIn("journalSession != chatSession", mark_read)
 
     def test_connect_screen_has_only_bluetooth_and_back(self):
         actions = MAIN.split("enum class ConnectionAction", 1)[1].split("};", 1)[0]

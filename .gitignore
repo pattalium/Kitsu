@@ -4,6 +4,9 @@
 *.exe
 *.pdb
 
+# Local hardware/release evidence (never source release manifests)
+/release-artifacts/
+
 # Rust
 platform/backend/target/
 platform/gateway/target/
@@ -30,7 +33,11 @@ platform/**/data/
 platform/**/secrets/
 *.pem
 *.key
+*.jks
+*.keystore
 *.p12
+*.pfx
+/platform/mobile/android/local.properties
 
 # Public release verification key (not a private credential)
 !platform/public-site/downloads/update-ed25519-public.pem

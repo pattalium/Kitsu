@@ -72,6 +72,85 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         self.assertIn("cursor += kRetiredKeyBytes", source)
         self.assertIn("cursor += kRetiredCounterBytes", source)
 
+    def test_controller_recovery_is_heltec_only_bounded_and_physical(self) -> None:
+        main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        session = (ROOT / "src/kitsu_ble_session.cpp").read_text(encoding="utf-8")
+        security = (ROOT / "src/kitsu_device_security.cpp").read_text(
+            encoding="utf-8"
+        )
+        storage = (ROOT / "src/kitsu_esp32_security.cpp").read_text(
+            encoding="utf-8"
+        )
+        gatt = (ROOT / "src/kitsu_ble_gatt.cpp").read_text(encoding="utf-8")
+
+        for literal in (
+            "CONTROLLER_RECOVERY_HOLD_MS = 5000UL",
+            "CONTROLLER_RECOVERY_CONFIRM_TIMEOUT_MS = 15000UL",
+            "CONTROLLER_RECOVERY_BROWSE_TIMEOUT_MS = 30000UL",
+            "ControllerManager",
+            "ControllerConfirm",
+            "ControllerResult",
+            "CONTROLLER_RECOVERY_OPTION_COUNT",
+            "controllerAtSlot",
+            "RESET ALL",
+            "HOLD PRG",
+            "TAP CANCEL",
+            "EXPIRES ",
+        ):
+            self.assertIn(literal, main)
+
+        entry = main.split("void beginControllerRecovery", 1)[1].split(
+            "bool controllerIdPresent", 1
+        )[0]
+        self.assertIn("disconnectForLocalControllerRecovery()", entry)
+        self.assertIn("setLocalControllerRecoveryLocked(true)", main)
+        self.assertIn("setLocalControllerRecoveryLocked(false)", main)
+        self.assertIn("localControllerRecoveryLocked", gatt)
+        self.assertIn("NimBLEDevice::stopAdvertising()", gatt)
+        self.assertIn("advertiseOnDisconnect(!locked)", gatt)
+        self.assertIn("localControllerRecoveryLocked ||", gatt)
+
+        service = main.split("void serviceControllerRecovery", 1)[1].split(
+            "uint16_t ownUidSuffix", 1
+        )[0]
+        self.assertIn("stableButton", service)
+        self.assertIn("now - buttonPressedAt >= CONTROLLER_RECOVERY_HOLD_MS", service)
+        self.assertIn("commitControllerRecovery(now)", service)
+
+        commit = main.split("void commitControllerRecovery", 1)[1].split(
+            "void uiWrappedText", 1
+        )[0]
+        self.assertIn("controllerRecoveryBleDisconnected(now)", commit)
+        self.assertIn("revokeControllerAfterPhysicalConfirmation(", commit)
+        self.assertIn("revokeAllControllersAfterPhysicalConfirmation(true)", commit)
+        self.assertIn("StorageNeedsReboot", commit)
+        self.assertIn("UNCERTAIN", main)
+        self.assertIn("REBOOT NOW", main)
+        self.assertNotIn("controllerRecoveryTargetId", session)
+
+        allowed = session.split("bool operationAllowed", 1)[1].split(
+            "}  // namespace", 1
+        )[0]
+        self.assertIn('"controller.forget"', allowed)
+        for forbidden in (
+            "controller.list",
+            "controller.recover",
+            "controller.reset",
+            "controller.revoke",
+        ):
+            self.assertNotIn(forbidden, allowed)
+            self.assertNotIn(forbidden, main)
+
+        reset = security.split(
+            "revokeAllControllersAfterPhysicalConfirmation", 1
+        )[1].split("revokeAuthenticatedController", 1)[0]
+        self.assertIn("if (!physicalConfirmed)", reset)
+        self.assertIn("secureZero(material_.controllers", reset)
+        self.assertNotIn("material_.deviceId", reset)
+        self.assertNotIn("material_.deviceSecret", reset)
+        self.assertNotIn("preferences_.clear", storage)
+        self.assertIn("preferences_.remove(key)", storage)
+
     def test_active_esp32_security_has_no_enrollment_crypto_adapter(self) -> None:
         header = (ROOT / "src/kitsu_esp32_security.h").read_text(encoding="utf-8")
         source = (ROOT / "src/kitsu_esp32_security.cpp").read_text(encoding="utf-8")

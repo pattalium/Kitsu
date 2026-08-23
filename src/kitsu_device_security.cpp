@@ -430,6 +430,18 @@ bool KitsuDeviceSecurity::controllerAt(
   return false;
 }
 
+bool KitsuDeviceSecurity::controllerAtSlot(
+    size_t slot, uint8_t controllerId[kKitsuControllerIdBytes]) const {
+  if (!status_.begun || slot >= kKitsuControllerCapacity || !controllerId) {
+    return false;
+  }
+  memset(controllerId, 0, kKitsuControllerIdBytes);
+  if (!material_.controllers[slot].valid) return false;
+  memcpy(controllerId, material_.controllers[slot].id,
+         kKitsuControllerIdBytes);
+  return true;
+}
+
 bool KitsuDeviceSecurity::findControllerRoot(
     const uint8_t controllerId[kKitsuControllerIdBytes],
     uint8_t outputRoot[kKitsuSecretBytes]) const {
@@ -548,6 +560,39 @@ SecurityResult KitsuDeviceSecurity::revokeControllerAfterPhysicalConfirmation(
     return setResult(SecurityResult::AuthorizationRequired);
   }
   return revokeController(controllerId);
+}
+
+SecurityResult
+KitsuDeviceSecurity::revokeAllControllersAfterPhysicalConfirmation(
+    bool physicalConfirmed) {
+  if (!status_.begun) return setResult(SecurityResult::NotBegun);
+  if (!physicalConfirmed) {
+    return setResult(SecurityResult::AuthorizationRequired);
+  }
+  if (material_.controllerRetirementPending) {
+    const SecurityResult resumed = retirePreviousSlot();
+    if (resumed != SecurityResult::Ok) return resumed;
+  }
+
+  bool anyController = false;
+  for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
+    anyController = anyController || material_.controllers[i].valid;
+  }
+  if (!anyController) return setResult(SecurityResult::Ok);
+
+  Material::Controller previous[kKitsuControllerCapacity]{};
+  memcpy(previous, material_.controllers, sizeof(previous));
+  secureZero(material_.controllers, sizeof(material_.controllers));
+  material_.controllerRetirementPending = true;
+  const SecurityResult persisted = persist();
+  if (persisted != SecurityResult::Ok) {
+    memcpy(material_.controllers, previous, sizeof(previous));
+    material_.controllerRetirementPending = false;
+    secureZero(previous, sizeof(previous));
+    return persisted;
+  }
+  secureZero(previous, sizeof(previous));
+  return retirePreviousSlot();
 }
 
 SecurityResult KitsuDeviceSecurity::revokeAuthenticatedController(

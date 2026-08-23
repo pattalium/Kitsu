@@ -110,6 +110,10 @@ class KitsuDeviceSecurity {
   bool copyDeviceId(uint8_t output[kKitsuDeviceIdBytes]) const;
   bool controllerAt(size_t ordinal,
                     uint8_t controllerId[kKitsuControllerIdBytes]) const;
+  // Physical recovery UI uses stable storage slots, never controller roots.
+  // False means that the bounded slot is empty (or the slot/output is invalid).
+  bool controllerAtSlot(
+      size_t slot, uint8_t controllerId[kKitsuControllerIdBytes]) const;
   bool findControllerRoot(
       const uint8_t controllerId[kKitsuControllerIdBytes],
       uint8_t outputRoot[kKitsuSecretBytes]) const;
@@ -129,6 +133,11 @@ class KitsuDeviceSecurity {
       bool physicalConfirmed, bool pairCommitVerified);
   SecurityResult revokeControllerAfterPhysicalConfirmation(
       const uint8_t controllerId[kKitsuControllerIdBytes],
+      bool physicalConfirmed);
+  // Lost-phone recovery for a full table. This preserves the device material
+  // and every non-controller namespace; only an explicit local physical flow
+  // may pass physicalConfirmed=true.
+  SecurityResult revokeAllControllersAfterPhysicalConfirmation(
       bool physicalConfirmed);
   // An authenticated companion session is itself the authorization to revoke
   // that same controller. The caller must supply the controller id captured

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Kitsu" parent="Theme.Kitsu.Base">
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowSplashScreenBackground">@color/kitsu_window_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_kitsu_launcher</item>
+    </style>
+</resources>

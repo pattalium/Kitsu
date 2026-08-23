@@ -93,6 +93,34 @@ not remove the owner's serial recovery right.
 - no eFuse, bootloader, arbitrary-partition, NVS, pack, controller-store,
   MeshCore-state, or coredump write through the BLE OTA protocol.
 
+## Lost-phone and controller-table recovery
+
+Controller recovery is deliberately local to the Heltec. It has no BLE,
+Internet, gateway, or backend operation, and Bluetooth proximity is not
+authorization to inspect or revoke a controller.
+
+The physically present owner opens `MENU > CONNECT > CONTROLLERS` with PRG.
+Entering the manager closes the pairing window, cancels a pending grant, stops
+BLE advertising, rejects new links, and disconnects the current link. The OLED
+then exposes exactly four bounded controller slots, each as `EMPTY` or a short
+controller-ID fingerprint, plus `RESET ALL` and `BACK`. No controller root is
+displayed or logged.
+
+A slot removal or all-controller reset requires a second, uninterrupted
+five-second PRG hold on a screen that names the exact action and displays both
+the hold countdown and tap-to-cancel control. Confirmation expires after 15
+seconds and browsing expires after 30 seconds. All recovery authority is
+volatile, so cancellation, timeout, or reboot cannot leave a recovery grant
+open. If a storage result is uncertain after a commit attempt, BLE stays
+locked and the OLED requires a reboot before pairing can resume.
+
+Recovery rewrites only the encrypted `kitsu_sec` controller table through its
+two-record retirement transaction. It preserves the device ID and device
+secret, companion/brain state, installed pack, MeshCore identity and settings,
+legacy Wi-Fi/LAN retirement evidence, OTA state, discovery journal, and every
+unrelated NVS namespace. The authenticated `controller.forget` operation still
+revokes only the controller that established that verified session.
+
 ## Build profile
 
 The owner image is:
@@ -101,7 +129,7 @@ The owner image is:
 PlatformIO environment: heltec_wifi_lora_32_V3_reflashable
 compile marker:          KITSU_SECURITY_MODE_REFLASHABLE=1
 partition layout:        partitions_kitsu_8MB.csv
-firmware version:        0.12.0
+firmware version:        0.16.5
 ```
 
 `platformio.ini` must exclude the legacy connectivity, enrollment, gateway,
@@ -200,13 +228,18 @@ node --test tools/test_package_kitsu_ble_firmware.mjs
 cmd /c tools\test_kitsu_reflashable_profile.cmd
 ```
 
+The current repeat-correlation candidate identifies itself as firmware
+`0.16.5`. Do not publish or flash these bytes under any already-used firmware
+identity; the source version, package version, binary hash, and physical
+acceptance record must agree exactly.
+
 The generic serial candidate packager remains candidate-only. Pass the current
 version explicitly and use a new/empty destination:
 
 ```powershell
 tools\package_kitsu_reflashable.cmd `
-  dist\kitsu-0.12.0-owner-reflashable-candidate `
-  0.12.0
+  dist\kitsu-0.16.5-owner-reflashable-candidate `
+  0.16.5
 ```
 
 The checked stable/public packager remains frozen to the last accepted release

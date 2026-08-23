@@ -95,9 +95,26 @@ void testChannelProvisioning() {
                 chat::ParseStatus::Ok &&
             command.kind == chat::CommandKind::SetChannel &&
             command.channelIndex == 1 &&
+            command.channelRegionScope ==
+                chat::ChannelRegionScope::Legacy &&
             command.channelSecret[0] == 0x9C &&
             std::strcmp(command.name, "Team Alpha") == 0,
-        "private channel name and 16-byte secret parse");
+        "absent channel scope remains legacy and preserves name");
+  check(parse("chat channel set 1 region_scope=EU " + secret +
+                  " Team Alpha",
+              command) == chat::ParseStatus::Ok &&
+            command.kind == chat::CommandKind::SetChannel &&
+            command.channelRegionScope == chat::ChannelRegionScope::Eu &&
+            command.channelSecret[0] == 0x9C &&
+            std::strcmp(command.name, "Team Alpha") == 0,
+        "explicit EU marker before secret selects scoped route");
+  for (const char* scope : {"region_scope=US", "region_scope=eu",
+                            "region_scope=", "region_scope=EUROPE"}) {
+    check(parse("chat channel set 1 " + std::string(scope) + " " + secret +
+                    " Team Alpha",
+                command) == chat::ParseStatus::InvalidRegionScope,
+          "unsupported explicit region scope is rejected");
+  }
   check(parse("chat channel clear 3", command) == chat::ParseStatus::Ok &&
             command.kind == chat::CommandKind::ClearChannel,
         "last available private slot can be cleared");

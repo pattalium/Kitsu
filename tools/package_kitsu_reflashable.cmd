@@ -17,7 +17,7 @@ rem PlatformIO build signature before trusting its rollback/security settings.
 set "SDKCONFIG=%USERPROFILE%\.platformio\packages\framework-arduinoespressif32\tools\sdk\esp32s3\qio_qspi\include\sdkconfig.h"
 set "BUILD_DIR=%PROJECT_ROOT%\.pio\build\heltec_wifi_lora_32_V3_reflashable"
 set "FIRMWARE_VERSION=%~2"
-if "%FIRMWARE_VERSION%"=="" set "FIRMWARE_VERSION=0.12.0"
+if "%FIRMWARE_VERSION%"=="" set "FIRMWARE_VERSION=0.16.5"
 
 "%PYTHON%" "%~dp0package_kitsu_reflashable.py" ^
     --project-root "%PROJECT_ROOT%" ^

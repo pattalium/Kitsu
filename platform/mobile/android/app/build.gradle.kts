@@ -1,7 +1,12 @@
 import com.android.build.api.dsl.ManagedVirtualDevice
 import java.security.MessageDigest
 import java.time.Instant
+import java.awt.Color
+import java.awt.RenderingHints
 import java.awt.image.BufferedImage
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.zip.ZipFile
 import javax.imageio.ImageIO
 
 plugins {
@@ -16,13 +21,21 @@ fun configured(name: String, fallback: String): String =
 
 fun quoted(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
+val kitsuVersionCode = 19
+val kitsuVersionName = "2.1.5"
+val kitsuBuildToolsVersion = "36.0.0"
 val appIconSource = rootProject.layout.projectDirectory.file("../../../assets/brand/kitsu-app-icon.png")
 val generatedAppIconResources = layout.buildDirectory.dir("generated/kitsuAppIcon/res")
+val generatedPlayStoreIcon = layout.buildDirectory.file("reports/kitsu/play-store-icon-512.png")
+val generatedPlayStoreIconDigest = layout.buildDirectory.file("reports/kitsu/play-store-icon-512.sha256")
+val bundletool by configurations.creating
 val releaseStorePath = providers.environmentVariable("KITSU_ANDROID_KEYSTORE_PATH")
 val releaseKeyAlias = providers.environmentVariable("KITSU_ANDROID_KEY_ALIAS")
 val releaseStorePassword = providers.environmentVariable("KITSU_ANDROID_STORE_PASSWORD")
 val releaseKeyPassword = providers.environmentVariable("KITSU_ANDROID_KEY_PASSWORD")
 val sourceArchiveSha256 = providers.gradleProperty("KITSU_SOURCE_ARCHIVE_SHA256").orNull
+val allowUnsignedBundleValidation = providers.gradleProperty("KITSU_ALLOW_UNSIGNED_BUNDLE_VALIDATION")
+    .orNull == "true"
 val releaseSigningConfigured = listOf(
     releaseStorePath, releaseKeyAlias, releaseStorePassword, releaseKeyPassword,
 ).all { it.orNull?.isNotBlank() == true }
@@ -34,7 +47,12 @@ val generateKitsuLauncherAssets = tasks.register("generateKitsuLauncherAssets") 
         it.file("drawable-nodpi/kitsu_app_icon_monochrome.png")
     }
     inputs.file(appIconSource)
-    outputs.files(generatedMaster, generatedMonochrome)
+    outputs.files(
+        generatedMaster,
+        generatedMonochrome,
+        generatedPlayStoreIcon,
+        generatedPlayStoreIconDigest,
+    )
     doLast {
         val source = appIconSource.asFile
         require(source.isFile) { "missing Kitsu app icon master asset" }
@@ -45,17 +63,13 @@ val generateKitsuLauncherAssets = tasks.register("generateKitsuLauncherAssets") 
             "unexpected Kitsu app icon digest"
         }
 
-        // Keep the launcher layer byte-for-byte identical to the checked app icon master.
-        val masterOutput = generatedMaster.get().asFile
-        masterOutput.parentFile.mkdirs()
-        source.copyTo(masterOutput, overwrite = true)
-
-        // Android 13 themed icons are alpha masks. Derive that mask from the same checked master
-        // instead of maintaining a second, visually divergent fox drawing.
+        // The checked master has a white artboard. Derive both transparent adaptive layers from
+        // its ink, so cold launch and the launcher never show a white square.
         val appIcon = requireNotNull(ImageIO.read(source)) { "Kitsu app icon is not a readable PNG" }
         require(appIcon.width == 1254 && appIcon.height == 1254) {
             "unexpected Kitsu app icon dimensions: ${appIcon.width}x${appIcon.height}"
         }
+        val foreground = BufferedImage(appIcon.width, appIcon.height, BufferedImage.TYPE_INT_ARGB)
         val monochrome = BufferedImage(appIcon.width, appIcon.height, BufferedImage.TYPE_INT_ARGB)
         var inkPixelCount = 0
         var maxSafeZoneRadiusSquared = 0.0
@@ -70,6 +84,7 @@ val generateKitsuLauncherAssets = tasks.register("generateKitsuLauncherAssets") 
                 val blue = sourcePixel and 0xff
                 val luma = (red * 2126 + green * 7152 + blue * 722 + 5000) / 10000
                 val alpha = if (luma >= 240) 0 else ((240 - luma) * 255 / 240).coerceIn(0, 255)
+                foreground.setRGB(x, y, (alpha shl 24) or 0x00F09A68)
                 monochrome.setRGB(x, y, alpha shl 24)
                 if (alpha > 0) {
                     inkPixelCount += 1
@@ -88,17 +103,77 @@ val generateKitsuLauncherAssets = tasks.register("generateKitsuLauncherAssets") 
         require(maxSafeZoneRadiusSquared <= 33.0 * 33.0) {
             "Kitsu app icon ink exceeds Android's guaranteed 66dp adaptive-icon safe circle"
         }
+        val masterOutput = generatedMaster.get().asFile
+        masterOutput.parentFile.mkdirs()
+        require(ImageIO.write(foreground, "png", masterOutput)) {
+            "failed to encode Kitsu transparent adaptive foreground"
+        }
         val monochromeOutput = generatedMonochrome.get().asFile
         monochromeOutput.parentFile.mkdirs()
         require(ImageIO.write(monochrome, "png", monochromeOutput)) {
             "failed to encode Kitsu monochrome launcher layer"
         }
+
+        // Generate the Play listing icon from the same checked geometry and palette. This output
+        // is evidence only; it is never read back into the packaged app.
+        val playIcon = BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB)
+        val graphics = playIcon.createGraphics()
+        try {
+            graphics.color = Color(0x0B, 0x0C, 0x0F)
+            graphics.fillRect(0, 0, 512, 512)
+            graphics.setRenderingHint(
+                RenderingHints.KEY_INTERPOLATION,
+                RenderingHints.VALUE_INTERPOLATION_BICUBIC,
+            )
+            graphics.setRenderingHint(
+                RenderingHints.KEY_RENDERING,
+                RenderingHints.VALUE_RENDER_QUALITY,
+            )
+            graphics.drawImage(foreground, 0, 0, 512, 512, null)
+        } finally {
+            graphics.dispose()
+        }
+        val playOutput = generatedPlayStoreIcon.get().asFile
+        playOutput.parentFile.mkdirs()
+        require(ImageIO.write(playIcon, "png", playOutput)) { "failed to encode Play store icon" }
+        val playDigest = MessageDigest.getInstance("SHA-256")
+            .digest(playOutput.readBytes())
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        generatedPlayStoreIconDigest.get().asFile.writeText(
+            "$playDigest  play-store-icon-512.png\n",
+            Charsets.UTF_8,
+        )
     }
 }
 
 fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
     .digest(bytes)
     .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+fun elfLoadAlignments(bytes: ByteArray): List<Long> {
+    require(bytes.size >= 64 && bytes[0] == 0x7f.toByte() && bytes.copyOfRange(1, 4).contentEquals("ELF".toByteArray())) {
+        "native library is not ELF"
+    }
+    require(bytes[5].toInt() == 1) { "only little-endian Android ELF is supported" }
+    val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+    val is64Bit = bytes[4].toInt() == 2
+    val programOffset = if (is64Bit) buffer.getLong(32) else Integer.toUnsignedLong(buffer.getInt(28))
+    val entrySize = buffer.getShort(if (is64Bit) 54 else 42).toInt() and 0xffff
+    val entryCount = buffer.getShort(if (is64Bit) 56 else 44).toInt() and 0xffff
+    require(programOffset >= 0 && entrySize > 0 && entryCount > 0) { "ELF has no program headers" }
+    return buildList {
+        repeat(entryCount) { index ->
+            val offset = Math.toIntExact(programOffset + index.toLong() * entrySize)
+            require(offset >= 0 && offset + entrySize <= bytes.size) { "ELF program header is truncated" }
+            if (buffer.getInt(offset) == 1) {
+                add(
+                    if (is64Bit) buffer.getLong(offset + 48)
+                    else Integer.toUnsignedLong(buffer.getInt(offset + 28)),
+                )
+            }
+        }
+    }.also { require(it.isNotEmpty()) { "ELF has no PT_LOAD segments" } }
+}
 
 val sourceProvenanceOutput = layout.buildDirectory.file("reports/kitsu/source-provenance.json")
 val generateSourceProvenance = tasks.register("generateSourceProvenance") {
@@ -148,9 +223,9 @@ val generateSourceProvenance = tasks.register("generateSourceProvenance") {
                 appendLine("{")
                 appendLine("  \"schema\": \"kitsu.android-source-provenance.v1\",")
                 appendLine("  \"generated_at_utc\": \"${Instant.now()}\",")
-                appendLine("  \"application_id\": \"app.kitsu.mobile\",")
-                appendLine("  \"version_code\": 13,")
-                appendLine("  \"version_name\": \"2.0.0\",")
+                appendLine("  \"application_id\": \"ptl.kitsu.app\",")
+                appendLine("  \"version_code\": $kitsuVersionCode,")
+                appendLine("  \"version_name\": \"$kitsuVersionName\",")
                 appendLine("  \"transport\": \"authenticated_ble_only\",")
                 appendLine(
                     "  \"source_archive_sha256\": " +
@@ -173,17 +248,18 @@ val generateSourceProvenance = tasks.register("generateSourceProvenance") {
 }
 
 android {
-    namespace = "app.kitsu.mobile"
-    compileSdk = 35
+    namespace = "ptl.kitsu.app"
+    compileSdk = 36
+    buildToolsVersion = kitsuBuildToolsVersion
 
     defaultConfig {
-        applicationId = "app.kitsu.mobile"
+        applicationId = "ptl.kitsu.app"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 13
-        versionName = "2.0.0"
+        targetSdk = 36
+        versionCode = kitsuVersionCode
+        versionName = kitsuVersionName
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "ptl.kitsu.app.qa.KitsuTestRunner"
         manifestPlaceholders["kitsuSourceArchiveSha256"] = sourceArchiveSha256 ?: "unbound"
 
         buildConfigField(
@@ -245,9 +321,9 @@ android {
         animationsDisabled = true
         managedDevices {
             devices {
-                create<ManagedVirtualDevice>("kitsuCiApi35") {
+                create<ManagedVirtualDevice>("kitsuCiApi36") {
                     device = "Pixel 2"
-                    apiLevel = 35
+                    apiLevel = 36
                     systemImageSource = "aosp-atd"
                 }
             }
@@ -258,7 +334,7 @@ android {
 }
 
 tasks.named("preBuild").configure { dependsOn(generateKitsuLauncherAssets) }
-tasks.matching { it.name == "assembleRelease" }.configureEach {
+tasks.matching { it.name in setOf("assembleRelease", "bundleRelease") }.configureEach {
     dependsOn(generateSourceProvenance)
 }
 
@@ -266,11 +342,17 @@ tasks.matching { task ->
     task.name in setOf("assembleRelease", "bundleRelease", "packageRelease")
 }.configureEach {
     doFirst {
-        require(releaseSigningConfigured) {
+        val explicitUnsignedBundleValidation =
+            name == "bundleRelease" && allowUnsignedBundleValidation && !releaseSigningConfigured
+        require(releaseSigningConfigured || explicitUnsignedBundleValidation) {
             "Release signing requires KITSU_ANDROID_KEYSTORE_PATH, KITSU_ANDROID_KEY_ALIAS, " +
-                "KITSU_ANDROID_STORE_PASSWORD, and KITSU_ANDROID_KEY_PASSWORD"
+                "KITSU_ANDROID_STORE_PASSWORD, and KITSU_ANDROID_KEY_PASSWORD. For an explicitly " +
+                "non-publishable AAB structure check only, use " +
+                "-PKITSU_ALLOW_UNSIGNED_BUNDLE_VALIDATION=true."
         }
-        require(file(releaseStorePath.get()).isFile) { "Configured Android release keystore is missing" }
+        if (releaseSigningConfigured) {
+            require(file(releaseStorePath.get()).isFile) { "Configured Android release keystore is missing" }
+        }
         require(sourceArchiveSha256?.matches(Regex("^[0-9a-f]{64}$")) == true) {
             "Release provenance requires -PKITSU_SOURCE_ARCHIVE_SHA256=<64 lowercase hex>"
         }
@@ -304,4 +386,118 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation(composeBom)
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    bundletool("com.android.tools.build:bundletool:1.18.1")
+}
+
+val releaseBundle = layout.buildDirectory.file("outputs/bundle/release/app-release.aab")
+val releaseBundleValidation = layout.buildDirectory.file("reports/kitsu/release-bundle-validation.json")
+val debugApk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk")
+val debugPageSizeValidation = layout.buildDirectory.file("reports/kitsu/debug-16kb-page-validation.json")
+
+tasks.register("verifyDebug16KbPageCompatibility") {
+    group = "verification"
+    description = "Checks APK ZIP alignment and every packaged ELF PT_LOAD segment for 16 KB devices."
+    dependsOn("assembleDebug")
+    inputs.file(debugApk)
+    outputs.file(debugPageSizeValidation)
+    doLast {
+        val apk = debugApk.get().asFile
+        require(apk.isFile) { "debug APK is missing" }
+        val executableSuffix = if (System.getProperty("os.name").startsWith("Windows", true)) ".exe" else ""
+        val zipalign = android.sdkDirectory.resolve(
+            "build-tools/$kitsuBuildToolsVersion/zipalign$executableSuffix",
+        )
+        require(zipalign.isFile) { "Build Tools $kitsuBuildToolsVersion zipalign is missing" }
+        providers.exec {
+            commandLine(zipalign.absolutePath, "-c", "-P", "16", "-v", "4", apk.absolutePath)
+        }.result.get().assertNormalExitValue()
+
+        val nativeAlignments = ZipFile(apk).use { zip ->
+            zip.entries().asSequence()
+                .filter { !it.isDirectory && it.name.startsWith("lib/") && it.name.endsWith(".so") }
+                .associate { entry -> entry.name to elfLoadAlignments(zip.getInputStream(entry).use { it.readBytes() }) }
+        }
+        require(nativeAlignments.isNotEmpty()) { "APK has no native libraries to audit" }
+        nativeAlignments.forEach { (path, alignments) ->
+            require(alignments.all { it >= 16_384L }) { "$path is not 16 KB ELF compatible: $alignments" }
+        }
+        val output = debugPageSizeValidation.get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(
+            buildString {
+                appendLine("{")
+                appendLine("  \"schema\": \"kitsu.android-16kb-page-validation.v1\",")
+                appendLine("  \"apk_sha256\": \"${sha256(apk.readBytes())}\",")
+                appendLine("  \"zipalign_16kb\": true,")
+                appendLine("  \"native_libraries\": {")
+                nativeAlignments.entries.sortedBy { it.key }.forEachIndexed { index, (path, alignments) ->
+                    append("    \"$path\": [${alignments.joinToString()}]")
+                    appendLine(if (index == nativeAlignments.size - 1) "" else ",")
+                }
+                appendLine("  }")
+                appendLine("}")
+            },
+            Charsets.UTF_8,
+        )
+    }
+}
+
+tasks.register<JavaExec>("verifyReleaseBundle") {
+    group = "verification"
+    description = "Runs bundletool validation and records the release AAB structure and SHA-256."
+    dependsOn("bundleRelease")
+    classpath = bundletool
+    mainClass.set("com.android.tools.build.bundletool.BundleToolMain")
+    args("validate", "--bundle=${releaseBundle.get().asFile.absolutePath}")
+    inputs.file(releaseBundle)
+    outputs.file(releaseBundleValidation)
+    doFirst {
+        require(releaseBundle.get().asFile.isFile) { "release AAB is missing" }
+    }
+    doLast {
+        val bundle = releaseBundle.get().asFile
+        val entries = ZipFile(bundle).use { zip -> zip.entries().asSequence().map { it.name }.toSet() }
+        val requiredEntries = setOf(
+            "BundleConfig.pb",
+            "base/manifest/AndroidManifest.xml",
+            "base/resources.pb",
+        )
+        require(entries.containsAll(requiredEntries)) { "release AAB is missing required base entries" }
+        require(entries.any { it.startsWith("base/dex/classes") && it.endsWith(".dex") }) {
+            "release AAB has no base DEX"
+        }
+        val nativeAlignments = ZipFile(bundle).use { zip ->
+            zip.entries().asSequence()
+                .filter { !it.isDirectory && it.name.startsWith("base/lib/") && it.name.endsWith(".so") }
+                .associate { entry -> entry.name to elfLoadAlignments(zip.getInputStream(entry).use { it.readBytes() }) }
+        }
+        require(nativeAlignments.isNotEmpty()) { "release AAB has no native libraries to audit" }
+        nativeAlignments.forEach { (path, alignments) ->
+            require(alignments.all { it >= 16_384L }) { "$path is not 16 KB ELF compatible: $alignments" }
+        }
+        val bundleSigned = entries.any { entry ->
+            entry.startsWith("META-INF/") &&
+                (entry.endsWith(".RSA", true) || entry.endsWith(".DSA", true) ||
+                    entry.endsWith(".EC", true) || entry.endsWith(".SF", true))
+        }
+        val output = releaseBundleValidation.get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(
+            buildString {
+                appendLine("{")
+                appendLine("  \"schema\": \"kitsu.android-bundle-validation.v1\",")
+                appendLine("  \"application_id\": \"ptl.kitsu.app\",")
+                appendLine("  \"version_code\": $kitsuVersionCode,")
+                appendLine("  \"version_name\": \"$kitsuVersionName\",")
+                appendLine("  \"bundle_bytes\": ${bundle.length()},")
+                appendLine("  \"bundle_sha256\": \"${sha256(bundle.readBytes())}\",")
+                appendLine("  \"bundletool_validated\": true,")
+                appendLine("  \"native_libraries_16kb_compatible\": true,")
+                appendLine("  \"bundle_signed\": $bundleSigned,")
+                appendLine("  \"publishable\": $bundleSigned")
+                appendLine("}")
+            },
+            Charsets.UTF_8,
+        )
+    }
 }

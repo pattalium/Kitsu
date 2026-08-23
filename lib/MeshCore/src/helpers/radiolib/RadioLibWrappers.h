@@ -11,6 +11,30 @@ struct PacketMillis {
   uint32_t payloadMillis;   // header-valid   -> rx-done deadline
 };
 
+// Task-context receive observability only. No payload bytes are retained.
+// All counters saturate so a long-running receiver cannot wrap into a false
+// zero during acceptance testing.
+struct RadioLibReceiveDiagnostics {
+  uint32_t recvRawAttempts = 0U;
+  uint32_t interruptReadyAttempts = 0U;
+  uint32_t packetLengthSamples = 0U;
+  uint32_t packetLengthZero = 0U;
+  bool lastPacketLengthAvailable = false;
+  uint16_t lastPacketLength = 0U;
+  uint32_t readDataAttempts = 0U;
+  uint32_t successfulReads = 0U;
+  uint32_t readDataErrors = 0U;
+  bool lastReadDataErrorAvailable = false;
+  int16_t lastReadDataError = 0;
+  uint32_t rxRestartAttempts = 0U;
+  uint32_t rxRestartSuccesses = 0U;
+  uint32_t rxRestartErrors = 0U;
+  bool lastRxRestartResultAvailable = false;
+  int16_t lastRxRestartResult = 0;
+  bool lastRxRestartErrorAvailable = false;
+  int16_t lastRxRestartError = 0;
+};
+
 class RadioLibWrapper : public mesh::Radio {
 protected:
   PhysicalLayer* _radio;
@@ -21,15 +45,29 @@ protected:
   uint16_t _num_floor_samples;
   int32_t _floor_sample_sum;
   uint8_t _preamble_sf;
+  RadioLibReceiveDiagnostics _receiveDiagnostics{};
+
+  static void incrementSaturating(uint32_t& value) {
+    if (value != UINT32_MAX) ++value;
+  }
 
   void idle();
+  int16_t startRecvWithStatus();
   void startRecv();
+  // Pinned RadioLib 7.7.1-43-g6d893's SX126x::getStatus() asks
+  // SPIreadStream() for zero data bytes, so it always returns the
+  // zero-initialized local byte. Read the
+  // actual GetStatus response without bypassing Module's SPI/HAL ownership.
+  // False means no trustworthy status byte is available; output is then 0.
+#if !RADIOLIB_EXCLUDE_SX126X
+  bool readSx126xStatus(SX126x& radio, uint8_t& output);
+#endif
   float packetScoreInt(float snr, int sf, int packet_len);
   virtual bool isReceivingPacket() =0;
   virtual void doResetAGC();
 
 public:
-  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board), _preamble_sf(0) { n_recv = n_sent = 0; }
+  RadioLibWrapper(PhysicalLayer& radio, mesh::MainBoard& board) : _radio(&radio), _board(&board), _preamble_sf(0) { n_recv = n_sent = n_recv_errors = 0; }
 
   void begin() override;
   virtual void powerOff() { _radio->sleep(); }
@@ -68,7 +106,16 @@ public:
   uint32_t getPacketsRecv() const { return n_recv; }
   uint32_t getPacketsRecvErrors() const { return n_recv_errors; }
   uint32_t getPacketsSent() const { return n_sent; }
-  void resetStats() { n_recv = n_sent = n_recv_errors = 0; }
+  RadioLibReceiveDiagnostics receiveDiagnostics() const {
+    return _receiveDiagnostics;
+  }
+  void resetReceiveDiagnostics() {
+    _receiveDiagnostics = RadioLibReceiveDiagnostics{};
+  }
+  void resetStats() {
+    n_recv = n_sent = n_recv_errors = 0;
+    resetReceiveDiagnostics();
+  }
 
   virtual float getLastRSSI() const override;
   virtual float getLastSNR() const override;

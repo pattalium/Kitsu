@@ -3,11 +3,105 @@
 #include <RadioLib.h>
 #include "MeshCore.h"
 
+struct CustomSX1262IrqBitObservations {
+  uint32_t rxDone = 0U;
+  uint32_t crcError = 0U;
+  uint32_t headerError = 0U;
+  uint32_t timeout = 0U;
+  uint32_t preamble = 0U;
+  uint32_t headerValid = 0U;
+  uint32_t syncWordValid = 0U;
+};
+
+struct CustomSX1262IrqDiagnostics {
+  uint32_t samples = 0U;
+  uint32_t dioAssertedSamples = 0U;
+  uint32_t lowRateSamples = 0U;
+  uint16_t lastFlags = 0U;
+  uint16_t lastDioAssertedFlags = 0U;
+  uint16_t lastLowRateFlags = 0U;
+  uint32_t rxDoneObservations = 0U;
+  uint32_t crcErrorObservations = 0U;
+  uint32_t headerErrorObservations = 0U;
+  uint32_t timeoutObservations = 0U;
+  uint32_t preambleObservations = 0U;
+  uint32_t headerValidObservations = 0U;
+  uint32_t syncWordValidObservations = 0U;
+  CustomSX1262IrqBitObservations dio{};
+  CustomSX1262IrqBitObservations lowRate{};
+};
+
 class CustomSX1262 : public SX1262 {
   uint32_t _preambleMillis = 66;
   uint32_t _maxPayloadMillis = 3934;
   uint32_t _activityAt = 0;
   bool _headerSeen = false;
+  CustomSX1262IrqDiagnostics _irqDiagnostics{};
+
+  static void incrementSaturating(uint32_t& value) {
+    if (value != UINT32_MAX) ++value;
+  }
+
+  static void recordBitObservations(
+      CustomSX1262IrqBitObservations& output, uint32_t irq) {
+    if ((irq & RADIOLIB_SX126X_IRQ_RX_DONE) != 0U) {
+      incrementSaturating(output.rxDone);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_CRC_ERR) != 0U) {
+      incrementSaturating(output.crcError);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_HEADER_ERR) != 0U) {
+      incrementSaturating(output.headerError);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_TIMEOUT) != 0U) {
+      incrementSaturating(output.timeout);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED) != 0U) {
+      incrementSaturating(output.preamble);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_HEADER_VALID) != 0U) {
+      incrementSaturating(output.headerValid);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_SYNC_WORD_VALID) != 0U) {
+      incrementSaturating(output.syncWordValid);
+    }
+  }
+
+  void recordIrqFlags(uint32_t irq, bool dioAsserted, bool lowRate) {
+    incrementSaturating(_irqDiagnostics.samples);
+    if (dioAsserted) {
+      incrementSaturating(_irqDiagnostics.dioAssertedSamples);
+      _irqDiagnostics.lastDioAssertedFlags = static_cast<uint16_t>(irq);
+      recordBitObservations(_irqDiagnostics.dio, irq);
+    }
+    if (lowRate) {
+      incrementSaturating(_irqDiagnostics.lowRateSamples);
+      _irqDiagnostics.lastLowRateFlags = static_cast<uint16_t>(irq);
+      recordBitObservations(_irqDiagnostics.lowRate, irq);
+    }
+    _irqDiagnostics.lastFlags = static_cast<uint16_t>(irq);
+    if ((irq & RADIOLIB_SX126X_IRQ_RX_DONE) != 0U) {
+      incrementSaturating(_irqDiagnostics.rxDoneObservations);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_CRC_ERR) != 0U) {
+      incrementSaturating(_irqDiagnostics.crcErrorObservations);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_HEADER_ERR) != 0U) {
+      incrementSaturating(_irqDiagnostics.headerErrorObservations);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_TIMEOUT) != 0U) {
+      incrementSaturating(_irqDiagnostics.timeoutObservations);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED) != 0U) {
+      incrementSaturating(_irqDiagnostics.preambleObservations);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_HEADER_VALID) != 0U) {
+      incrementSaturating(_irqDiagnostics.headerValidObservations);
+    }
+    if ((irq & RADIOLIB_SX126X_IRQ_SYNC_WORD_VALID) != 0U) {
+      incrementSaturating(_irqDiagnostics.syncWordValidObservations);
+    }
+  }
 
   public:
     CustomSX1262(Module *mod) : SX1262(mod) { }
@@ -105,8 +199,27 @@ class CustomSX1262 : public SX1262 {
       return SX1262::startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF, RADIOLIB_IRQ_RX_DEFAULT_FLAGS | (1UL << RADIOLIB_IRQ_PREAMBLE_DETECTED), RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
     }
 
+    // getIrqFlags() issues SX1262 GetIrqStatus (0x12) and does not clear any
+    // radio IRQ. The normal receive-activity path already performs this read;
+    // recording it adds no SPI traffic. Kitsu additionally calls this once
+    // when task-context DIO1 polling observes an asserted completion line.
+    uint32_t observeIrqFlags(bool dioAsserted = false,
+                             bool lowRate = false) {
+      const uint32_t irq = getIrqFlags();
+      recordIrqFlags(irq, dioAsserted, lowRate);
+      return irq;
+    }
+
+    CustomSX1262IrqDiagnostics irqDiagnostics() const {
+      return _irqDiagnostics;
+    }
+
+    void clearIrqDiagnostics() {
+      _irqDiagnostics = CustomSX1262IrqDiagnostics{};
+    }
+
     bool isReceiving() {
-      uint32_t irq = getIrqFlags();
+      uint32_t irq = observeIrqFlags();
       bool preamble = irq & RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED; // bit 2
       bool header   = irq & RADIOLIB_SX126X_IRQ_HEADER_VALID;      // bit 4
       bool hdrErr   = irq & RADIOLIB_SX126X_IRQ_HEADER_ERR;        // bit 5

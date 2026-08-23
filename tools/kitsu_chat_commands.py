@@ -108,6 +108,7 @@ class ChannelRecord:
     configured: bool
     public: bool
     channel_hash: str | None
+    region_scope: str | None
 
 
 @dataclass(frozen=True)
@@ -218,15 +219,23 @@ def chat_contact_drop_command(public_key_hex: str) -> str:
     return _command(f"chat contact drop {public_key}")
 
 
-def chat_channel_set_command(slot: int, secret_hex: str, name: str) -> str:
+def chat_channel_set_command(
+    slot: int,
+    secret_hex: str,
+    name: str,
+    region_scope: str | None = None,
+) -> str:
     _private_channel_slot(slot)
     secret = _normalized_hex(secret_hex, _HEX_32, "channel secret")
     if int(secret, 16) == 0:
         raise ContractError("channel secret must not be all zero")
     name = _user_text(name, CHANNEL_NAME_MAX_BYTES, "name")
+    if region_scope is not None and region_scope != "EU":
+        raise ContractError("channel region_scope must be EU or absent")
     # The returned local command necessarily carries the secret. Device
     # results and routine events never echo it; callers must not log commands.
-    return _command(f"chat channel set {slot} {secret} {name}")
+    scope = " region_scope=EU" if region_scope == "EU" else ""
+    return _command(f"chat channel set {slot}{scope} {secret} {name}")
 
 
 def chat_channel_clear_command(slot: int) -> str:
@@ -276,7 +285,12 @@ def chat_channel_command_from_uri(uri: str, slot: int) -> str:
         required={"name", "secret"},
         optional={"region_scope"},
     )
-    return chat_channel_set_command(slot, query["secret"], query["name"])
+    supplied_scope = query.get("region_scope")
+    if supplied_scope is not None and supplied_scope != "EU":
+        raise ContractError("channel URI region_scope must be EU")
+    return chat_channel_set_command(
+        slot, query["secret"], query["name"], supplied_scope
+    )
 
 
 def chat_hashtag_channel_command(name: str, slot: int) -> str:
@@ -346,12 +360,24 @@ def parse_device_line(line: str | bytes) -> ParsedRecord | None:
             raise ContractError("configured channel must include its one-byte hash")
         if not configured and channel_hash is not None:
             raise ContractError("empty channel must use a null hash")
+        region_scope = value.get("region_scope")
+        if region_scope is not None:
+            region_scope = _validated_one_of(
+                region_scope, {"EU"}, "region_scope"
+            )
+        # Missing is intentionally identical to null so tools remain able to
+        # consume serial records from pre-0.16.4 firmware.
+        if region_scope is not None and (not configured or public):
+            raise ContractError(
+                "only a configured private channel may use region_scope=EU"
+            )
         return ChannelRecord(
             index=index,
             name=_record_text(value, "name", CHANNEL_NAME_MAX_BYTES, allow_empty=True),
             configured=configured,
             public=public,
             channel_hash=channel_hash,
+            region_scope=region_scope,
         )
     if prefix == "KITSU_CHANNEL_END":
         return ChannelEnd(_bounded(value, "count", 0, CHANNEL_CAPACITY))
