@@ -47,7 +47,7 @@ test("every manual page has working local branding and compact page navigation",
     const html = await read(page);
     assert.match(html, /rel="icon" type="image\/png" href="\/assets\/kitsu-app-icon\.png\?v=4f850b55"/, page);
     assert.match(html, /<img src="\/assets\/kitsu-app-icon\.png\?v=4f850b55" alt="" width="43" height="43"/, page);
-    assert.match(html, /<link rel="stylesheet" href="\/styles\.css\?v=c0dcc352"/, page);
+    assert.match(html, /<link rel="stylesheet" href="\/styles\.css\?sha256=310bad3c0b7a164819080d23883de693ee4e7b517e8fd1e7f88ad9019acc13ea"/, page);
     assert.doesNotMatch(html, /https:\/\/k32\.run\/assets\//, page);
     assert.match(html, /<aside class="sidebar" aria-label="Manual pages">/, page);
     assert.equal((html.match(/<details class="mobile-manual">/g) ?? []).length, 1, page);
@@ -57,7 +57,7 @@ test("every manual page has working local branding and compact page navigation",
     assert.equal((mobileNavigation.match(/<a(?: aria-current="page")? href=/g) ?? []).length, pages.length, page);
     assert.equal((mobileNavigation.match(/aria-current="page"/g) ?? []).length, 1, page);
     assert.equal((html.match(/aria-current="page"/g) ?? []).length, 2, page);
-    assert.match(html, new RegExp(`<nav class="next-links" aria-label="Page navigation" data-page="${index + 1} of ${pages.length}">`), page);
+    assert.match(html, /<nav class="next-links" aria-label="Page navigation">/, page);
     assert.doesNotMatch(html, /(?:placeholder|coming soon|todo\b)/i, page);
   }
 });
@@ -197,7 +197,7 @@ test("mobile manual navigation is compact, keyboard ordered, and touch sized", a
   assert.match(css, /\.mobile-manual summary \{[^}]*min-height: 52px/);
   assert.match(css, /\.mobile-manual nav a \{[^}]*min-height: 44px/);
   assert.doesNotMatch(css, /aria-current="page"\][^{]*\{[^}]*order:/);
-  assert.match(css, /\.next-links::before \{[^}]*content: "Page " attr\(data-page\)/);
+  assert.doesNotMatch(css, /counter-reset|counter-increment|\.next-links::before/);
   assert.match(css, /@media \(max-width: 560px\)[\s\S]*\.next-links[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /\.next-links a \{[^}]*min-height: 86px/);
 });

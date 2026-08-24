@@ -1,131 +1,76 @@
-# K32 Kitsu public-site design system
+# K32 Kitsu visual system
 
-This document is the source of truth for the public Kitsu site. It adapts two
-references from the local Awesome DESIGN.md collection:
+This is the source of truth for K32's public web surfaces. It refines the warm,
+quiet identity of the original K32 homepage. It must not be replaced with a
+generic product launch, dashboard, editorial publication, or fake hardware
+presentation.
 
-- Nintendo.com (2001): manufactured-console geometry, hardware faceplates,
-  compact technical labels, and warm accents that mean action.
-- Warp: a warm dark canvas, calm editorial typography, hairline elevation, and
-  readable content bands instead of decorative card grids.
+## Character
 
-The result is Kitsu's own field-instrument language. It must not copy either
-company's branding, artwork, logos, or text.
+Kitsu is a small, local-first radio companion. The interface should feel warm,
+capable, open, and personal without pretending that Kitsu is a mass-market
+product. Lead with the companion and its real behaviors. Explain the radio and
+trust boundaries plainly.
 
-## Product character
+## Non-negotiable rules
 
-Kitsu is a friendly companion inside serious radio hardware. The website should
-feel tactile, capable, private, and a little playful. It is not a generic SaaS
-landing page and it is not a fake monitoring dashboard.
+- Do not invent a device enclosure, phone mockup, hardware render, or product
+  photograph. The fox mark and restrained radio-line graphics are enough.
+- Do not use decorative counters, statistics, numbered cards, or fake live
+  telemetry.
+- Do not turn the site into a news, blog, magazine, or SaaS landing page.
+- Avoid nested card grids. Use open sections, dividers, and a small number of
+  purposeful surfaces.
+- Preserve all release-verification, privacy, and fail-closed behavior.
+- Light and dark themes have equal status. The user's explicit choice persists.
 
-## Visual principles
+## Visual language
 
-- Build the page from connected instrument panels and broad editorial bands.
-- Use asymmetry: narrative copy on one side, a portrait Kitsu device on the
-  other, with occasional elements crossing the grid.
-- Use a single blue signal accent for radio, Bluetooth, links, and focus.
-- Reserve amber for primary forward actions and voluntary support.
-- Prefer sharp or lightly chamfered geometry. Pills are for tiny status marks,
-  never for every button or container.
-- Elevation comes from surface contrast, hairlines, inset highlights, and rare
-  hard shadows. Avoid glassmorphism and soft floating-card stacks.
-- Do not show statistics, decorative counters, numbered feature cards, download
-  counts, or fake live telemetry.
+The light theme uses warm cream paper, near-black ink, fine taupe rules, and one
+muted burnt-orange accent. Dark mode translates the same hierarchy to warm
+charcoal rather than blue-black. Surfaces remain quiet; depth comes from
+hairlines and rare soft shadows.
 
-## Color roles
+| Role | Light | Dark |
+| --- | --- | --- |
+| Canvas | `#f3efe5` | `#12110f` |
+| Surface | `#fbf9f3` | `#1a1916` |
+| Strong surface | `#fffdf8` | `#211f1b` |
+| Ink | `#181713` | `#f4efe4` |
+| Body | `#646158` | `#c3bcaf` |
+| Rule | `#d6cfc1` | `#39362f` |
+| Accent | `#c95b36` | `#ef7a50` |
 
-Dark is the canonical theme. A light variant may reinterpret the same materials
-without changing hierarchy.
+Display typography is Georgia or Times New Roman: humane, compact, and
+recognizably continuous with the original site. Interface and body text use
+Aptos or Segoe UI. Monospace is reserved for short technical labels, never for
+paragraphs.
 
-| Role | Dark | Light | Use |
-| --- | --- | --- | --- |
-| Canvas | `#090b0d` | `#e9ecec` | Page background |
-| Panel | `#111519` | `#f7f8f6` | Main instrument surface |
-| Panel raised | `#171c21` | `#ffffff` | Device and download modules |
-| Hairline | `#303840` | `#aab2b7` | Panel divisions |
-| Ink | `#f2f0e9` | `#111518` | Primary text |
-| Body | `#b7bdc2` | `#424b50` | Supporting text |
-| Muted | `#7f8990` | `#667078` | Technical labels |
-| Signal | `#49b9f2` | `#006eaa` | Radio, links, focus |
-| Action | `#f4b52e` | `#9c6500` | Primary CTA and support |
-| Danger | `#ff6b62` | `#b42318` | Verification failure only |
+## Layout and components
 
-## Typography
+- Maximum content width is 1380px with fluid 20-64px gutters.
+- The hero is copy plus an unboxed, low-opacity fox/radio trace composition.
+- Major sections use generous vertical rhythm and rounded corners no larger
+  than 24px. Links and feature descriptions usually sit on divider rows.
+- One dark band explains Bluetooth and LoRa; it is a deliberate contrast beat,
+  not the default appearance of the whole site.
+- Buttons have at least a 44px target, visible focus, clear labels, and modest
+  12-14px radii. Pills are not the default component shape.
+- The verified Android release is one coherent module. Historical testing
+  builds are preserved as files but are not advertised.
+- Resource destinations are open list rows, not repeated promotional cards.
 
-- Display: `Arial Narrow`, `Aptos Display`, `Segoe UI`, sans-serif. Weight 700,
-  tight tracking, sentence case.
-- Narrative: `Segoe UI`, `Inter`, Arial, sans-serif. Weight 400/600.
-- Technical: `Cascadia Mono`, `SFMono-Regular`, Consolas, monospace. Uppercase
-  only for short labels; never uppercase paragraphs.
-- Hero: `clamp(3.5rem, 8vw, 7.25rem)`, compact line height, no separate giant
-  product-name billboard.
-- Body: 1rem to 1.15rem with 1.65 line height and a readable measure.
+## Motion, responsiveness, and access
 
-## Spacing and layout
+Hover motion is limited to a two-pixel lift or directional cue. There is no
+continuous animation. All motion is suppressed for reduced-motion users.
+Reading order remains copy-first on narrow screens, no horizontal page scroll
+is allowed at 360px or wider, focus rings remain visible, and status changes
+use the existing polite live region.
 
-- Base spacing unit: 4px.
-- Main steps: 8, 12, 16, 24, 32, 48, 72, 96px.
-- Content width: 1440px maximum, with fluid 24 to 64px side padding.
-- Hero: asymmetric two-column grid, approximately 55/45.
-- Use 72 to 120px between major sections on desktop and 56 to 80px on mobile.
-- Touch targets are at least 44px. Focus rings are visible and never clipped.
-- At narrow widths, preserve reading order: copy, actions, device, signal rail.
+## Cross-site use
 
-## Component language
-
-### Instrument panel
-
-Near-black or off-white surface, 1px hairline, 2px radius, optional cut-corner
-background detail, and a restrained inset highlight. Decorative screws may be
-used only on the hero device and download module.
-
-### Buttons
-
-Rectangular, compact, minimum 44px high. Primary is amber with dark text;
-secondary is transparent with a hairline. Hover is a two-pixel lift or color
-change, not a glow. External links disclose their destination in accessible
-text when necessary.
-
-### Signal rail
-
-A single connected horizontal band for Bluetooth, LoRa, and local ownership.
-It is not a row of independent cards and contains no numeric labels.
-
-### Download module
-
-One prominent instrument panel. The signed-manifest status, release title,
-description, action, and digest evidence form one hierarchy. Failure remains
-visible and fail-closed.
-
-### Resource links
-
-Use editorial rows with a dividing rule and directional cue. Do not repeat the
-same bordered card treatment for every destination.
-
-## Motion
-
-- One short hero entrance and restrained hover feedback.
-- No continuous movement except the subtle radio pulse, which stops under
-  `prefers-reduced-motion`.
-- Motion duration stays near 160 to 420ms and never blocks interaction.
-
-## Content rules
-
-- Lead with the companion, then explain the transport and trust boundaries.
-- Use plain language. Avoid inflated marketing claims.
-- Do not advertise Play until a Play release exists.
-- The Ko-fi action is a plain outbound link. Support remains voluntary and
-  grants no feature, content, badge, or benefit.
-- Preserve the clean-install warning between package/signing tracks.
-- Use ordinary hyphens in visible copy; avoid decorative em dashes.
-
-## Responsive and accessibility rules
-
-- Navigation may wrap or reduce to essential links without a JavaScript-only
-  menu.
-- No horizontal page scrolling at 360px or wider.
-- Body text maintains WCAG AA contrast; interactive focus uses the blue signal
-  color plus an offset.
-- Decorative hardware details are hidden from assistive technology.
-- Headings remain in logical order and links describe their actual destination.
-- Verification loading, success, and failure text is announced via a polite
-  live region.
+The public site, manual, flasher, status page, connected-app rollback surface,
+and custom login theme share these tokens and character. Each surface keeps its
+own information architecture and business logic. Machine-only API, gateway,
+and update origins do not receive decorative landing pages.

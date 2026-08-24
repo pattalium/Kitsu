@@ -34,11 +34,12 @@ async function probe(element) {
 async function run() {
   refresh.disabled = true;
   const results = await Promise.all(checks.map(probe));
-  const available = results.filter((state) => state === "ok").length;
-  const healthy = available === results.length;
+  const healthy = results.every((state) => state === "ok");
   summaryDot.className = healthy ? "dot ok" : "dot down";
   summaryTitle.textContent = healthy ? "Checked public sites are reachable" : "One or more public sites are unavailable";
-  summaryDetail.textContent = `${available} of ${results.length} public origin checks returned the exact expected response.`;
+  summaryDetail.textContent = healthy
+    ? "Every checked public origin returned the exact expected response."
+    : "At least one checked public origin did not return the exact expected response.";
   checked.textContent = `Checked ${new Date().toLocaleTimeString()}`;
   refresh.disabled = false;
 }

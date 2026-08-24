@@ -46,6 +46,29 @@ test("first-login password page preserves required-action validation", async () 
   assert.match(source, /kitsuChoosePasswordHelp/u);
 });
 
+test("login pages expose a non-submit persistent light and dark theme control", async () => {
+  const [login, update, properties, script, css] = await Promise.all([
+    read("kitsu/login/login.ftl"),
+    read("kitsu/login/login-update-password.ftl"),
+    read("kitsu/login/theme.properties"),
+    read("kitsu/login/resources/js/kitsu-theme.js"),
+    read("kitsu/login/resources/css/kitsu-login.css"),
+  ]);
+  for (const source of [login, update]) {
+    assert.match(source, /<button class="kitsu-theme-toggle"[\s\S]*type="button"[\s\S]*data-kitsu-theme-toggle/u);
+    assert.match(source, /aria-pressed="false"/u);
+  }
+  assert.match(properties, /^scripts=js\/kitsu-theme\.js$/mu);
+  assert.match(script, /const storageKey = "kitsu-theme"/u);
+  assert.match(script, /window\.localStorage\.setItem\(storageKey, theme\)/u);
+  assert.match(script, /prefers-color-scheme: dark/u);
+  assert.match(script, /setAttribute\("data-kitsu-theme", theme\)/u);
+  assert.match(css, /html\.login-pf\[data-kitsu-theme="dark"\]/u);
+  assert.match(css, /@media \(prefers-color-scheme: dark\)/u);
+  assert.match(css, /--kitsu-canvas: #f3efe5/u);
+  assert.match(css, /--kitsu-canvas: #12110f/u);
+});
+
 test("theme fixes white-on-white labels and has a narrow-screen layout", async () => {
   const css = await read("kitsu/login/resources/css/kitsu-login.css");
   const action = css.match(/--kitsu-orange-action:\s*(#[0-9a-f]{6})/iu)?.[1];
@@ -83,6 +106,8 @@ test("reconciler activates only the named theme and keeps account creation close
   assert.match(source, /registrationAllowed !== false/u);
   assert.match(source, /resetPasswordAllowed !== false/u);
   assert.match(source, /Kitsu owner access/u);
+  assert.match(source, /login\/resources\/js\/kitsu-theme\.js/u);
+  assert.match(source, /data-kitsu-theme-toggle/u);
   assert.match(source, /id=\\"username\\"/u);
   assert.doesNotMatch(source, /registrationAllowed:\s*true|resetPasswordAllowed:\s*true/u);
 });

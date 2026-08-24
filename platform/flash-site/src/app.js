@@ -127,7 +127,7 @@ async function connect() {
 async function checkRelease() {
   busy = true;
   verifiedRelease = undefined;
-  releaseDetail.textContent = "Checking the Ed25519 manifest authority and every bootstrap artifact...";
+  releaseDetail.textContent = "Checking the Ed25519 manifest authority and every bootstrap artifact…";
   updateControls();
   try {
     const release = await fetchVerifiedRelease();

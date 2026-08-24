@@ -3,15 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f3efe5" />
     <meta name="description" content="Live checks for the public K32 Kitsu download, documentation, installer, and signed-update surfaces." />
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/styles.css" />
-    <script type="module" src="/status.js"></script>
+    <script src="/theme.js?sha256=a2830b6e79c5373373e4147412fd08a237196d93ffcf29ee426c87e22411ebe6"></script>
+    <link rel="stylesheet" href="/styles.css?sha256=5749d1ce78f53bff92cf557118ddc8445fa83f4c4bb6153b21df2b15f7a3575d" />
+    <script type="module" src="/status.js?sha256=0dd0d59019615d6aa2df9df2436ea7a7c2af15909176874ee58ba16b9b9c3ad5"></script>
     <title>K32 · Kitsu Status</title>
   </head>
   <body>
-    <header><a href="https://k32.run"><b>K32</b> Kitsu status</a><span id="checked">Not checked</span></header>
-    <main>
+    <a class="skip-link" href="#main-content">Skip to status checks</a>
+    <header><a class="status-brand" href="https://k32.run"><b>K32</b><span>Kitsu status</span></a><div class="header-actions"><span id="checked">Not checked</span><button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme" aria-pressed="false"><span class="theme-toggle-prefix">Theme</span><span data-theme-label>Dark</span></button></div></header>
+    <main id="main-content">
       <p class="eyebrow">PUBLIC RELEASE SURFACES</p>
       <h1>Download and documentation status.</h1>
       <section class="summary" aria-live="polite" aria-atomic="true"><span class="dot pending" id="summary-dot"></span><div><strong id="summary-title">Checking public sites…</strong><p id="summary-detail">No site state has been assumed.</p></div></section>

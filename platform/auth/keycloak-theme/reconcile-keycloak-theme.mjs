@@ -17,6 +17,7 @@ const requiredThemeFiles = [
   "login/login-update-password.ftl",
   "login/messages/messages_en.properties",
   "login/resources/css/kitsu-login.css",
+  "login/resources/js/kitsu-theme.js",
   "login/resources/img/kitsu-k32-mascot-bw-v2.png",
 ];
 
@@ -154,6 +155,7 @@ for (const expected of [
   "Kitsu owner access",
   "Using a nearby Kitsu over Bluetooth does not require an owner account.",
   "Kitsu",
+  "data-kitsu-theme-toggle",
   "id=\"username\"",
   "id=\"password\"",
   "id=\"kc-login\"",

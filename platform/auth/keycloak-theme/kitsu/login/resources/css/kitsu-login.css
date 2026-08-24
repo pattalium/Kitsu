@@ -1,30 +1,99 @@
 :root {
-    color-scheme: dark;
-    --kitsu-ink: #211713;
-    --kitsu-muted: #6f5d55;
-    --kitsu-paper: #fffaf4;
-    --kitsu-paper-soft: #f8eee4;
-    --kitsu-line: #dbcabd;
-    --kitsu-orange: #d95f2a;
+    color-scheme: light;
+    --kitsu-canvas: #f3efe5;
+    --kitsu-canvas-deep: #e9e2d5;
+    --kitsu-paper: #fbf9f3;
+    --kitsu-paper-strong: #fffdf8;
+    --kitsu-ink: #181713;
+    --kitsu-body: #646158;
+    --kitsu-muted: #827d72;
+    --kitsu-line: #d6cfc1;
+    --kitsu-line-strong: #bcb4a5;
+    --kitsu-orange: #c95b36;
+    --kitsu-orange-strong: #9d3f22;
+    --kitsu-orange-soft: #f4ded4;
     --kitsu-orange-action: #a63c13;
     --kitsu-orange-action-hover: #7d2b0d;
-    --kitsu-green: #1f6b55;
+    --kitsu-action-ink: #fff9f3;
+    --kitsu-focus: #b84e2c;
+    --kitsu-shadow: 0 24px 70px rgb(44 37 28 / 0.12);
+    --kitsu-display: Georgia, "Times New Roman", serif;
+    --kitsu-sans: Aptos, "Segoe UI", Arial, sans-serif;
+}
+
+html.login-pf[data-kitsu-theme="dark"] {
+    color-scheme: dark;
+    --kitsu-canvas: #12110f;
+    --kitsu-canvas-deep: #0d0c0b;
+    --kitsu-paper: #1a1916;
+    --kitsu-paper-strong: #211f1b;
+    --kitsu-ink: #f4efe4;
+    --kitsu-body: #c3bcaf;
+    --kitsu-muted: #9a9387;
+    --kitsu-line: #39362f;
+    --kitsu-line-strong: #514d43;
+    --kitsu-orange: #ef7a50;
+    --kitsu-orange-strong: #ff9a74;
+    --kitsu-orange-soft: #39251e;
+    --kitsu-orange-action: #ef7a50;
+    --kitsu-orange-action-hover: #ff9a74;
+    --kitsu-action-ink: #181713;
+    --kitsu-focus: #ff9a74;
+    --kitsu-shadow: 0 24px 70px rgb(0 0 0 / 0.3);
+}
+
+@media (prefers-color-scheme: dark) {
+    html.login-pf:not([data-kitsu-theme]) {
+        color-scheme: dark;
+        --kitsu-canvas: #12110f;
+        --kitsu-canvas-deep: #0d0c0b;
+        --kitsu-paper: #1a1916;
+        --kitsu-paper-strong: #211f1b;
+        --kitsu-ink: #f4efe4;
+        --kitsu-body: #c3bcaf;
+        --kitsu-muted: #9a9387;
+        --kitsu-line: #39362f;
+        --kitsu-line-strong: #514d43;
+        --kitsu-orange: #ef7a50;
+        --kitsu-orange-strong: #ff9a74;
+        --kitsu-orange-soft: #39251e;
+        --kitsu-orange-action: #ef7a50;
+        --kitsu-orange-action-hover: #ff9a74;
+        --kitsu-action-ink: #181713;
+        --kitsu-focus: #ff9a74;
+        --kitsu-shadow: 0 24px 70px rgb(0 0 0 / 0.3);
+    }
 }
 
 html.login-pf,
 html.login-pf body {
+    min-width: 20rem;
     min-height: 100%;
     margin: 0;
-    background: #120f0d;
-    color: var(--kitsu-paper);
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: var(--kitsu-ink);
+    background: var(--kitsu-canvas);
+    font-family: var(--kitsu-sans);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
 }
 
 html.login-pf body {
+    overflow-x: hidden;
     background:
-        radial-gradient(circle at 12% 8%, rgba(217, 95, 42, 0.26), transparent 30rem),
-        radial-gradient(circle at 90% 90%, rgba(31, 107, 85, 0.18), transparent 34rem),
-        linear-gradient(145deg, #211713 0%, #120f0d 58%, #171310 100%);
+        radial-gradient(circle at 86% 5%, color-mix(in srgb, var(--kitsu-orange) 10%, transparent) 0, transparent 28rem),
+        radial-gradient(circle at 8% 80%, color-mix(in srgb, var(--kitsu-orange) 4%, transparent) 0, transparent 22rem),
+        var(--kitsu-canvas);
+}
+
+html.login-pf a,
+html.login-pf button,
+html.login-pf input {
+    touch-action: manipulation;
+}
+
+html.login-pf ::selection {
+    color: var(--kitsu-action-ink);
+    background: var(--kitsu-orange-action);
 }
 
 .pf-v5-c-login {
@@ -34,14 +103,14 @@ html.login-pf body {
 
 .pf-v5-c-login__container {
     display: grid;
-    grid-template-columns: minmax(0, 35rem);
+    grid-template-columns: minmax(0, 38rem);
     grid-template-areas: "header" "main";
     align-content: center;
     justify-content: center;
     gap: 1.25rem;
     width: 100%;
     min-height: 100dvh;
-    padding: 2rem;
+    padding: clamp(1.25rem, 4vw, 3rem);
 }
 
 .pf-v5-c-login__header {
@@ -52,26 +121,34 @@ html.login-pf body {
 
 #kc-header-wrapper.pf-v5-c-brand {
     width: 100%;
-    color: var(--kitsu-paper);
+    color: var(--kitsu-ink);
     font-size: 1rem;
+}
+
+.kitsu-brand-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
 }
 
 .kitsu-brand {
     display: flex;
+    min-width: 0;
     align-items: center;
-    justify-content: center;
-    gap: 1rem;
+    gap: 0.9rem;
 }
 
 .kitsu-brand__mascot {
-    width: 5.5rem;
-    height: 5.5rem;
-    padding: 0.35rem;
-    border: 1px solid rgba(255, 250, 244, 0.38);
-    border-radius: 1.5rem;
-    background: var(--kitsu-paper);
+    flex: 0 0 auto;
+    width: 4.75rem;
+    height: 4.75rem;
+    padding: 0.3rem;
     object-fit: contain;
-    box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.32);
+    background: var(--kitsu-paper-strong);
+    border: 1px solid var(--kitsu-line);
+    border-radius: 1.1rem;
+    box-shadow: 0 0.8rem 2.4rem rgb(44 37 28 / 0.12);
 }
 
 .kitsu-brand__name,
@@ -81,32 +158,60 @@ html.login-pf body {
 }
 
 .kitsu-brand__name {
-    color: #ffffff;
-    font-size: clamp(1.5rem, 5vw, 2.1rem);
-    font-weight: 760;
+    color: var(--kitsu-ink);
+    font: 500 clamp(1.55rem, 5vw, 2rem)/1 var(--kitsu-display);
     letter-spacing: -0.035em;
 }
 
 .kitsu-brand__purpose {
-    margin-top: 0.2rem;
-    color: #f5c7aa;
-    font-size: 0.92rem;
-    font-weight: 650;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    margin-top: 0.35rem;
+    color: var(--kitsu-body);
+    font-size: 0.78rem;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.kitsu-theme-toggle {
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-height: 2.75rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    padding: 0 0.8rem;
+    color: var(--kitsu-body);
+    background: var(--kitsu-paper);
+    border: 1px solid var(--kitsu-line);
+    border-radius: 0.75rem;
+    font: 700 0.76rem/1 var(--kitsu-sans);
+    cursor: pointer;
+    transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.kitsu-theme-toggle:hover {
+    color: var(--kitsu-ink);
+    background: var(--kitsu-paper-strong);
+    border-color: var(--kitsu-line-strong);
+}
+
+.kitsu-theme-toggle:active {
+    transform: translateY(1px);
+}
+
+.kitsu-theme-toggle__value {
+    color: var(--kitsu-orange-strong);
 }
 
 .pf-v5-c-login__main {
     grid-area: main;
     width: 100%;
-    max-width: 35rem;
+    max-width: 38rem;
     overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 1.75rem;
-    background: var(--kitsu-paper);
     color: var(--kitsu-ink);
-    color-scheme: light;
-    box-shadow: 0 1.6rem 5rem rgba(0, 0, 0, 0.42);
+    background: var(--kitsu-paper);
+    border: 1px solid var(--kitsu-line);
+    border-radius: 1.25rem;
+    box-shadow: var(--kitsu-shadow);
 }
 
 .pf-v5-c-login__main-header {
@@ -114,38 +219,39 @@ html.login-pf body {
 }
 
 .pf-v5-c-login__main-body {
-    padding: 2rem;
+    padding: clamp(1.5rem, 5vw, 2.5rem);
     color: var(--kitsu-ink);
 }
 
 .kitsu-auth-intro {
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.65rem;
 }
 
 .kitsu-auth-intro h1 {
+    max-width: 14ch;
     margin: 0;
     color: var(--kitsu-ink);
-    font-size: clamp(1.7rem, 6vw, 2.15rem);
-    font-weight: 780;
-    letter-spacing: -0.035em;
-    line-height: 1.08;
+    font: 500 clamp(2rem, 7vw, 2.85rem)/1 var(--kitsu-display);
+    letter-spacing: -0.045em;
+    text-wrap: balance;
 }
 
 .kitsu-auth-intro p,
 .kitsu-first-login p,
 .kitsu-account-help p {
-    margin: 0.7rem 0 0;
-    color: var(--kitsu-muted);
-    font-size: 0.98rem;
-    line-height: 1.55;
+    margin: 0.8rem 0 0;
+    color: var(--kitsu-body);
+    font-size: 0.97rem;
+    line-height: 1.58;
+    text-wrap: pretty;
 }
 
 .kitsu-auth-intro .kitsu-local-note {
-    padding: 0.8rem 0.9rem;
-    border-left: 0.25rem solid var(--kitsu-green);
-    border-radius: 0.65rem;
-    background: #e7f2ed;
-    color: #164a3c;
+    padding: 0.8rem 0.95rem;
+    color: var(--kitsu-ink);
+    background: var(--kitsu-orange-soft);
+    border-left: 0.22rem solid var(--kitsu-orange);
+    border-radius: 0.55rem;
     font-weight: 650;
 }
 
@@ -168,68 +274,107 @@ html.login-pf body {
 #kc-passwd-update-form input {
     min-height: 3rem;
     color: var(--kitsu-ink);
+    background: transparent;
     font-size: 1rem;
 }
 
+#kc-form-login input::placeholder,
+#kc-passwd-update-form input::placeholder {
+    color: var(--kitsu-body);
+    opacity: 1;
+}
+
 .pf-v5-c-form-control {
-    border-color: #958078;
-    border-radius: 0.7rem;
-    background: #ffffff;
     color: var(--kitsu-ink);
+    background: var(--kitsu-paper-strong);
+    border-color: var(--kitsu-line-strong);
+    border-radius: 0.7rem;
 }
 
 .pf-v5-c-form-control:focus-within {
     border-color: var(--kitsu-orange);
-    outline: 0.2rem solid rgba(217, 95, 42, 0.22);
+    outline: 0.2rem solid color-mix(in srgb, var(--kitsu-focus) 25%, transparent);
     outline-offset: 0.1rem;
 }
 
 .pf-v5-c-button.pf-m-control {
     min-width: 3rem;
     min-height: 3rem;
-    border-color: #958078;
     color: var(--kitsu-ink);
+    background: var(--kitsu-paper-strong);
+    border-color: var(--kitsu-line-strong);
 }
 
 .pf-v5-c-button.pf-m-primary,
 #kc-login,
 #kc-submit {
     min-height: 3.2rem;
-    border-radius: 999px;
+    color: var(--kitsu-action-ink);
     background: var(--kitsu-orange-action);
-    color: #ffffff;
+    border-color: var(--kitsu-orange-action);
+    border-radius: 0.75rem;
     font-size: 1rem;
     font-weight: 750;
+    transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
 }
 
 .pf-v5-c-button.pf-m-primary:hover,
 #kc-login:hover,
 #kc-submit:hover {
+    color: var(--kitsu-action-ink);
     background: var(--kitsu-orange-action-hover);
+    border-color: var(--kitsu-orange-action-hover);
+    transform: translateY(-2px);
+}
+
+.pf-v5-c-button.pf-m-primary:active,
+#kc-login:active,
+#kc-submit:active {
+    transform: translateY(1px);
+}
+
+.pf-v5-c-button.pf-m-secondary,
+#kc-cancel {
+    min-height: 3.2rem;
+    color: var(--kitsu-ink);
+    background: var(--kitsu-paper-strong);
+    border: 1px solid var(--kitsu-line-strong);
+    border-radius: 0.75rem;
+}
+
+.pf-v5-c-button.pf-m-secondary:hover,
+#kc-cancel:hover {
+    color: var(--kitsu-ink);
+    background: var(--kitsu-canvas-deep);
+    border-color: var(--kitsu-orange);
 }
 
 .pf-v5-c-button:focus-visible,
+.kitsu-theme-toggle:focus-visible,
 a:focus-visible,
 input:focus-visible {
-    outline: 0.2rem solid #1576d4;
+    outline: 0.2rem solid var(--kitsu-focus);
     outline-offset: 0.18rem;
+}
+
+.pf-v5-c-helper-text__item-text,
+.pf-v5-c-form__helper-text,
+.pf-v5-c-form__helper-text-body {
+    color: var(--kitsu-body);
 }
 
 .kitsu-first-login,
 .kitsu-account-help {
-    margin-top: 1rem;
-    padding: 1rem;
-    border: 1px solid var(--kitsu-line);
-    border-radius: 1rem;
-    background: var(--kitsu-paper-soft);
+    margin-top: 1.35rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--kitsu-line);
 }
 
 .kitsu-first-login h2,
 .kitsu-account-help h2 {
     margin: 0;
     color: var(--kitsu-ink);
-    font-size: 1rem;
-    font-weight: 760;
+    font: 500 1.2rem/1.25 var(--kitsu-display);
 }
 
 .kitsu-account-help a {
@@ -237,14 +382,16 @@ input:focus-visible {
     min-height: 2.75rem;
     margin-top: 0.55rem;
     align-items: center;
-    color: #81300f;
+    color: var(--kitsu-orange-strong);
     font-weight: 750;
-    text-decoration-thickness: 0.12rem;
+    text-decoration-thickness: 0.1rem;
     text-underline-offset: 0.2rem;
 }
 
 .pf-v5-c-alert {
     color: var(--kitsu-ink);
+    background: var(--kitsu-paper-strong);
+    border-color: var(--kitsu-line);
 }
 
 @media (max-width: 37.5rem) {
@@ -252,29 +399,51 @@ input:focus-visible {
         align-content: start;
         gap: 0.9rem;
         min-height: 100dvh;
-        padding: max(1rem, env(safe-area-inset-top)) 0.85rem max(1rem, env(safe-area-inset-bottom));
+        padding: max(1rem, env(safe-area-inset-top)) 0.8rem max(1rem, env(safe-area-inset-bottom));
+    }
+
+    .kitsu-brand-row {
+        gap: 0.6rem;
     }
 
     .kitsu-brand {
-        gap: 0.75rem;
+        gap: 0.65rem;
     }
 
     .kitsu-brand__mascot {
-        width: 4.35rem;
-        height: 4.35rem;
-        border-radius: 1.15rem;
+        width: 3.75rem;
+        height: 3.75rem;
+        border-radius: 0.95rem;
     }
 
     .kitsu-brand__name {
-        font-size: 1.6rem;
+        font-size: 1.45rem;
     }
 
     .kitsu-brand__purpose {
-        font-size: 0.72rem;
+        max-width: 12rem;
+        font-size: 0.7rem;
+    }
+
+    .kitsu-theme-toggle {
+        gap: 0;
+        padding-inline: 0.65rem;
+    }
+
+    .kitsu-theme-toggle > span:first-child {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
     }
 
     .pf-v5-c-login__main {
-        border-radius: 1.35rem;
+        border-radius: 1rem;
     }
 
     .pf-v5-c-login__main-body {
@@ -290,5 +459,13 @@ input:focus-visible {
         transition-duration: 0.01ms !important;
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
+    }
+}
+
+@media (forced-colors: active) {
+    .kitsu-brand__mascot,
+    .pf-v5-c-login__main,
+    .pf-v5-c-form-control {
+        border: 1px solid CanvasText;
     }
 }

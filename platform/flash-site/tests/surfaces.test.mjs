@@ -75,6 +75,27 @@ test("static product, manual, and USB recovery surfaces link real destinations",
   assert.doesNotMatch(`${product}\n${manual}\n${flasher}`, /link pending|placeholder|app\.k32\.run/i);
 });
 
+test("flasher keeps its firmware controls while exposing a persistent accessible theme choice", async () => {
+  const [html, theme, styles] = await Promise.all([
+    text("flash-site/index.html"),
+    text("flash-site/src/theme.js"),
+    text("flash-site/src/styles.css"),
+  ]);
+  for (const id of ["connect", "disconnect", "refresh", "install", "progress", "progress-detail", "log"]) {
+    assert.match(html, new RegExp(`id="${id}"`), id);
+  }
+  assert.match(html, /type="button" data-theme-toggle/u);
+  assert.match(html, /aria-pressed="false"/u);
+  assert.match(theme, /const storageKey = "kitsu-theme"/u);
+  assert.match(theme, /window\.localStorage\.setItem\(storageKey, theme\)/u);
+  assert.match(theme, /prefers-color-scheme: dark/u);
+  assert.match(theme, /setAttribute\("aria-pressed"/u);
+  assert.match(styles, /--canvas: #f3efe5/u);
+  assert.match(styles, /html\[data-theme="dark"\][\s\S]*--canvas: #12110f/u);
+  assert.match(styles, /--display: Georgia/u);
+  assert.doesNotMatch(html, /class="step">\d/u);
+});
+
 test("physical acceptance cannot authorize its own signed manifest", async () => {
   const acceptance = await text("mobile/android/qa/PHYSICAL-RELEASE-ACCEPTANCE.md");
   assert.match(acceptance, /two\s+deliberately separate records/i);

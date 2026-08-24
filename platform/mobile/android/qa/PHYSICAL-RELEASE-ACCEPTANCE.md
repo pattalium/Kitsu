@@ -14,6 +14,22 @@ Every required case must pass against the exact frozen hashes. A partial run, a
 run against a locally patched APK, or a run using a different firmware image is
 not publication authorization.
 
+## Public release asset boundary
+
+GitHub Releases use a strict public-asset allowlist. The only files that may be
+attached are:
+
+- installable Android APKs;
+- accepted firmware binaries or firmware bundles; and
+- distributable Kitsu pet bundles.
+
+Android App Bundles (`.aab`), APK signing sidecars (`.idsig`), source archives,
+mapping files, checksum ledgers, provenance records, validation reports, and
+build or acceptance evidence remain private release inputs. They must not be
+attached to a GitHub Release. A Play-bound AAB may be transferred privately to
+Google Play only by the project owner after a separate explicit publication
+decision; it is never a public download asset.
+
 ## Test equipment and frozen inputs
 
 Use:

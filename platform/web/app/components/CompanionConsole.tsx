@@ -22,6 +22,9 @@ const actionPresentation: Record<CareAction, { label: string; glyph: string; ani
 const approvedCompanionPreviewRevision = "20260821-approved-v2";
 
 function speciesAnimation(species: string, animation: string): string {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return "/brand/kitsu-app-icon.png";
+  }
   const normalized = species.trim().toLowerCase();
   if (normalized === "cat" || normalized === "fox" || normalized === "dog") {
     return `/companion/${normalized}-${animation}.gif?v=${approvedCompanionPreviewRevision}`;
@@ -33,11 +36,30 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function ThemeToggle() {
+  const [theme, setTheme] = useState<"light" | "dark">(
+    document.documentElement.dataset.theme === "dark" ? "dark" : "light",
+  );
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    document.documentElement.style.colorScheme = next;
+    const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (themeColor) themeColor.content = next === "dark" ? "#12110f" : "#f3efe5";
+    try { window.localStorage.setItem("kitsu-theme", next); } catch { /* storage is optional */ }
+    setTheme(next);
+  }
+
+  const nextTheme = theme === "dark" ? "light" : "dark";
+  return <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Switch to ${nextTheme} theme`} aria-pressed={theme === "dark"}><span aria-hidden="true">◐</span><span>{nextTheme === "dark" ? "Dark" : "Light"}</span></button>;
+}
+
 function VitalsBar({ label, value }: { label: string; value: number }) {
   const safeValue = clampPercent(value);
   return (
     <div className="vital">
-      <div className="vital-label"><span>{label}</span><strong>{safeValue}</strong></div>
+      <div className="vital-label"><span>{label}</span></div>
       <meter className="vital-track" aria-label={`${label}: ${safeValue}%`} min={0} max={100} value={safeValue}>{safeValue}%</meter>
     </div>
   );
@@ -121,6 +143,7 @@ export function CompanionConsole() {
   if (!snapshot) {
     return (
       <main className="shell access-shell">
+        <a className="skip-link" href="#access">Skip to content</a>
         <header className="topbar access-topbar">
           <a className="brand" href="#access" aria-label="Kitsu companion home">
             <span className="brand-mark">
@@ -132,6 +155,7 @@ export function CompanionConsole() {
             <span className="pulse" />
             <span><strong>Private access</strong><small>{mode === "loading" ? "Checking" : "Not connected"}</small></span>
           </div>
+          <ThemeToggle />
         </header>
         <section className="access-state" id="access" aria-live="polite">
           <img
@@ -197,6 +221,7 @@ export function CompanionConsole() {
 
   return (
     <main className="shell">
+      <a className="skip-link" href="#companion">Skip to content</a>
       <header className="topbar">
         <a className="brand" href="#companion" aria-label="Kitsu companion home">
           <span className="brand-mark">
@@ -214,6 +239,7 @@ export function CompanionConsole() {
           <a href="#history">History</a>
               <a href="https://k32.run/#download">Android app</a>
         </nav>
+        <ThemeToggle />
       </header>
 
       <section className="hero" id="companion">
@@ -222,8 +248,8 @@ export function CompanionConsole() {
           <h1>{snapshot.name} is <em>{snapshot.mood.toLowerCase()}</em> today.</h1>
           <p className="lede">A companion with their own memory, personality, and a little window into the mesh around them.</p>
           <div className="identity-row">
-            <span>Bond <strong>{snapshot.bond}</strong></span>
-            <span>Evolution <strong>Stage {snapshot.evolution}</strong></span>
+            <span><strong>Bonded</strong> companion</span>
+            <span><strong>Growing</strong> with care</span>
             <span className={snapshot.mesh.txLocked ? "locked" : "ready"}>{snapshot.mesh.txLocked ? "TX locked" : "TX ready"}</span>
           </div>
         </div>
@@ -267,16 +293,13 @@ export function CompanionConsole() {
             <div><p className="eyebrow">MESHCORE</p><h2>Nearby world</h2></div>
             <span className="profile">{snapshot.mesh.profile}</span>
           </div>
-          <div className="mesh-summary">
-            <div><strong>{snapshot.mesh.peersSeen}</strong><span>peers seen</span></div>
-            <div><strong>{snapshot.mesh.unreadMessages}</strong><span>new message</span></div>
-          </div>
+          <p className="mesh-description">Recent radio peers and messages appear below when Kitsu has something to share.</p>
           <div className="peer-list">
             {snapshot.peers.map((peer) => (
               <div className="peer" key={peer.id}>
                 <span className={`role role-${peer.role}`}>{peer.role === "repeater" ? "R" : "C"}</span>
                 <div><strong>{peer.name}</strong><small>{peer.role} · seen {peer.lastSeen} ago</small></div>
-                <span className="encounters">×{peer.encounters}</span>
+                <span className="encounters">Seen</span>
               </div>
             ))}
           </div>
@@ -299,13 +322,13 @@ export function CompanionConsole() {
 
         <article className="panel route-panel">
           <p className="eyebrow">CONNECTION ROUTE</p>
-          <h2>One companion, three paths.</h2>
+          <h2>A private route back to Kitsu.</h2>
           <div className="route-map" aria-label="Connection route">
-            <div><span>01</span><strong>Bluetooth</strong><small>Native app nearby</small></div>
+            <div><strong>Bluetooth</strong><small>Native app nearby</small></div>
             <i />
-            <div className="current"><span>02</span><strong>Home gateway</strong><small>Wi-Fi to your PC</small></div>
+            <div className="current"><strong>Home gateway</strong><small>Wi-Fi to your PC</small></div>
             <i />
-            <div><span>03</span><strong>Backend</strong><small>Private remote access</small></div>
+            <div><strong>Backend</strong><small>Private remote access</small></div>
           </div>
           <p className="route-note">The browser never speaks to the radio directly. Every remote action is authenticated, expires, and is still subject to Kitsu’s firmware safety rules.</p>
         </article>

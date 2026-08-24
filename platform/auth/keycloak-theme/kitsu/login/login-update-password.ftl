@@ -5,16 +5,26 @@
 <#import "password-validation.ftl" as validator>
 <@layout.registrationLayout displayMessage=!messagesPerField.existsError('password','password-confirm'); section>
     <#if section = "header">
-        <div class="kitsu-brand" data-testid="kitsu-auth-brand">
-            <img class="kitsu-brand__mascot"
-                 src="${url.resourcesPath}/img/kitsu-k32-mascot-bw-v2.png"
-                 alt="Kitsu"
-                 width="88"
-                 height="88">
-            <div>
-                <span class="kitsu-brand__name">Kitsu K32</span>
-                <span class="kitsu-brand__purpose">Secure first sign-in</span>
+        <div class="kitsu-brand-row">
+            <div class="kitsu-brand" data-testid="kitsu-auth-brand">
+                <img class="kitsu-brand__mascot"
+                     src="${url.resourcesPath}/img/kitsu-k32-mascot-bw-v2.png"
+                     alt="Kitsu"
+                     width="88"
+                     height="88">
+                <div>
+                    <span class="kitsu-brand__name">Kitsu K32</span>
+                    <span class="kitsu-brand__purpose">Secure first sign-in</span>
+                </div>
             </div>
+            <button class="kitsu-theme-toggle"
+                    type="button"
+                    data-kitsu-theme-toggle
+                    aria-label="Switch to dark theme"
+                    aria-pressed="false">
+                <span>Theme</span>
+                <span class="kitsu-theme-toggle__value" data-kitsu-theme-label>Light</span>
+            </button>
         </div>
     <#elseif section = "form">
         <div class="kitsu-auth-intro" data-testid="kitsu-password-intro">

@@ -78,7 +78,7 @@ test("publishes a complete product surface with real destinations", async () => 
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "config.json"), "utf8").then(JSON.parse),
   ]);
-  assert.match(html, /A radio companion that lives with you/);
+  assert.match(html, /A radio companion you can care for/);
   assert.match(html, /Portrait companion/);
   assert.match(html, /Download Android/);
   assert.match(html, /https:\/\/docs\.k32\.run/);
@@ -424,6 +424,7 @@ test("archives the previous stable manifest and signature under immutable 2.0.0 
 test("ships every referenced local release asset", async () => {
   const files = [
     "styles.css",
+    "theme.js",
     "site.js",
     "preview-release.js",
     "config.json",
@@ -510,6 +511,6 @@ test("uses byte-exact authoritative K32 brand assets", async () => {
 });
 
 test("all public text assets are valid UTF-8 without mojibake", async () => {
-  const paths = ["index.html", "styles.css", "site.js", "preview-release.js", "README.md", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
+  const paths = ["index.html", "styles.css", "theme.js", "site.js", "preview-release.js", "README.md", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
   for (const relative of paths) assert.doesNotMatch(await readFile(path.join(root, relative), "utf8"), /(?:Ã‚|Ã¢â‚¬|Ã¢â‚¬â„¢|Ã¢â€ |Ã¢â€¡|Ã¢â„¢|Ã¢â€”|Ã¢Å“|Ã¢Å’|Ãƒ|ï¿½)/, relative);
 });

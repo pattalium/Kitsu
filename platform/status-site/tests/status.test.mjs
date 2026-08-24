@@ -23,6 +23,7 @@ test("status page checks only the four public release surfaces", async () => {
   assert.match(html, /does not claim that a new Bluetooth package passed physical acceptance/i);
   assert.doesNotMatch(`${html}${script}`, /checks\/(?:app|api|auth|gateway)|data-kind|OIDC|owner API|device gateway/i);
   assert.doesNotMatch(script, /gated|Not promoted|counted/);
+  assert.doesNotMatch(script, /\.filter\(|\$\{available\}|\$\{results\.length\}/);
 });
 
 test("health validation fails closed for every non-200 or unexpected body", async () => {
