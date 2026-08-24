@@ -6,7 +6,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
-internal const val ADVERTISE_SUBMISSION_TIMEOUT_MILLIS = 20_000L
+// The submission can wait behind one maximum-size snapshot, then performs an
+// authenticated clock sync and action request. Keep this outer deadline above
+// those transport deadlines so it cannot cancel an active request and force a
+// protective GATT teardown.
+internal const val ADVERTISE_SUBMISSION_TIMEOUT_MILLIS = 100_000L
 internal const val ADVERTISE_COOLDOWN_MILLIS = 30_000L
 internal const val ADVERTISE_COOLDOWN = "advertise_cooldown"
 internal const val ADVERTISE_RESULT_UNKNOWN = "advertise_result_unknown"

@@ -1240,7 +1240,11 @@ class BleKitsuTransport(
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val CONNECT_TIMEOUT_MILLIS = 12_000L
         private const val OS_BOND_TIMEOUT_MILLIS = 90_000L
-        private const val REQUEST_TIMEOUT_MILLIS = 10_000L
+        // A valid authenticated response may carry up to 12 KiB and therefore
+        // hundreds of 20-byte notification fragments when Android negotiates
+        // the minimum MTU. Ten seconds falsely classified slow mesh snapshots
+        // as a broken session and deliberately tore down GATT.
+        private const val REQUEST_TIMEOUT_MILLIS = 30_000L
         private const val WRITE_TIMEOUT_MILLIS = 5_000L
         private const val PAIRING_INBOX_CAPACITY = 4
         private const val MAX_FAILED_PROOFS = 3

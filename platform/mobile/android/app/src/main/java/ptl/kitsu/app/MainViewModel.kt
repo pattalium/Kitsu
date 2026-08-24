@@ -399,7 +399,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             (this as? FirmwarePackageException)?.code ?: fallback
 
     private companion object {
-        const val MESSAGE_READ_TIMEOUT_MILLIS = 12_000L
+        // Mark-read may wait behind a full mesh snapshot before its own signed
+        // request starts. Do not cancel an active authenticated request sooner
+        // than the transport can legitimately finish it.
+        const val MESSAGE_READ_TIMEOUT_MILLIS = 65_000L
         const val MESSAGE_READ_RETRY_DELAY_MILLIS = 750L
         const val MESSAGE_READ_MAX_ATTEMPTS = 2
     }
