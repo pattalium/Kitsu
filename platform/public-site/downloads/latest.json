@@ -3,13 +3,13 @@
   "status": "available",
   "channel": "stable",
   "buildType": "release",
-  "packageId": "app.kitsu.mobile",
-  "version": "2.0.0",
-  "versionCode": 13,
+  "packageId": "ptl.kitsu.app",
+  "version": "2.1.5",
+  "versionCode": 19,
   "minimumAndroidApi": 26,
-  "url": "/downloads/kitsu-k32-android-2.0.0.apk",
-  "bytes": 1693558,
-  "sha256": "87499a391944e92b76fa158621b2b59718d15a8e60a133c39fb9f5cf24f9ab2a",
+  "url": "/downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
+  "bytes": 1839310,
+  "sha256": "72cd273f7e44402267ccd7a9bbbec9f2798414a18b1933305e60802be47a405a",
   "signingCertificateSha256": "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-  "publishedAt": "2026-08-22T12:39:28Z"
+  "publishedAt": "2026-08-24T12:20:14Z"
 }

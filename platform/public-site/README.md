@@ -17,9 +17,9 @@ accepted firmware release is available.
 
 The download card exposes only a signed local-first Android release. A valid
 historical manifest or APK may remain in `downloads/` for audit and rollback,
-but `site.js` deliberately refuses to link any build older than Android 2.0.0 /
-version code 13. Install an eligible release directly from the browser on a
-supported Android device.
+but `site.js` exposes only the exact Android 2.1.5 / version-code 19 production
+contract. Install the accepted release directly from the browser on a supported
+Android device.
 
 The Android download has two independent integrity boundaries:
 
@@ -34,8 +34,25 @@ directory or committed. `downloads/update-ed25519-public.pem` is public by
 design. `downloads/latest.json.sig` is a raw 64-byte Ed25519 signature over the
 exact `downloads/latest.json` bytes.
 
-The browser accepts only a same-origin versioned APK path, the stable/release
-package `app.kitsu.mobile`, bounded numeric fields, canonical lowercase SHA-256,
-the pinned APK certificate, a valid manifest timestamp, and the minimum
-local-first version gate. Repository tests additionally verify the detached
-signature and hash the exact APK bytes.
+The browser accepts only a same-origin content-addressed APK path, the
+stable/release package `ptl.kitsu.app`, exact version 2.1.5 / code 19, bounded
+numeric fields, canonical lowercase SHA-256, the pinned direct-download APK
+certificate, and a valid manifest timestamp. Repository tests additionally
+verify the detached signature and hash the exact APK bytes.
+
+The legacy `app.kitsu.mobile` package and the direct-download/Play signing
+tracks do not cross-update. Before switching, connect to the Kitsu and use
+Forget authorization, uninstall the old app, install the chosen track, and pair
+again. The signed Play app is not distributed from this static site.
+
+When the fixed `latest.json` authority advances, the exact signed 2.0.0
+manifest remains available under
+`downloads/android-stable-2.0.0-20260822t123928z.json` with its raw detached
+signature. The original 2.0.0 APK and all previously published testing-preview
+bytes are retained for audit and rollback but are not advertised as the current
+download.
+
+The support card is a plain outbound HTTPS link to `https://ko-fi.com/pattalium`.
+Support is voluntary and grants no app feature, content, badge, or other
+benefit. The site does not embed payment code, collect payment details, or add
+tracking parameters to that destination.

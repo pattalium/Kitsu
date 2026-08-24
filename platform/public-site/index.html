@@ -3,6 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#090b0d" />
     <meta name="description" content="Kitsu turns a Heltec WiFi LoRa 32 V3 into a local-first portrait companion with memory, games, messaging, authenticated Bluetooth, and MeshCore." />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="K32 Kitsu" />
@@ -13,151 +15,186 @@
     <meta name="twitter:description" content="A radio companion with memory, personality, messages, and a world of its own." />
     <meta name="twitter:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
     <link rel="icon" href="/assets/kitsu-app-icon.png" />
-    <link rel="stylesheet" href="/styles.css?sha256=5ac23805fb8c3f847d66546b9ed30819c6b37c86b705704b4796f4133396a100" />
-    <script type="module" src="/site.js?sha256=9eee77d437e212ce6178dcf7f34557324fc524e93ee66efa189224eae110b60a"></script>
-    <script type="module" src="/preview-release.js?sha256=0ffc25be94d6473767e4e256ffcc1db9e6e6c07ff49549c91c2e2c757b669425"></script>
-    <title>K32 Kitsu</title>
+    <link rel="stylesheet" href="/styles.css?sha256=464c71c4a588f525213023f7bccfb125f018ec46fdca8fcc6036b8f2752e943e" />
+    <script type="module" src="/site.js?sha256=6ff9a65ad8771d7b4bc1ccbc9f7f1a7891ab36e9aa4548b338dd317aa95d39d9"></script>
+    <title>K32 Kitsu - local-first radio companion</title>
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
     <header class="nav">
-      <a class="wordmark" href="#top" aria-label="K32 Kitsu home">
-        <img src="/assets/kitsu-app-icon.png" alt="" width="52" height="52" />
-        <span><strong>K32</strong><small>Kitsu companion</small></span>
+      <a class="wordmark" href="#top" aria-label="K32 Kitsu home" translate="no">
+        <span class="wordmark-mark" aria-hidden="true">K32</span>
+        <span class="wordmark-name">Kitsu</span>
       </a>
+      <p class="nav-context">Local-first radio companion</p>
       <nav aria-label="Primary navigation">
-        <a href="#features">Features</a>
-        <a href="#start">Get started</a>
-        <a href="#download">Android</a>
+        <a href="#companion">Companion</a>
+        <a href="#connect">Connect</a>
+        <a href="#start">Start</a>
         <a href="https://docs.k32.run">Manual</a>
         <a class="nav-action" href="#download">Get Android</a>
       </nav>
     </header>
 
-    <main id="top">
-      <section class="hero">
+    <main id="main">
+      <section class="hero" id="top">
         <div class="hero-copy">
-          <p class="eyebrow">HELTEC WIFI LORA 32 V3 · ANDROID · MESHCORE</p>
-          <h1>A radio companion you can care for.</h1>
-          <p class="lede">Kitsu gives a small LoRa board a portrait face, memory, personality, games, messages, and a place in the MeshCore network. It lives on the device; the Android app talks to it directly over authenticated Bluetooth and does not need an account, gateway, or Internet connection.</p>
+          <p class="eyebrow"><span></span> Heltec LoRa + Android</p>
+          <h1>A radio companion that lives with you.</h1>
+          <p class="lede">Kitsu gives a small LoRa board a portrait face, memory, personality, games, and messages. It lives on the device; the Android app talks to it directly over authenticated Bluetooth and does not need an account, gateway, or Internet connection.</p>
           <div class="hero-actions">
-            <a class="primary" href="#download">Download Android</a>
-            <a class="secondary" href="https://docs.k32.run/getting-started/">Start with the guide</a>
+            <a class="button button-primary" href="#download">Download Android <span aria-hidden="true">&#8594;</span></a>
+            <a class="button button-secondary" href="https://docs.k32.run/getting-started/">Read the manual <span aria-hidden="true">&#8599;</span></a>
           </div>
-          <ul class="trust" aria-label="Kitsu highlights">
-            <li><strong>Portrait companion</strong><span>Designed for the Heltec display</span></li>
-            <li><strong>Nearby control</strong><span>Secure Bluetooth from Android</span></li>
-            <li><strong>LoRa messaging</strong><span>MeshCore channels and peers</span></li>
-          </ul>
+          <p class="hero-proof">Portrait companion. Nearby by Bluetooth. Out there on LoRa.</p>
         </div>
-        <div class="mascot-stage" aria-label="Kitsu">
-          <div class="orbit orbit-one"></div>
-          <div class="orbit orbit-two"></div>
-          <div class="pixel-grid" aria-hidden="true"></div>
-          <img src="/assets/kitsu-app-icon.png" alt="Kitsu" width="720" height="720" />
-          <span class="device-label">KITSU / 868</span>
+
+        <div class="hero-instrument" aria-label="Kitsu portrait companion on a radio device">
+          <div class="signal-rings" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="device" aria-hidden="true">
+            <span class="screw screw-top-left"></span>
+            <span class="screw screw-top-right"></span>
+            <span class="screw screw-bottom-left"></span>
+            <span class="screw screw-bottom-right"></span>
+            <div class="device-screen">
+              <div class="screen-head"><span>Kitsu</span><b>Nearby</b></div>
+              <img class="device-avatar" src="/assets/kitsu-app-icon.png" alt="" width="420" height="420" fetchpriority="high" decoding="async" />
+              <div class="screen-status"><span>Bluetooth ready</span><i></i></div>
+              <div class="screen-status"><span>LoRa listening</span><i></i></div>
+            </div>
+            <div class="device-foot"><span>K32</span><span>PRG</span></div>
+          </div>
+          <div class="board-mark" aria-hidden="true">
+            <span class="board-chip">HELTEC</span>
+            <span class="board-trace trace-a"></span>
+            <span class="board-trace trace-b"></span>
+            <span class="board-pin pin-a"></span>
+            <span class="board-pin pin-b"></span>
+            <small>LoRa board</small>
+          </div>
+          <p class="instrument-label" aria-hidden="true">Portrait radio / local memory / direct control</p>
         </div>
       </section>
 
-      <section class="statement" id="features">
-        <p class="eyebrow">THE COMPANION LIVES HERE</p>
-        <h2>More than a screen on a radio.</h2>
-        <p class="section-intro">Care changes Kitsu over time. Encounters become memories. Messages arrive in an inbox. Games, sleep, mood, and progression continue on the Heltec itself.</p>
-        <div class="feature-grid">
-          <article><span>01</span><h3>Care and personality</h3><p>Pet, feed, play, listen, sleep, and watch needs and affection develop through normal use.</p></article>
-          <article><span>02</span><h3>Games on-device</h3><p>Play Signal Catch and Pounce with the single PRG button, directly on the portrait OLED.</p></article>
-          <article><span>03</span><h3>Messages that travel</h3><p>Send direct peer messages or talk on one of four MeshCore channels from the Android app.</p></article>
-          <article><span>04</span><h3>Memory and encounters</h3><p>Kitsu records meaningful sightings and radio activity instead of behaving like a disposable display.</p></article>
+      <section class="signal-rail" aria-label="How Kitsu connects">
+        <article>
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M22 4v40l13-11-10-9 10-9L22 4Zm4 9 4 3-4 4v-7Zm0 15 4 4-4 3v-7ZM22 24 12 14m10 10L12 34" /></svg>
+          <div><h2>Nearby by Bluetooth</h2><p>Private, authenticated control from your Android device.</p></div>
+        </article>
+        <article>
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 40V20m-8 20h16M19 20l5-8 5 8M9 18c-4 4-4 10 0 14m30-14c4 4 4 10 0 14M14 22c-2 2-2 4 0 6m20-6c2 2 2 4 0 6" /></svg>
+          <div><h2>Out there on LoRa</h2><p>Long-range, low-power MeshCore messaging for real places.</p></div>
+        </article>
+        <article>
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M9 19 24 7l15 12v20H9V19Zm8 20V27h14v12M17 18h14" /></svg>
+          <div><h2>Yours by design</h2><p>No product account, gateway, Wi-Fi, or runtime server.</p></div>
+        </article>
+      </section>
+
+      <section class="companion-section" id="companion">
+        <div class="section-intro">
+          <p class="eyebrow"><span></span> The companion lives here</p>
+          <h2>More than a screen on a radio.</h2>
+          <p>Care changes Kitsu over time. Encounters become memories. Messages arrive in an inbox. Games, sleep, mood, and progression continue on the Heltec itself.</p>
+        </div>
+
+        <div class="feature-ledger">
+          <article><p>Companion</p><div><h3>Care shapes personality</h3><p>Pet, feed, play, listen, sleep, and watch needs and affection develop through normal use.</p></div><span aria-hidden="true">&#8594;</span></article>
+          <article><p>On-device</p><div><h3>Play without a phone</h3><p>Signal Catch and Pounce use the single PRG button directly on the portrait OLED.</p></div><span aria-hidden="true">&#8594;</span></article>
+          <article><p>Memory</p><div><h3>Encounters leave a trace</h3><p>Kitsu remembers meaningful sightings and radio activity instead of behaving like a disposable display.</p></div><span aria-hidden="true">&#8594;</span></article>
+          <article><p>Messages</p><div><h3>Talk to peers and channels</h3><p>Send direct messages or join configured MeshCore channels from the Android app.</p></div><span aria-hidden="true">&#8594;</span></article>
         </div>
       </section>
 
-      <section class="connection-section">
+      <section class="connection-section" id="connect">
         <div class="section-heading">
-          <p class="eyebrow">CONNECTED WHEN IT HELPS</p>
+          <p class="eyebrow"><span></span> Connected only when it helps</p>
           <h2>Two local paths. One companion.</h2>
         </div>
-        <div class="connection-grid">
+        <div class="connection-map">
           <article>
-            <b>01</b>
-            <div><h3>Bluetooth nearby</h3><p>Pair securely, care for Kitsu, read history, send messages, manage saved devices, and install signed firmware updates from Android.</p></div>
+            <p class="path-label">Phone to Kitsu</p>
+            <h3>Authenticated Bluetooth nearby</h3>
+            <p>Pair securely, care for Kitsu, read history, send messages, manage saved devices, and install signed firmware updates from Android.</p>
+            <a href="https://docs.k32.run/connectivity/">Read the Bluetooth guide <span aria-hidden="true">&#8599;</span></a>
           </article>
+          <div class="path-core" aria-hidden="true"><span>Kitsu</span><i></i></div>
           <article>
-            <b>02</b>
-            <div><h3>MeshCore over LoRa</h3><p>Kitsu receives standard MeshCore traffic and uses the configured regional radio profile for approved transmissions.</p></div>
+            <p class="path-label">Kitsu to the mesh</p>
+            <h3>MeshCore over LoRa</h3>
+            <p>Kitsu receives standard MeshCore traffic and uses the configured regional radio profile for approved transmissions.</p>
+            <a href="https://docs.k32.run/messaging/">Read the messaging guide <span aria-hidden="true">&#8599;</span></a>
           </article>
         </div>
       </section>
 
       <section class="start-section" id="start">
-        <div>
-          <p class="eyebrow">FROM BOARD TO COMPANION</p>
+        <div class="start-heading">
+          <p class="eyebrow"><span></span> From board to companion</p>
           <h2>Set up once. Keep using it your way.</h2>
+          <div class="start-actions">
+            <a class="button button-primary" href="https://flash.k32.run">Check firmware availability <span aria-hidden="true">&#8599;</span></a>
+            <a class="button button-secondary" href="https://docs.k32.run/getting-started/">Read every setup step <span aria-hidden="true">&#8599;</span></a>
+          </div>
         </div>
-        <ol class="steps">
-          <li><span>1</span><div><strong>Install an accepted Kitsu firmware release</strong><p>The browser flasher stays unavailable until a physically accepted release passes its signature and byte checks. When available, it writes only the reviewed rollback bootloader, partition table, both A/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition while preserving companion data.</p></div></li>
-          <li><span>2</span><div><strong>Install the Android app</strong><p>Use the download below only when its verified local-first release link is enabled, then manually install the signed APK. Android 8 or newer is required.</p></div></li>
-          <li><span>3</span><div><strong>Pair with physical confirmation</strong><p>Compare the six-digit code on Android and Kitsu, accept only if they match, then follow the two PRG prompts.</p></div></li>
-          <li><span>4</span><div><strong>Use Kitsu locally</strong><p>Connect to a saved Kitsu over Bluetooth. Care, history, messages, radio settings, and firmware updates work without an account, gateway, Wi-Fi, or Internet connection.</p></div></li>
-        </ol>
-        <div class="start-actions">
-          <a class="primary" href="https://flash.k32.run">Check firmware availability</a>
-          <a class="secondary" href="https://docs.k32.run/getting-started/">Read every setup step</a>
+        <div class="field-guide" aria-label="Getting started">
+          <article><strong>Flash</strong><p>The browser flasher stays unavailable until a physically accepted release passes its signature and byte checks. When available, it writes only the reviewed rollback bootloader, partition table, both A/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition while preserving companion data.</p></article>
+          <article><strong>Install</strong><p>Install the signed Android app below. Android 8 or newer is required.</p></article>
+          <article><strong>Pair</strong><p>Compare the confirmation code on Android and Kitsu, accept only if they match, then follow the physical PRG prompts.</p></article>
+          <article><strong>Live</strong><p>Care, history, messages, radio settings, and signed firmware updates remain available through the nearby connection.</p></article>
         </div>
       </section>
 
       <section class="download-section" id="download">
         <div class="download-copy">
-          <p class="eyebrow">ANDROID</p>
+          <p class="eyebrow"><span></span> Android</p>
           <h2>Install the signed Android app.</h2>
-          <p>The download card exposes only an accepted Bluetooth-only Android release whose detached manifest, package identity, version, and signing-certificate digest pass the local checks. Install it directly from your browser, then pair with the Heltec using the on-screen confirmation flow.</p>
-          <ul class="check-list">
-            <li>Local-first Android 2.0.0 or newer</li>
-            <li>Android 8.0 and newer</li>
-            <li>Detached release manifest verified in your browser</li>
-          </ul>
+          <p>The release link appears only after the detached manifest, package identity, version, and signing-certificate digest pass local browser verification.</p>
+          <p class="release-contract">Kitsu Android 2.1.5 · version code 19 · Android 8.0 and newer</p>
+          <p><strong>Changing app tracks is a clean install.</strong> If you are moving from <code>app.kitsu.mobile</code>, a testing preview, or between direct-download and Play signing tracks, connect first and use <strong>Forget authorization</strong>. Then uninstall the old app, install the chosen track, and pair again. Direct and Play builds cannot update one another.</p>
         </div>
         <div class="download-cards">
-          <div class="download-card">
-            <span class="status" id="android-status">Checking signed Android release</span>
-            <h3 id="android-title">Kitsu Android</h3>
-            <p id="android-detail">Verifying the signed release manifest and local-first eligibility.</p>
-            <a id="android-download" class="disabled" aria-disabled="true">Verifying release…</a>
+          <div class="download-module">
+            <span class="screw screw-top-left" aria-hidden="true"></span>
+            <span class="screw screw-top-right" aria-hidden="true"></span>
+            <div class="download-state" role="status" aria-live="polite">
+              <span class="status" id="android-status">Checking signed Android release</span>
+              <h3 id="android-title">Kitsu Android</h3>
+              <p id="android-detail">Verifying the signed release manifest and local-first eligibility.</p>
+            </div>
+            <a id="android-download" class="download-action disabled" aria-disabled="true">Verifying release…</a>
             <small id="android-digest">The link is enabled only after an eligible local-first manifest passes verification.</small>
             <noscript><p class="noscript">JavaScript is required to verify the release signature before download.</p></noscript>
-          </div>
-          <div class="download-card preview-download-card" aria-labelledby="android-preview-title">
-            <span class="status preview-status" id="android-preview-status">Checking signed testing preview</span>
-            <h3 id="android-preview-title">Kitsu Android 2.1.4 testing preview</h3>
-            <p id="android-preview-detail">Verifying the exact test-only manifest before exposing any preview APK.</p>
-            <ul class="preview-facts">
-              <li>Test-only and debug-signed — not an accepted or stable release.</li>
-              <li>Installs separately from Play/production and stores a separate controller authorization.</li>
-              <li>No Internet permission or foreground service; this preview may be removed after testing.</li>
-            </ul>
-            <a id="android-preview-download" class="disabled" aria-disabled="true">Verifying testing preview…</a>
-            <small id="android-preview-digest">The test link stays hidden unless its dedicated preview schema and detached signature pass every check.</small>
-            <noscript><p class="noscript">JavaScript is required to verify the testing-preview signature before download.</p></noscript>
           </div>
         </div>
       </section>
 
-      <section class="resource-section">
-        <a href="https://docs.k32.run" class="resource-card">
-          <span>Manual</span><h3>Learn Kitsu from first boot to daily use.</h3><p>Setup, controls, Bluetooth, messages, offline updates, and troubleshooting.</p><b>Read the manual →</b>
-        </a>
-        <a href="https://docs.k32.run/connectivity/" class="resource-card">
-          <span>Bluetooth</span><h3>Control Kitsu directly and privately.</h3><p>The saved controller credential stays on the phone, and every command travels through the nearby authenticated Bluetooth session.</p><b>Read the Bluetooth guide →</b>
-        </a>
-        <a href="https://flash.k32.run" class="resource-card">
-          <span>Firmware</span><h3>Check for an accepted browser release.</h3><p>The installer fails closed until a physically accepted signed release is available, then performs targeted writes and read-back verification.</p><b>Check availability →</b>
-        </a>
-        <a href="https://github.com/pattalium/Kitsu" class="resource-card">
-          <span>Source</span><h3>Inspect the code and build Kitsu yourself.</h3><p>Firmware, Android, public sites, protocols, release tooling, and tests.</p><b>View on GitHub →</b>
-        </a>
+      <section class="resource-section" aria-labelledby="resources-title">
+        <div class="section-heading">
+          <p class="eyebrow"><span></span> Keep exploring</p>
+          <h2 id="resources-title">Everything Kitsu, in the open.</h2>
+        </div>
+        <div class="resource-list">
+          <a href="https://docs.k32.run"><span>Manual</span><strong>Learn Kitsu from first boot to daily use.</strong><i aria-hidden="true">&#8599;</i></a>
+          <a href="https://docs.k32.run/connectivity/"><span>Bluetooth</span><strong>Understand direct control and saved authorization.</strong><i aria-hidden="true">&#8599;</i></a>
+          <a href="https://flash.k32.run"><span>Firmware</span><strong>The installer fails closed until a physically accepted signed release is available.</strong><i aria-hidden="true">&#8599;</i></a>
+          <a href="https://github.com/pattalium/Kitsu"><span>Source</span><strong>Inspect the firmware, Android app, protocols, and release tooling.</strong><i aria-hidden="true">&#8599;</i></a>
+        </div>
+      </section>
+
+      <section class="support-section" aria-labelledby="support-title">
+        <div>
+          <p class="eyebrow"><span></span> Voluntary support</p>
+          <h2 id="support-title">Help Kitsu keep growing.</h2>
+          <p>Support is voluntary. It grants no app feature, content, badge, or other benefit.</p>
+        </div>
+        <a href="https://ko-fi.com/pattalium">Support Kitsu on Ko-fi <span aria-hidden="true">→</span></a>
       </section>
 
       <section class="ownership-section">
         <div>
-          <p class="eyebrow">YOUR HARDWARE STAYS YOURS</p>
+          <p class="eyebrow"><span></span> Your hardware stays yours</p>
           <h2>Reflashable by design.</h2>
         </div>
         <p>Kitsu does not permanently lock the Heltec. You can update it over signed Bluetooth OTA, recover it over USB, erase it, return to stock MeshCore, or repurpose the board. Nearby commands use authenticated Bluetooth with per-session keys, sequence checks, and replay protection.</p>
@@ -165,19 +202,9 @@
     </main>
 
     <footer>
-      <div><strong>K32 Kitsu</strong><span>Portrait radio companion for Heltec V3</span></div>
-      <nav aria-label="Product links">
-        <a href="https://docs.k32.run">Manual</a>
-        <a href="https://flash.k32.run">Firmware</a>
-        <a href="#download">Android</a>
-        <a href="https://github.com/pattalium/Kitsu">GitHub</a>
-      </nav>
-      <nav aria-label="Policies and contact">
-        <a href="/privacy/">Privacy</a>
-        <a href="/terms/">Terms</a>
-        <a href="/security/">Security</a>
-        <a href="/contact/">Contact</a>
-      </nav>
+      <div class="footer-brand"><strong>K32 Kitsu</strong><span>Local-first portrait radio companion</span></div>
+      <nav aria-label="Product links"><a href="https://docs.k32.run">Manual</a><a href="https://flash.k32.run">Firmware</a><a href="#download">Android</a><a href="https://github.com/pattalium/Kitsu">GitHub</a></nav>
+      <nav aria-label="Policies and contact"><a href="/privacy/">Privacy</a><a href="/terms/">Terms</a><a href="/security/">Security</a><a href="/contact/">Contact</a></nav>
     </footer>
   </body>
 </html>

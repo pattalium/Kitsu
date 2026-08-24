@@ -78,7 +78,7 @@ test("publishes a complete product surface with real destinations", async () => 
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "config.json"), "utf8").then(JSON.parse),
   ]);
-  assert.match(html, /A radio companion you can care for/);
+  assert.match(html, /A radio companion that lives with you/);
   assert.match(html, /Portrait companion/);
   assert.match(html, /Download Android/);
   assert.match(html, /https:\/\/docs\.k32\.run/);
@@ -96,6 +96,29 @@ test("publishes a complete product surface with real destinations", async () => 
   assert.doesNotMatch(html, /private machine|private address/i);
 });
 
+test("offers only a voluntary no-benefit Ko-fi support action", async () => {
+  const [html, script, readme, privacy, funding] = await Promise.all([
+    readFile(path.join(root, "index.html"), "utf8"),
+    readFile(path.join(root, "site.js"), "utf8"),
+    readFile(path.join(root, "README.md"), "utf8"),
+    readFile(path.join(root, "privacy", "index.html"), "utf8"),
+    readFile(path.join(projectRoot, ".github", "FUNDING.yml"), "utf8"),
+  ]);
+  const supportDestinations = [...html.matchAll(/href=["'](https:\/\/ko-fi\.com\/[^"']*)["']/gi)]
+    .map((match) => match[1]);
+  assert.deepEqual(supportDestinations, ["https://ko-fi.com/pattalium"]);
+  assert.match(html, /Support is voluntary\. It grants no app feature, content, badge, or other benefit\./i);
+  assert.match(html, /Support Kitsu on Ko-fi[^<]*<span[^>]*>→<\/span>/i);
+  assert.match(readme, /plain outbound HTTPS link to `https:\/\/ko-fi\.com\/pattalium`/i);
+  assert.match(readme, /Support is voluntary and grants no app feature, content, badge, or other\s+benefit/i);
+  assert.match(privacy, /Following the Ko-fi support link transfers your visit to Ko-fi/i);
+  assert.match(privacy, /any payment interaction then takes place on Ko-fi under its own terms and privacy notice/i);
+  assert.match(privacy, /Kitsu's static site does not embed payment code or collect payment details/i);
+  assert.equal(funding, "ko_fi: pattalium\n");
+  assert.doesNotMatch(`${html}\n${script}\n${privacy}`, /<iframe\b|ko-fi\.com\/Home\/ButtonWidget|ko-fi\.com\/widgets|kofi(?:Widget|Button)/i);
+  assert.doesNotMatch(script, /ko-fi|kofi/i);
+});
+
 test("source landing instructions match the local-only device controls", async () => {
   const readme = await readFile(path.join(projectRoot, "README.md"), "utf8");
   assert.match(readme, /has no Internet permission/i);
@@ -107,56 +130,49 @@ test("source landing instructions match the local-only device controls", async (
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
 });
 
-test("fails closed for a signed Android manifest older than the local-first release", async () => {
+test("fails closed outside the exact Android 2.1.5 production contract", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /Local-first Android 2\.0\.0 or newer/i);
-  assert.match(html, /eligible local-first manifest/i);
+  assert.match(html, /Kitsu Android 2\.1\.5 · version code 19/i);
+  assert.match(html, /Changing app tracks is a clean install/i);
+  assert.match(html, /Forget authorization/i);
+  assert.match(html, /Direct and Play builds cannot update one another/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
-  assert.match(script, /MIN_LOCAL_FIRST_VERSION_CODE = 13/);
-  assert.match(script, /MIN_LOCAL_FIRST_MAJOR_VERSION = 2/);
-  assert.match(script, /showReleaseNotPromoted/);
-  assert.match(readme, /refuses to link any build older than Android 2\.0\.0/i);
+  assert.match(script, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
+  assert.match(script, /REQUIRED_VERSION = "2\.1\.5"/);
+  assert.match(script, /REQUIRED_VERSION_CODE = 19/);
+  assert.match(readme, /exact Android 2\.1\.5 \/ version-code 19/i);
+  assert.match(readme, /do not cross-update/i);
   assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
-  assert.doesNotMatch(`${html}${script}${readme}`, /test APK|test build|coming soon|placeholder/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
 });
 
-test("keeps the test-only Android preview visibly separate and unavailable by default", async () => {
+test("preserves historical testing-preview bytes without advertising them", async () => {
   const [html, styles, stableScript] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "styles.css"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
   ]);
-  assert.match(html, /Kitsu Android 2\.1\.4 testing preview/);
-  assert.match(html, /Test-only and debug-signed/i);
-  assert.match(html, /not an accepted or stable release/i);
-  assert.match(html, /Installs separately from Play\/production/i);
-  assert.match(html, /stores a separate controller authorization/i);
-  assert.match(html, /No Internet permission or foreground service/i);
-  assert.match(html, /may be removed after testing/i);
-  assert.match(html, /id="android-preview-download" class="disabled" aria-disabled="true"/);
-  assert.doesNotMatch(html, /id="android-preview-download"[^>]+href=/i);
-  assert.match(html, /src="\/preview-release\.js\?sha256=[a-f0-9]{64}"/);
-  const previewScriptDigest = html.match(/src="\/preview-release\.js\?sha256=([a-f0-9]{64})"/)?.[1];
+  assert.doesNotMatch(html, /android-preview-|Kitsu Android 2\.1\.4 testing preview/i);
+  assert.doesNotMatch(html, /src="\/preview-release\.js/);
+  await access(path.join(root, "preview-release.js"));
   const stylesDigest = html.match(/href="\/styles\.css\?sha256=([a-f0-9]{64})"/)?.[1];
-  assert.equal(previewScriptDigest, await sha256(path.join(root, "preview-release.js")));
   assert.equal(stylesDigest, await sha256(path.join(root, "styles.css")));
-  assert.match(styles, /\.download-cards\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /\.download-cards\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.download-cards\s*\{\s*grid-template-columns:\s*1fr;/);
-  assert.match(styles, /\.preview-download-card/);
 
   // The stable verifier remains its independent, production-only channel.
-  assert.equal(await sha256(path.join(root, "site.js")), "9eee77d437e212ce6178dcf7f34557324fc524e93ee66efa189224eae110b60a");
+  const stableScriptDigest = html.match(/src="\/site\.js\?sha256=([a-f0-9]{64})"/)?.[1];
+  assert.equal(stableScriptDigest, await sha256(path.join(root, "site.js")));
   assert.match(stableScript, /DOWNLOAD_MANIFEST = "\/downloads\/latest\.json"/);
   assert.match(stableScript, /release\.channel !== "stable"/);
   assert.match(stableScript, /release\.buildType !== "release"/);
-  assert.match(stableScript, /release\.packageId !== "app\.kitsu\.mobile"/);
+  assert.match(stableScript, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
 });
 
 test("pins an exact and strictly ordered Android testing-preview contract", async () => {
@@ -330,13 +346,13 @@ test("keeps signed Android release bytes outside text conversion", async () => {
   const attributes = await readFile(path.join(projectRoot, ".gitattributes"), "utf8");
   const lines = new Set(attributes.split(/\r?\n/));
   for (const rule of [
-    "platform/public-site/downloads/latest.json -text",
-    "platform/public-site/downloads/latest.json.sig binary",
+    "platform/public-site/downloads/*.json -text",
+    "platform/public-site/downloads/*.json.sig binary",
     "platform/public-site/downloads/*.apk binary",
   ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
 });
 
-test("publishes the byte-exact signed local-first Android 2.0.0 release", async () => {
+test("publishes the byte-exact signed local-first Android 2.1.5 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -351,15 +367,15 @@ test("publishes the byte-exact signed local-first Android 2.0.0 release", async 
     status: "available",
     channel: "stable",
     buildType: "release",
-    packageId: "app.kitsu.mobile",
-    version: "2.0.0",
-    versionCode: 13,
+    packageId: "ptl.kitsu.app",
+    version: "2.1.5",
+    versionCode: 19,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-k32-android-2.0.0.apk",
-    bytes: 1693558,
-    sha256: "87499a391944e92b76fa158621b2b59718d15a8e60a133c39fb9f5cf24f9ab2a",
+    url: "/downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
+    bytes: 1839310,
+    sha256: "72cd273f7e44402267ccd7a9bbbec9f2798414a18b1933305e60802be47a405a",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-22T12:39:28Z",
+    publishedAt: "2026-08-24T12:20:14Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -368,12 +384,11 @@ test("publishes the byte-exact signed local-first Android 2.0.0 release", async 
   assert.match(script, /signature\.length !== 64/);
   assert.match(script, /release\.channel !== "stable"/);
   assert.match(script, /release\.buildType !== "release"/);
-  assert.match(script, /release\.packageId !== "app\.kitsu\.mobile"/);
+  assert.match(script, /release\.packageId !== REQUIRED_PACKAGE_ID/);
   assert.match(script, /url\.origin !== window\.location\.origin/);
   assert.match(script, /ANDROID_SIGNING_CERTIFICATE_SHA256/);
-  assert.match(script, /release\.versionCode < MIN_LOCAL_FIRST_VERSION_CODE/);
-  assert.match(script, /majorVersion < MIN_LOCAL_FIRST_MAJOR_VERSION/);
-  assert.match(script, /predates the local-first release/i);
+  assert.match(script, /release\.versionCode !== REQUIRED_VERSION_CODE/);
+  assert.match(script, /release\.version !== REQUIRED_VERSION/);
   assert.match(script, /showReleaseFailure/);
 
   const apk = path.join(root, release.url.slice(1));
@@ -384,8 +399,26 @@ test("publishes the byte-exact signed local-first Android 2.0.0 release", async 
   assert.deepEqual([...await readFile(apk).then((bytes) => bytes.subarray(0, 4))], [0x50, 0x4b, 0x03, 0x04]);
 
   const downloadEntries = await readdir(path.join(root, "downloads"));
-  assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")), ["kitsu-k32-android-2.0.0.apk"]);
+  assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")).sort(), [
+    "kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
+    "kitsu-k32-android-2.0.0.apk",
+  ]);
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
+});
+
+test("archives the previous stable manifest and signature under immutable 2.0.0 names", async () => {
+  const downloads = path.join(root, "downloads");
+  const archivedManifest = path.join(downloads, "android-stable-2.0.0-20260822t123928z.json");
+  const archivedSignature = path.join(downloads, "android-stable-2.0.0-20260822t123928z.json.sig");
+  const publicKey = createPublicKey(await readFile(path.join(downloads, "update-ed25519-public.pem")));
+  const manifestBytes = await readFile(archivedManifest);
+  const signatureBytes = await readFile(archivedSignature);
+
+  assert.equal(manifestBytes.length, 512);
+  assert.equal(await sha256(archivedManifest), "a9b846ab16ef6534d13316ba7ecc7f5ce354209e0deeb2f71bec211190db868d");
+  assert.equal(signatureBytes.length, 64);
+  assert.equal(await sha256(archivedSignature), "56828bffdaed27cca0cac4ca73a403a31b1448c6937131aa43aa0ab5bf399d98");
+  assert.equal(verify(null, manifestBytes, publicKey, signatureBytes), true);
 });
 
 test("ships every referenced local release asset", async () => {
@@ -399,7 +432,10 @@ test("ships every referenced local release asset", async () => {
     "downloads/latest.json",
     "downloads/latest.json.sig",
     "downloads/update-ed25519-public.pem",
+    "downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
+    "downloads/android-stable-2.0.0-20260822t123928z.json",
+    "downloads/android-stable-2.0.0-20260822t123928z.json.sig",
   ];
   await Promise.all(files.map((file) => access(path.join(root, file))));
 });
