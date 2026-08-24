@@ -215,7 +215,19 @@ html.login-pf ::selection {
 }
 
 .pf-v5-c-login__main-header {
-    display: none;
+    display: block;
+    padding: clamp(1.25rem, 4vw, 2rem) clamp(1.5rem, 5vw, 2.5rem) 0;
+    color: var(--kitsu-ink);
+    background: transparent;
+}
+
+#kc-page-title {
+    margin: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    line-height: normal;
+    text-align: left;
 }
 
 .pf-v5-c-login__main-body {
@@ -444,6 +456,10 @@ input:focus-visible {
 
     .pf-v5-c-login__main {
         border-radius: 1rem;
+    }
+
+    .pf-v5-c-login__main-header {
+        padding: 1.1rem 1.35rem 0;
     }
 
     .pf-v5-c-login__main-body {
