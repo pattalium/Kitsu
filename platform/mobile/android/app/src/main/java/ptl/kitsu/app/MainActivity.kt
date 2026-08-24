@@ -1,6 +1,7 @@
 package ptl.kitsu.app
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.graphics.Color
@@ -31,6 +32,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+
+internal const val KITSU_SUPPORT_URL = "https://ko-fi.com/pattalium"
+
+internal fun kitsuSupportIntent(): Intent = Intent(
+    Intent.ACTION_VIEW,
+    Uri.parse(KITSU_SUPPORT_URL),
+).addCategory(Intent.CATEGORY_BROWSABLE)
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
@@ -146,6 +154,15 @@ class MainActivity : ComponentActivity() {
                             Uri.parse("package:$packageName"),
                         ),
                     )
+                },
+                onOpenSupportPage = {
+                    try {
+                        startActivity(kitsuSupportIntent())
+                    } catch (_: ActivityNotFoundException) {
+                        viewModel.showNotice("No web browser is available.")
+                    } catch (_: SecurityException) {
+                        viewModel.showNotice("The support page could not be opened safely.")
+                    }
                 },
                 onExportModerationReport = { report ->
                     pendingModerationReport = report

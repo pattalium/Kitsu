@@ -3,6 +3,7 @@ package ptl.kitsu.app
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.AdaptiveIconDrawable
@@ -31,6 +32,7 @@ import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
+import java.net.URI
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -94,6 +96,22 @@ class ReleaseContractInstrumentationTest {
         assertTrue(Manifest.permission.BLUETOOTH_SCAN in permissions)
         assertTrue(Manifest.permission.BLUETOOTH_CONNECT in permissions)
         assertTrue(packageInfo.services.isNullOrEmpty())
+    }
+
+    @Test fun voluntarySupportUsesTheExactExternalHttpsDestinationWithoutAnAppEntitlement() {
+        val support = URI(KITSU_SUPPORT_URL)
+        assertEquals("https", support.scheme)
+        assertEquals("ko-fi.com", support.host)
+        assertEquals("/pattalium", support.path)
+        assertTrue(support.query.isNullOrEmpty())
+        assertTrue(support.fragment.isNullOrEmpty())
+
+        val intent = kitsuSupportIntent()
+        assertEquals(Intent.ACTION_VIEW, intent.action)
+        assertEquals(KITSU_SUPPORT_URL, intent.dataString)
+        assertTrue(Intent.CATEGORY_BROWSABLE in intent.categories.orEmpty())
+        assertTrue(intent.`package`.isNullOrEmpty())
+        assertEquals(null, intent.component)
     }
 
     @Test fun launcherActivityIsNotLockedToPortrait() {

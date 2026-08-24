@@ -138,6 +138,23 @@ class AdaptiveOwnerUiTest {
     }
 
     @Test
+    fun settingsOffersPolicyBoundVoluntaryKofiSupport() {
+        compose.onNodeWithTag("nav-settings").performClick()
+        compose.onNodeWithTag("screen-settings")
+            .performScrollToNode(hasTestTag("open-support-kofi"))
+
+        compose.onNodeWithTag("settings-support-kofi").assertIsDisplayed()
+        compose.onNodeWithTag("open-support-kofi")
+            .assertIsDisplayed()
+            .assertIsEnabled()
+            .assertHasClickAction()
+        compose.onNodeWithText("Supporting Kitsu unlocks no app feature", substring = true)
+            .assertIsDisplayed()
+        compose.onNodeWithText("Kitsu itself keeps no internet permission", substring = true)
+            .assertIsDisplayed()
+    }
+
+    @Test
     fun freshHomeHasOnePrimarySetupAction() {
         val viewModel = ViewModelProvider(compose.activity)[MainViewModel::class.java]
         compose.waitUntil(timeoutMillis = 10_000) { viewModel.owner.value.savedKitsu.isNotEmpty() }

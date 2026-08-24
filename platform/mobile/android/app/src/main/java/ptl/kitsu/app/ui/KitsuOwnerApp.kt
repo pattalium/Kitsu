@@ -84,6 +84,7 @@ fun KitsuOwnerApp(
     onFinishPairing: () -> Unit,
     onOpenFirmwarePackage: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    onOpenSupportPage: () -> Unit,
     onExportModerationReport: (ModerationReport) -> Unit,
 ) {
     val owner by viewModel.owner.collectAsStateWithLifecycle()
@@ -305,6 +306,7 @@ fun KitsuOwnerApp(
                     onFinishPairing = onFinishPairing,
                     onOpenFirmwarePackage = onOpenFirmwarePackage,
                     onOpenAppSettings = onOpenAppSettings,
+                    onOpenSupportPage = onOpenSupportPage,
                     acceptedPolicyVersion = acceptedPolicyVersion,
                     blockedPeerIds = blockedPeerIds,
                     onAcceptPolicy = {

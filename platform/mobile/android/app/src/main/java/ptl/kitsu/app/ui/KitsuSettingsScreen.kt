@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SystemUpdateAlt
@@ -65,6 +66,7 @@ internal fun KitsuSettingsScreen(
     onFinishPairing: () -> Unit,
     onOpenFirmwarePackage: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    onOpenSupportPage: () -> Unit,
     acceptedPolicyVersion: Int,
     blockedPeerIds: Set<String>,
     onAcceptPolicy: () -> Unit,
@@ -279,6 +281,35 @@ internal fun KitsuSettingsScreen(
                                 onClick = { pendingUnblockPeerId = peerId },
                                 enabled = !updateBusy,
                             ) { Text("Unblock") }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            KitsuCard(title = "Support Kitsu", modifier = Modifier.testTag("settings-support-kofi")) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                    Icon(
+                        Icons.Default.Favorite,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "If Kitsu is useful to you, you can leave a voluntary tip on Ko-fi.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            "This opens your web browser. Supporting Kitsu unlocks no app feature, content, badge or other benefit, and Kitsu itself keeps no internet permission.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(
+                            onClick = onOpenSupportPage,
+                            modifier = Modifier.testTag("open-support-kofi"),
+                        ) {
+                            Text("Support Kitsu on Ko-fi")
                         }
                     }
                 }
