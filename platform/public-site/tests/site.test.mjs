@@ -133,23 +133,23 @@ test("source landing instructions match the local-only device controls", async (
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
 });
 
-test("fails closed outside the exact Android 2.1.5 production contract", async () => {
+test("fails closed outside the exact Android 2.1.6 production contract", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /Kitsu Android 2\.1\.5 · version code 19/i);
+  assert.match(html, /Kitsu Android 2\.1\.6 · version code 20/i);
   assert.match(html, /Changing app tracks is a clean install/i);
   assert.match(html, /Forget authorization/i);
   assert.match(html, /Direct and Play builds cannot update one another/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
   assert.match(script, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
-  assert.match(script, /REQUIRED_VERSION = "2\.1\.5"/);
-  assert.match(script, /REQUIRED_VERSION_CODE = 19/);
-  assert.match(readme, /exact Android 2\.1\.5 \/ version-code 19/i);
+  assert.match(script, /REQUIRED_VERSION = "2\.1\.6"/);
+  assert.match(script, /REQUIRED_VERSION_CODE = 20/);
+  assert.match(readme, /exact Android 2\.1\.6 \/ version-code 20/i);
   assert.match(readme, /do not cross-update/i);
   assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
@@ -355,7 +355,7 @@ test("keeps signed Android release bytes outside text conversion", async () => {
   ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
 });
 
-test("publishes the byte-exact signed local-first Android 2.1.5 release", async () => {
+test("publishes the byte-exact signed local-first Android 2.1.6 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -371,14 +371,14 @@ test("publishes the byte-exact signed local-first Android 2.1.5 release", async 
     channel: "stable",
     buildType: "release",
     packageId: "ptl.kitsu.app",
-    version: "2.1.5",
-    versionCode: 19,
+    version: "2.1.6",
+    versionCode: 20,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
-    bytes: 1839310,
-    sha256: "72cd273f7e44402267ccd7a9bbbec9f2798414a18b1933305e60802be47a405a",
+    url: "/downloads/kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
+    bytes: 1839311,
+    sha256: "da081f9d09e6e4cd5747cbc53c6553445546618b4b1ab6d2450c2048daa4f527",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-24T12:20:14Z",
+    publishedAt: "2026-08-24T18:41:20Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -404,6 +404,7 @@ test("publishes the byte-exact signed local-first Android 2.1.5 release", async 
   const downloadEntries = await readdir(path.join(root, "downloads"));
   assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")).sort(), [
     "kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
+    "kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "kitsu-k32-android-2.0.0.apk",
   ]);
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
@@ -437,6 +438,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/latest.json.sig",
     "downloads/update-ed25519-public.pem",
     "downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
+    "downloads/kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
     "downloads/android-stable-2.0.0-20260822t123928z.json",
     "downloads/android-stable-2.0.0-20260822t123928z.json.sig",
