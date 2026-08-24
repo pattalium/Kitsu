@@ -12,14 +12,14 @@ import {
 } from "../src/release.js";
 
 const acceptedSha = "1".repeat(64);
-const appSha = "106ecd2f2013f13997bfb1994a4ba4589b3e9fa9bbf07153ccf7ce3611ee6d67";
+const appSha = "642844c72f199a6bab4aa3da3b98510384b5a78211b3a461e02ed4744e71cb5f";
 
 function releaseFixture() {
-  const releaseId = "kitsu-0.11.1-reflashable-1";
+  const releaseId = "kitsu-0.16.5-reflashable-1";
   return {
     schema: "kitsu.firmware-update.v2",
     release_id: releaseId,
-    firmware_version: "0.11.1",
+    firmware_version: "0.16.5",
     release_channel: "stable",
     artifact_status: "available",
     published_at: "2026-08-18T07:00:00Z",
@@ -59,7 +59,7 @@ function releaseFixture() {
         role: "application_app0",
         path: `firmware/${releaseId}/kitsu868-app.bin`,
         offset: 65536,
-        bytes: 1380288,
+        bytes: 916224,
         sha256: appSha,
         encrypted: false,
         secure_boot_signed: false,
@@ -77,7 +77,7 @@ function releaseFixture() {
         role: "application_app1",
         path: `firmware/${releaseId}/kitsu868-app.bin`,
         offset: 3407872,
-        bytes: 1380288,
+        bytes: 916224,
         sha256: appSha,
         encrypted: false,
         secure_boot_signed: false,
