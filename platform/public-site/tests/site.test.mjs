@@ -90,6 +90,9 @@ test("publishes a complete product surface with real destinations", async () => 
   assert.match(html, /browser flasher stays unavailable until a physically accepted release/i);
   assert.match(html, /Check firmware availability/i);
   assert.match(html, /installer fails closed until a physically accepted signed release is available/i);
+  assert.doesNotMatch(html, /hero-signal|signal-trace|signal-orbit|label-near|label-far|label-home/);
+  assert.doesNotMatch(html, /[✦◇⌁]/u);
+  assert.equal((html.match(/class="feature-icon" aria-hidden="true"><svg/g) ?? []).length, 4);
   assert.doesNotMatch(html, /https:\/\/(?:app|api|auth|gateway)\.k32\.run/i);
   assert.equal(config.repositoryUrl, "https://github.com/pattalium/Kitsu");
   assert.doesNotMatch(html, /link pending|verification pending|not exposed prematurely|placeholder/i);
