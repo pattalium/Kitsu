@@ -74,6 +74,10 @@ jobs:
         shell: cmd
         run: |
           call tools\test_encounter_protocol.cmd || exit /b 1
+          call tools\test_kitsu_nearby_protocol.cmd || exit /b 1
+          call tools\test_signal_encounter.cmd || exit /b 1
+          call tools\test_kitsu_unlock_codes.cmd || exit /b 1
+          call tools\test_wild_creature_catalog.cmd || exit /b 1
           call tools\test_kitsu_chat_contract.cmd || exit /b 1
           call tools\test_kitsu_mesh_config.cmd || exit /b 1
           call tools\test_kitsu_mesh_messages.cmd || exit /b 1

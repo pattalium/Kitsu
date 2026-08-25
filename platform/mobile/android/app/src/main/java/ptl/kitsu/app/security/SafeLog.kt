@@ -5,7 +5,7 @@ import android.util.Log
 object SafeLog {
     private val sensitive = Regex(
         "token|claim|password|passphrase|secret|authorization|cookie|credential|pairing|" +
-            "code_verifier|ssid|certificate|spki|private",
+            "code_verifier|encounter_code|unlock_code|ssid|certificate|spki|private",
         RegexOption.IGNORE_CASE,
     )
 

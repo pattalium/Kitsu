@@ -19,6 +19,8 @@ platform/web/dist/
 platform/web/.next/
 platform/flash-site/node_modules/
 platform/flash-site/dist/
+/tools/demo_wasm/full/dist/
+/.agent-resources/
 
 # Android / iOS generated products
 platform/mobile/android/.gradle/

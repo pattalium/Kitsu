@@ -16,6 +16,8 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
+import ptl.kitsu.app.model.EncounterRarity
+import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
@@ -23,6 +25,7 @@ import ptl.kitsu.app.model.MessagePage
 import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.MeshConfigurationReceipt
 import ptl.kitsu.app.model.PeerPage
+import ptl.kitsu.app.security.AndroidKeystoreEncounterCodeVault
 import ptl.kitsu.app.transport.ConnectResult
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.transport.KitsuTransport
@@ -64,9 +67,9 @@ class ReleaseContractInstrumentationTest {
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
         assertEquals(packageInfo.longVersionCode.toInt(), BuildConfig.VERSION_CODE)
         assertEquals(packageInfo.versionName, BuildConfig.VERSION_NAME)
-        assertEquals(20, BuildConfig.VERSION_CODE)
+        assertEquals(21, BuildConfig.VERSION_CODE)
         assertEquals(
-            if (context.packageName.endsWith(".debug")) "2.1.6-debug" else "2.1.6",
+            if (context.packageName.endsWith(".debug")) "2.2.0-debug" else "2.2.0",
             BuildConfig.VERSION_NAME,
         )
         assertTrue(
@@ -112,6 +115,64 @@ class ReleaseContractInstrumentationTest {
         assertTrue(Intent.CATEGORY_BROWSABLE in intent.categories.orEmpty())
         assertTrue(intent.`package`.isNullOrEmpty())
         assertEquals(null, intent.component)
+    }
+
+    @Test fun savedUnlockUsesTheExactExternalHttpsDestinationWithoutInternetPermission() {
+        val unlock = URI(KITSU_UNLOCK_URL)
+        assertEquals("https", unlock.scheme)
+        assertEquals("k32.run", unlock.host)
+        assertEquals("/unlock/", unlock.path)
+
+        val intent = kitsuUnlockIntent("KITSU-ABC-123")
+        assertEquals(Intent.ACTION_VIEW, intent.action)
+        assertEquals("https", intent.data?.scheme)
+        assertEquals("k32.run", intent.data?.host)
+        assertEquals("/unlock/", intent.data?.path)
+        assertEquals(null, intent.data?.query)
+        assertEquals("code=KITSU-ABC-123", intent.data?.fragment)
+        assertEquals("https://k32.run/unlock/#code=KITSU-ABC-123", intent.dataString)
+        assertTrue(Intent.CATEGORY_BROWSABLE in intent.categories.orEmpty())
+        assertTrue(intent.`package`.isNullOrEmpty())
+        assertEquals(null, intent.component)
+
+        val clip = kitsuSensitiveUnlockClip("KITSU-ABC-123")
+        assertEquals("KITSU-ABC-123", clip.getItemAt(0).text.toString())
+        assertTrue(clip.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true)
+    }
+
+    @Test fun encounterCodeVaultEncryptsAndRetainsIndependentDeviceRecords() {
+        val context = InstrumentationRegistry.getInstrumentation().context
+        val file = context.filesDir.resolve("encounter-code-vault-v1.bin")
+        file.delete()
+        try {
+            val first = EncounterUnlockCode(
+                deviceId = "KT12AF",
+                codeId = "event:1",
+                code = "KITSU-SECRET-ONE",
+                packId = 1,
+                rarity = EncounterRarity.RARE,
+                acquiredAtEpoch = 1,
+            )
+            val second = first.copy(
+                deviceId = "KTBEEF",
+                codeId = "event:2",
+                code = "KITSU-SECRET-TWO",
+            )
+            AndroidKeystoreEncounterCodeVault(context).upsert(listOf(first, second))
+
+            val raw = file.readBytes().toString(Charsets.ISO_8859_1)
+            assertFalse(raw.contains(first.code))
+            assertFalse(raw.contains(second.code))
+            assertEquals(
+                setOf("KT12AF", "KTBEEF"),
+                AndroidKeystoreEncounterCodeVault(context).read().map { it.deviceId }.toSet(),
+            )
+
+            val retained = AndroidKeystoreEncounterCodeVault(context).deleteForDevice("KT12AF")
+            assertEquals(listOf("KTBEEF"), retained.map { it.deviceId })
+        } finally {
+            file.delete()
+        }
     }
 
     @Test fun launcherActivityIsNotLockedToPortrait() {

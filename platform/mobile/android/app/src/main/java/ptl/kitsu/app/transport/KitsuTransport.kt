@@ -5,12 +5,16 @@ import ptl.kitsu.app.model.ActionPolicy
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
 import ptl.kitsu.app.model.EventEnvelope
+import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.MessagePage
 import ptl.kitsu.app.model.MessageMarkReadReceipt
 import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.MeshConfigurationReceipt
+import ptl.kitsu.app.model.NearbyKitsuPage
+import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.PeerPage
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import kotlinx.coroutines.flow.Flow
@@ -50,6 +54,12 @@ interface KitsuTransport {
     fun events(after: String? = null): Flow<EventEnvelope>
     suspend fun channels(firmwareVersion: String? = null): List<MeshChannel> = emptyList()
     suspend fun configureMesh(enabled: Boolean): MeshConfigurationReceipt
+    suspend fun encounterCodes(after: String? = null, limit: Int = 50): EncounterCodePage =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun nearbyKitsu(): NearbyKitsuPage =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun neighborInteraction(command: NeighborInteractionCommand): NeighborInteractionReceipt =
+        throw TransportException("firmware_operation_unavailable")
     suspend fun forgetController(): ControllerForgetReceipt
 
     fun firmwareTransferChunkBytes(): Int = 4_096

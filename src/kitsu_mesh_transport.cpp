@@ -1,4 +1,5 @@
 #include "kitsu_mesh_transport.h"
+#include "kitsu_nearby_protocol.h"
 #include "kitsu_advert_repeat_tracker.h"
 #include "kitsu_channel_repeat_tracker.h"
 #include "kitsu_endpoint_rx_policy.h"
@@ -80,6 +81,7 @@ constexpr uint8_t kLoraBusy = 13;
 constexpr uint8_t kLoraDio1 = kKitsuRadioDio1Pin;
 constexpr size_t kPacketPoolSize = 10;
 constexpr size_t kAdvertQueueSize = 8;
+constexpr size_t kNearbyRadioQueueSize = 8;
 constexpr float kTcxoVoltage = 1.8f;
 constexpr float kConservativeAirtimeFactor = 99.0f;  // 1% long-term TX.
 
@@ -396,6 +398,16 @@ class GatedCustomSX1262Wrapper final : public CustomSX1262Wrapper {
         return false;
     }
     return false;
+  }
+
+  bool sendDirectOneShotRaw(const uint8_t* bytes, int length) {
+    const bool sent = startSendRaw(bytes, length);
+    // startSendRaw already consumed the physical TX completion and rearmed
+    // RX. There is no Dispatcher-owned packet for this direct frame, so clear
+    // only its synthetic completion latch without invoking onSendFinished a
+    // second time.
+    txTurnaroundCompletion_.reset();
+    return sent;
   }
 
   // TX_DONE was consumed synchronously before RX was rearmed. Dispatcher
@@ -2379,6 +2391,8 @@ class AdvertSink {
                              uint32_t timestamp,
                              const uint8_t* appData,
                              size_t appDataBytes) = 0;
+  virtual void captureNearbyRadio(const uint8_t* bytes, size_t byteCount,
+                                  float rssi, float snr) = 0;
 };
 
 class KitsuClient final : public ::mesh::Mesh {
@@ -2757,6 +2771,13 @@ class KitsuClient final : public ::mesh::Mesh {
     incrementDiagnostic(repeatDiagnostics_.rawFrames);
     if (!raw || length <= 0) {
       incrementDiagnostic(repeatDiagnostics_.rawRejected);
+      return;
+    }
+
+    if (static_cast<size_t>(length) == nearby::kWireBytes &&
+        raw[0] == nearby::kMagic0 && raw[1] == nearby::kMagic1 &&
+        raw[2] == nearby::kProtocolVersion) {
+      sink_->captureNearbyRadio(raw, static_cast<size_t>(length), rssi, snr);
       return;
     }
 
@@ -3357,8 +3378,16 @@ struct KitsuMeshTransport::Impl final : public AdvertSink {
   uint8_t advertCount = 0;
   uint32_t receivedAdverts = 0;
   uint32_t droppedAdverts = 0;
+  NearbyRadioFrame nearbyRadioQueue[kNearbyRadioQueueSize]{};
+  uint8_t nearbyRadioRead = 0U;
+  uint8_t nearbyRadioWrite = 0U;
+  uint8_t nearbyRadioCount = 0U;
   bool advertCooldownStarted = false;
   uint32_t lastAdvertQueuedAtMillis = 0U;
+  bool nearbyPresenceCooldownStarted = false;
+  uint32_t lastNearbyPresenceTxAt = 0U;
+  bool nearbyActionCooldownStarted = false;
+  uint32_t lastNearbyActionTxAt = 0U;
   bool meshLoopSeen = false;
   uint32_t lastMeshLoopAtMs = 0U;
   uint32_t maxMeshLoopGapMs = 0U;
@@ -3578,6 +3607,29 @@ struct KitsuMeshTransport::Impl final : public AdvertSink {
     advertWrite = static_cast<uint8_t>((advertWrite + 1U) % kAdvertQueueSize);
     ++advertCount;
     ++receivedAdverts;
+  }
+
+  void captureNearbyRadio(const uint8_t* bytes, size_t byteCount,
+                          float rssi, float snr) override {
+    nearby::Packet packet{};
+    if (!bytes || byteCount > kNearbyRadioFrameBytes ||
+        nearby::decode(bytes, byteCount, packet) != nearby::Status::Ok) {
+      return;
+    }
+    if (nearbyRadioCount == kNearbyRadioQueueSize) {
+      nearbyRadioRead = static_cast<uint8_t>(
+          (nearbyRadioRead + 1U) % kNearbyRadioQueueSize);
+      --nearbyRadioCount;
+    }
+    NearbyRadioFrame& frame = nearbyRadioQueue[nearbyRadioWrite];
+    frame = NearbyRadioFrame{};
+    memcpy(frame.bytes, bytes, byteCount);
+    frame.length = static_cast<uint8_t>(byteCount);
+    frame.rssi = rssi;
+    frame.snr = snr;
+    nearbyRadioWrite = static_cast<uint8_t>(
+        (nearbyRadioWrite + 1U) % kNearbyRadioQueueSize);
+    ++nearbyRadioCount;
   }
 };
 
@@ -3942,6 +3994,62 @@ bool KitsuMeshTransport::lastNearbyAdvertStatus(NearbyAdvertStatus& output) {
 
 bool KitsuMeshTransport::takeNearbyAdvertStatusChanged() {
   return impl_->client.takeNearbyAdvertStatusChanged();
+}
+
+bool KitsuMeshTransport::takeNearbyRadioFrame(NearbyRadioFrame& output) {
+  if (impl_->nearbyRadioCount == 0U) return false;
+  output = impl_->nearbyRadioQueue[impl_->nearbyRadioRead];
+  impl_->nearbyRadioQueue[impl_->nearbyRadioRead] = NearbyRadioFrame{};
+  impl_->nearbyRadioRead = static_cast<uint8_t>(
+      (impl_->nearbyRadioRead + 1U) % kNearbyRadioQueueSize);
+  --impl_->nearbyRadioCount;
+  return true;
+}
+
+TransportStatus KitsuMeshTransport::sendNearbyRadioFrame(
+    const Settings& settings, const uint8_t* bytes, size_t byteCount,
+    bool explicitUserApproval) {
+  nearby::Packet packet{};
+  if (!bytes || byteCount != nearby::kWireBytes ||
+      nearby::decode(bytes, byteCount, packet) != nearby::Status::Ok) {
+    return TransportStatus::InvalidArgument;
+  }
+  if (!impl_->active || !settings.enabled ||
+      !sameActiveProfile(settings, impl_->settings)) {
+    return TransportStatus::Disabled;
+  }
+  if (!explicitUserApproval) return TransportStatus::TxLocked;
+  const uint32_t now = millis();
+  constexpr uint32_t kPresenceCooldownMs = 5000UL;
+  constexpr uint32_t kActionCooldownMs = 1000UL;
+  const bool presence = packet.type == nearby::PacketType::Presence;
+  if ((presence && impl_->nearbyPresenceCooldownStarted &&
+       static_cast<uint32_t>(now - impl_->lastNearbyPresenceTxAt) <
+           kPresenceCooldownMs) ||
+      (!presence && impl_->nearbyActionCooldownStarted &&
+       static_cast<uint32_t>(now - impl_->lastNearbyActionTxAt) <
+           kActionCooldownMs)) {
+    return TransportStatus::AdvertiseCooldown;
+  }
+  if (!impl_->driver.isInRecvMode() || impl_->messaging.pending() ||
+      impl_->client.trackedSendInProgress() ||
+      impl_->packets.getOutboundTotal() != 0U) {
+    return TransportStatus::SendBusy;
+  }
+  if (!impl_->driver.armOneShotForPacket(settings, true, bytes, byteCount)) {
+    return TransportStatus::TxLocked;
+  }
+  const bool sent = impl_->driver.sendDirectOneShotRaw(
+      bytes, static_cast<int>(byteCount));
+  if (!sent) return TransportStatus::SendBusy;
+  if (presence) {
+    impl_->nearbyPresenceCooldownStarted = true;
+    impl_->lastNearbyPresenceTxAt = now;
+  } else {
+    impl_->nearbyActionCooldownStarted = true;
+    impl_->lastNearbyActionTxAt = now;
+  }
+  return TransportStatus::Ok;
 }
 
 bool KitsuMeshTransport::publicKeyHex(char* output,

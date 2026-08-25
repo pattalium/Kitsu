@@ -27,6 +27,10 @@ import androidx.core.content.ContextCompat
 import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
+import ptl.kitsu.app.model.ENCOUNTER_CODES_OPERATION
+import ptl.kitsu.app.model.ENCOUNTER_NEIGHBORS_OPERATION
+import ptl.kitsu.app.model.EncounterCodePage
+import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
@@ -34,6 +38,10 @@ import ptl.kitsu.app.model.MessageMarkReadReceipt
 import ptl.kitsu.app.model.MessagePage
 import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.MeshConfigurationReceipt
+import ptl.kitsu.app.model.NearbyKitsuPage
+import ptl.kitsu.app.model.NEIGHBOR_ACTION_OPERATION
+import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.PeerPage
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingProtocol
@@ -1086,6 +1094,39 @@ class BleKitsuTransport(
         FirmwareBlePayloadMapper.meshConfiguration(
             successfulPayload("mesh.configure", buildJsonObject { put("enabled", enabled) }),
         )
+
+    override suspend fun encounterCodes(after: String?, limit: Int): EncounterCodePage {
+        if (after?.let(EncounterCodePolicy::validOpaqueCursor) == false) {
+            throw TransportException("invalid_encounter_cursor")
+        }
+        val payload = successfulPayload(ENCOUNTER_CODES_OPERATION, buildJsonObject {
+                after?.let { put("after", it) }
+                put("limit", boundedLimit(limit))
+            })
+        return try {
+            EncounterWireCodec.codePage(payload)
+        } finally {
+            payload.fill(0)
+        }
+    }
+
+    override suspend fun nearbyKitsu(): NearbyKitsuPage = EncounterWireCodec.nearbyKitsu(
+        successfulPayload(ENCOUNTER_NEIGHBORS_OPERATION, buildJsonObject {}),
+    )
+
+    override suspend fun neighborInteraction(
+        command: NeighborInteractionCommand,
+    ): NeighborInteractionReceipt {
+        // Expiry is evaluated by firmware, so establish trusted time before applying it.
+        synchronizeClock()
+        return EncounterWireCodec.neighborActionReceipt(
+            successfulPayload(
+                NEIGHBOR_ACTION_OPERATION,
+                EncounterWireCodec.neighborActionBody(command),
+            ),
+            command,
+        )
+    }
 
     override suspend fun action(command: ActionCommand): ActionReceipt {
         if (command.kind !in setOf(

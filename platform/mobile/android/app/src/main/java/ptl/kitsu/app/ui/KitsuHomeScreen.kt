@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import ptl.kitsu.app.MainViewModel
 import ptl.kitsu.app.R
 import ptl.kitsu.app.model.ActionKind
+import ptl.kitsu.app.model.NearbyKitsu
 import ptl.kitsu.app.repository.OwnerState
 import ptl.kitsu.app.transport.ConnectionMode
 
@@ -51,6 +52,7 @@ internal fun KitsuHomeScreen(
     owner: OwnerState,
     viewModel: MainViewModel,
     updateBusy: Boolean,
+    neighborActionsInFlight: Set<String>,
     onRequestBlePermissions: () -> Unit,
     onEnableBluetooth: () -> Unit,
     onOpenLocationSettings: () -> Unit,
@@ -116,6 +118,52 @@ internal fun KitsuHomeScreen(
             }
         }
 
+        if (owner.status != null && owner.nearbyKitsuSupported) {
+            item {
+                SectionHeading(
+                    title = "Nearby Kitsu",
+                    supporting = "Owned companions heard by Kitsu directly — separate from MeshCore.",
+                    modifier = Modifier.testTag("nearby-kitsu-heading"),
+                )
+            }
+            when {
+                owner.nearbyKitsuErrorCode != null -> item {
+                    KitsuCard(modifier = Modifier.testTag("nearby-kitsu-error")) {
+                        Text("Nearby Kitsu could not refresh", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            owner.nearbyKitsuErrorCode.humanized(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(onClick = viewModel::refresh, enabled = !updateBusy) {
+                            Text("Try again")
+                        }
+                    }
+                }
+                owner.nearbyKitsu.isEmpty() -> item {
+                    KitsuCard(modifier = Modifier.testTag("nearby-kitsu-empty")) {
+                        Text("No owned Kitsu heard yet", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Tap Listen above while another Kitsu is nearby. Direct Kitsu signals are not sent through MeshCore repeaters.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                else -> items(
+                    items = owner.nearbyKitsu.take(8),
+                    key = NearbyKitsu::sessionKey,
+                ) { neighbor ->
+                    NearbyOwnedKitsuCard(
+                        neighbor = neighbor,
+                        enabled = owner.connection.connected && !updateBusy,
+                        actionInFlight = neighbor.sessionKey in neighborActionsInFlight,
+                        onPet = { viewModel.petNeighbor(neighbor) },
+                    )
+                }
+            }
+        }
+
         item {
             SectionHeading(
                 title = "Recent moments",
@@ -157,6 +205,70 @@ internal fun KitsuHomeScreen(
         }
         item { Spacer(Modifier.height(4.dp)) }
     }
+}
+
+@Composable
+private fun NearbyOwnedKitsuCard(
+    neighbor: NearbyKitsu,
+    enabled: Boolean,
+    actionInFlight: Boolean,
+    onPet: () -> Unit,
+) {
+    val creature = nearbyCreaturePresentation(neighbor.packId)
+    KitsuCard(modifier = Modifier.testTag("nearby-kitsu-${neighbor.deviceId}")) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            NearbyKitsuPortrait(creature, Modifier.size(76.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    creature.name,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "Owned Kitsu · ${neighbor.deviceId}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "${nearbyMoodLabel(neighbor.mood)} · ${nearbyStageLabel(neighbor.evolutionStage)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "${nearbySignalLabel(neighbor.rssi)} signal · Seen ${nearbyLastSeenLabel(neighbor.lastSeenAgeMs)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!creature.known) {
+                    Text(
+                        "Unknown pack ${neighbor.packId.toString(16).uppercase().padStart(8, '0')}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        FilledTonalButton(
+            onClick = onPet,
+            enabled = enabled && !actionInFlight,
+            modifier = Modifier.align(Alignment.End).testTag("nearby-kitsu-pet-${neighbor.deviceId}"),
+        ) {
+            Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            Text(if (actionInFlight) "Sending…" else "Pet")
+        }
+    }
+}
+
+private fun nearbySignalLabel(rssi: Double): String = when {
+    rssi >= -65.0 -> "Strong"
+    rssi >= -85.0 -> "Good"
+    else -> "Faint"
 }
 
 @Composable

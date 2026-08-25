@@ -85,11 +85,15 @@ fun KitsuOwnerApp(
     onOpenFirmwarePackage: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenSupportPage: () -> Unit,
+    onOpenUnlockPage: (String) -> Unit,
+    onCopyUnlockCode: (String) -> Unit,
     onExportModerationReport: (ModerationReport) -> Unit,
 ) {
     val owner by viewModel.owner.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val firmware by viewModel.firmware.collectAsStateWithLifecycle()
+    val encounterUnlocks by viewModel.encounterUnlocks.collectAsStateWithLifecycle()
+    val neighborActionsInFlight by viewModel.neighborActionsInFlight.collectAsStateWithLifecycle()
     val messageSubmissionInFlight by viewModel.messageSubmissionInFlight.collectAsStateWithLifecycle()
     val updateBusy = firmware.progress.stage.locksCompanionControls
     var tab by rememberSaveable { mutableStateOf(OwnerTab.HOME) }
@@ -258,6 +262,7 @@ fun KitsuOwnerApp(
                     owner = owner,
                     viewModel = viewModel,
                     updateBusy = updateBusy,
+                    neighborActionsInFlight = neighborActionsInFlight,
                     onRequestBlePermissions = onRequestBlePermissions,
                     onEnableBluetooth = onEnableBluetooth,
                     onOpenLocationSettings = onOpenLocationSettings,
@@ -295,6 +300,7 @@ fun KitsuOwnerApp(
                 OwnerTab.SETTINGS -> KitsuSettingsScreen(
                     owner = owner,
                     firmware = firmware,
+                    encounterUnlocks = encounterUnlocks,
                     viewModel = viewModel,
                     themePreference = themePreference,
                     onThemePreferenceChange = onThemePreferenceChange,
@@ -307,6 +313,8 @@ fun KitsuOwnerApp(
                     onOpenFirmwarePackage = onOpenFirmwarePackage,
                     onOpenAppSettings = onOpenAppSettings,
                     onOpenSupportPage = onOpenSupportPage,
+                    onOpenUnlockPage = onOpenUnlockPage,
+                    onCopyUnlockCode = onCopyUnlockCode,
                     acceptedPolicyVersion = acceptedPolicyVersion,
                     blockedPeerIds = blockedPeerIds,
                     onAcceptPolicy = {

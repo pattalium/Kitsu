@@ -8,6 +8,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const projectRoot = path.resolve(root, "..", "..");
 const previewModule = await import(pathToFileURL(path.join(root, "preview-release.js")));
+const demoModule = await import(pathToFileURL(path.join(root, "demo", "demo.js")));
+const unlockModule = await import(pathToFileURL(path.join(root, "unlock", "unlock.js")));
+const unlockCatalogModule = await import(pathToFileURL(path.join(root, "unlock", "catalog.js")));
 
 const canonicalPreview = Object.freeze({
   ...previewModule.previewReleaseContract.release,
@@ -133,23 +136,23 @@ test("source landing instructions match the local-only device controls", async (
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
 });
 
-test("fails closed outside the exact Android 2.1.6 production contract", async () => {
+test("fails closed outside the exact Android 2.2.0 production contract", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /Kitsu Android 2\.1\.6 · version code 20/i);
+  assert.match(html, /Kitsu Android 2\.2\.0 · version code 21/i);
   assert.match(html, /Changing app tracks is a clean install/i);
   assert.match(html, /Forget authorization/i);
   assert.match(html, /Direct and Play builds cannot update one another/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
   assert.match(script, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
-  assert.match(script, /REQUIRED_VERSION = "2\.1\.6"/);
-  assert.match(script, /REQUIRED_VERSION_CODE = 20/);
-  assert.match(readme, /exact Android 2\.1\.6 \/ version-code 20/i);
+  assert.match(script, /REQUIRED_VERSION = "2\.2\.0"/);
+  assert.match(script, /REQUIRED_VERSION_CODE = 21/);
+  assert.match(readme, /exact Android 2\.2\.0 \/ version-code 21/i);
   assert.match(readme, /do not cross-update/i);
   assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
@@ -337,25 +340,301 @@ test("leaves the preview download fail-closed when either detached file is unava
   }
 });
 
-test("keeps device companion packs out of the static website", async () => {
+test("publishes only the explicitly approved Fox demo companion bundle", async () => {
   const readme = await readFile(path.join(root, "README.md"), "utf8");
   const personalCompanionName = String.fromCharCode(70, 111, 120, 32, 71, 105, 114, 108);
   assert.equal(readme.includes(personalCompanionName), false);
-  const publicFiles = await listFiles(root);
-  assert.deepEqual(publicFiles.filter((file) => file.toLowerCase().endsWith(".k868")), []);
+  const demoFiles = await listFiles(path.join(root, "demo"));
+  const bundles = demoFiles
+    .filter((file) => file.toLowerCase().endsWith(".k868"))
+    .map((file) => `demo/${file.replaceAll("\\", "/")}`);
+  assert.deepEqual(bundles, [
+    "demo/assets/fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
+  ]);
+  const publicFox = path.join(root, bundles[0]);
+  const canonicalFox = path.join(projectRoot, "assets", "packs", "fox.k868");
+  assert.equal((await stat(publicFox)).size, 24976);
+  assert.equal(
+    await sha256(publicFox),
+    "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
+  );
+  assert.equal(await sha256(publicFox), await sha256(canonicalFox));
+  assert.equal(bundles.some((file) => /(?:cat|dog)/i.test(file)), false);
 });
 
-test("keeps signed Android release bytes outside text conversion", async () => {
+test("ships the full source-built firmware demo over a browser hardware layer", async () => {
+  const [home, html, styles, script] = await Promise.all([
+    readFile(path.join(root, "index.html"), "utf8"),
+    readFile(path.join(root, "demo", "index.html"), "utf8"),
+    readFile(path.join(root, "demo", "demo.css"), "utf8"),
+    readFile(path.join(root, "demo", "demo.js"), "utf8"),
+  ]);
+  assert.match(home, /href="\/demo\/">Demo</);
+  assert.match(home, /href="\/demo\/">Try the demo/);
+  assert.match(html, /<strong>Demo mode<\/strong>/);
+  assert.match(html, /Everything presented here is for demonstration only/i);
+  assert.match(html, /does not connect to a Heltec, Bluetooth, USB, or MeshCore network/i);
+  for (const control of ["Install Kitsu + Fox", "Heltec cyan", "Black &amp; white", "PRG", "RST", "Hold PRG", "Pet", "Feed", "Play", "Listen", "Sleep", "Inject nearby nodes", "Meet nearby Kitsu", "Inject message", "Reset demo"]) {
+    const escapedControl = control.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(html, new RegExp(`>${escapedControl}<`), control);
+  }
+  for (const section of ["Flash", "Device", "Care", "Mesh"]) assert.match(html, new RegExp(`>${section}<`));
+  assert.doesNotMatch(html, /data-demo-(?:view|panel)="pack"|id="pack-(?:next|bootloader|progress|stage|error)"/);
+  assert.match(html, /Hold it for 750 ms to select/);
+  assert.match(html, /same core-and-pet sequence as the real flasher/i);
+  assert.match(html, /automatic reset first/i);
+  assert.match(html, /PRG \+ RST is available as a manual fallback/i);
+  assert.match(html, /real flasher writes and verifies the signed core, then installs your selected official pet in the same USB session/i);
+  assert.match(html, /href="https:\/\/flash\.k32\.run">Open the real flasher/);
+  assert.match(html, /emulated pet partition/i);
+  assert.match(html, /do not flash a physical board, request USB, accept files or codes/i);
+  assert.doesNotMatch(html, /<input[^>]+type=["']file["']/i);
+  assert.match(html, /role="status" aria-live="polite"/);
+  assert.match(html, /aria-label="Simulated Kitsu and Fox installation progress"[^>]*aria-describedby="flash-stage"[^>]*role="progressbar"[^>]*aria-valuemin="0"[^>]*aria-valuemax="100"/);
+  assert.match(html, /id="device-title" tabindex="-1"/);
+  assert.match(html, /class="oled-display" data-oled-tone="cyan" role="img" aria-label="Kitsu firmware OLED display" aria-describedby="screen-description"/);
+  assert.match(html, /<canvas class="oled-framebuffer" id="firmware-framebuffer" data-firmware-framebuffer width="64" height="128" aria-hidden="true"><\/canvas>/);
+  assert.equal((html.match(/data-firmware-framebuffer/g) ?? []).length, 1);
+  assert.match(html, /<fieldset class="oled-tone-picker" aria-describedby="oled-tone-help">[\s\S]*?<legend>OLED appearance<\/legend>/);
+  assert.match(html, /id="oled-tone-cyan" name="oled-tone" type="radio" value="cyan" checked/);
+  assert.match(html, /id="oled-tone-mono" name="oled-tone" type="radio" value="mono"/);
+  assert.match(html, /Visual tint only\. Saved in this browser and kept when demo progress is reset\./);
+  for (const meter of ["energy", "curiosity", "affection"]) {
+    assert.match(html, new RegExp(`<label id="${meter}-label" for="${meter}-meter">[^<]+<\\/label><meter id="${meter}-meter" aria-labelledby="${meter}-label"`));
+  }
+  assert.match(html, /source-built 0\.17\.0 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior/i);
+  assert.match(html, /Incoming raw packets exist only in memory/i);
+  assert.match(html, /This is not Xtensa binary or CPU emulation/i);
+  assert.match(styles, /aspect-ratio:\s*1\s*\/\s*2/);
+  assert.match(styles, /\.oled-display\s*\{[^}]*--oled-ink:\s*#[a-f0-9]+;/s);
+  assert.match(styles, /\.oled-display\[data-oled-tone="mono"\]\s*\{[^}]*--oled-ink:/s);
+  assert.match(styles, /\.oled-framebuffer\s*\{[^}]*image-rendering:\s*pixelated/s);
+  assert.doesNotMatch(styles, /\.fox-sprite|\.oled-(?:mood|energy|countdown|system|firmware)/);
+  assert.match(styles, /\.oled-tone-option\s*\{[^}]*min-height:\s*2\.75rem/s);
+  assert.match(styles, /\.oled-tone-option:focus-within\s*\{[^}]*outline:\s*3px solid var\(--focus\)/s);
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.oled-tone-picker\s*\{\s*width:\s*min\(100%, 14rem\)/);
+  assert.match(styles, /\.demo-mode-switch\s*\{[^}]*grid-template-columns:\s*repeat\(4,/s);
+  assert.doesNotMatch(styles, /\.pack-(?:procedure|actions|progress|stage|cli|error)/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(script, /const OLED_TONE_STORAGE_KEY = "kitsu-demo-oled-tone-v1"/);
+  assert.match(script, /export const FIRMWARE_ABI_VERSION = 2/);
+  assert.match(script, /5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6/);
+  assert.match(script, /c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38/);
+  assert.match(script, /WebAssembly\.Module\.imports/);
+  assert.match(script, /WebAssembly\.compile\(wasmBytes\)/);
+  assert.match(script, /crypto\.getRandomValues|cryptoProvider\.subtle/);
+  assert.match(script, /kitsu_emulator_entropy_commit/);
+  assert.match(script, /kitsu_emulator_set_prg\(1\)/);
+  assert.match(script, /kitsu_emulator_set_prg\(0\)/);
+  assert.match(script, /kitsu_emulator_persistence_export/);
+  assert.match(script, /kitsu_emulator_radio_inject_rx/);
+  assert.match(script, /mesh introduce mesh/);
+  assert.match(script, /chat send ch 0/);
+  assert.match(script, /display\.dataset\.oledTone = oledTone/);
+  assert.match(script, /localStorage\.setItem\(OLED_TONE_STORAGE_KEY, oledTone\)/);
+  const resetDemoBody = script.match(/function resetDemo\(\) \{([\s\S]*?)\n  \}\n\n  function frame/)?.[1] ?? "";
+  assert.doesNotMatch(resetDemoBody, /removeItem\(OLED_TONE_STORAGE_KEY\)/, "Reset demo preserves the independent OLED preference");
+  assert.doesNotMatch(script, /applyDemoAction|applyDeviceInput|completeDemoInstall|applyFirmwareGameReward|CLIP_MOODS|FIRMWARE_GAME_WASM/);
+  assert.doesNotMatch(script, /navigator\.(?:bluetooth|serial|usb)|WebSocket|EventSource|https?:\/\//i);
+  assert.match(script, /reducedMotion\.matches/);
+  assert.match(script, /pointercancel", releasePointer/);
+  assert.match(script, /lostpointercapture", releasePointer/);
+  assert.match(script, /screenDescription\.textContent = describeScreen/);
+
+  const cssDigest = html.match(/href="\/demo\/demo\.css\?sha256=([a-f0-9]{64})"/)?.[1];
+  const scriptDigest = html.match(/src="\/demo\/demo\.js\?sha256=([a-f0-9]{64})"/)?.[1];
+  assert.equal(cssDigest, await sha256(path.join(root, "demo", "demo.css")));
+  assert.equal(scriptDigest, await sha256(path.join(root, "demo", "demo.js")));
+
+  const canonicalFox = path.join(projectRoot, "assets", "pack-evidence", "fox-48-frame-contact.png");
+  const publicFox = path.join(root, "demo", "assets", "fox-48-frame-contact.png");
+  assert.equal((await stat(publicFox)).size, 17580);
+  assert.equal(await sha256(publicFox), await sha256(canonicalFox));
+
+  const wasmPath = path.join(
+    root,
+    "demo",
+    "kitsu-firmware-full.5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6.wasm",
+  );
+  assert.equal((await stat(wasmPath)).size, 350783);
+  assert.equal(
+    await sha256(wasmPath),
+    "5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6",
+  );
+  const wasmModule = await WebAssembly.compile(await readFile(wasmPath));
+  assert.deepEqual(
+    WebAssembly.Module.imports(wasmModule).map((entry) =>
+      entry.module + "." + entry.name),
+    [
+      "wasi_snapshot_preview1.fd_close",
+      "wasi_snapshot_preview1.fd_write",
+      "wasi_snapshot_preview1.fd_seek",
+    ],
+  );
+  const wasmExports = new Set(
+    WebAssembly.Module.exports(wasmModule).map((entry) => entry.name),
+  );
+  for (const required of [
+    "kitsu_emulator_boot",
+    "kitsu_emulator_step",
+    "kitsu_emulator_set_prg",
+    "kitsu_emulator_framebuffer",
+    "kitsu_emulator_persistence_export",
+    "kitsu_emulator_ble_rx_chunk_commit",
+    "kitsu_emulator_radio_inject_rx",
+  ]) assert.equal(wasmExports.has(required), true, required);
+});
+
+test("full firmware demo helpers and raw PRG path fail closed", async () => {
+  assert.equal(demoModule.DEFAULT_OLED_TONE, "cyan");
+  assert.deepEqual(demoModule.OLED_TONES, ["cyan", "mono"]);
+  assert.equal(demoModule.normalizeOledTone("cyan"), "cyan");
+  assert.equal(demoModule.normalizeOledTone("mono"), "mono");
+  assert.equal(demoModule.normalizeOledTone("sepia"), "cyan");
+  assert.equal(demoModule.normalizeOledTone(null), "cyan");
+  assert.equal(demoModule.FIRMWARE_ABI_VERSION, 2);
+  assert.equal(demoModule.FIRMWARE_FRAMEBUFFER_BYTES, 8192);
+  assert.equal(demoModule.FOX_PACK_BYTES, 24976);
+  assert.deepEqual(demoModule.parseFirmwareRecords(
+    'noise\nKITSU_SYNC {"status":"ok"}\nKITSU_SYNC not-json\n',
+    "KITSU_SYNC",
+  ), [{ status: "ok" }]);
+  assert.deepEqual(demoModule.validateMeshMessage("  Hello Kitsu  "), {
+    ok: true,
+    error: "",
+    text: "Hello Kitsu",
+  });
+  assert.equal(demoModule.validateMeshMessage("   ").ok, false);
+  assert.equal(demoModule.validateMeshMessage("line\nbreak").ok, false);
+  assert.equal(demoModule.validateMeshMessage("x".repeat(129)).ok, false);
+  assert.throws(() => demoModule.decodeDebugView(new Uint32Array(39)), /wrong shape/i);
+
+  const wasmPath = path.join(
+    root,
+    "demo",
+    "kitsu-firmware-full.5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6.wasm",
+  );
+  const foxPath = path.join(
+    root,
+    "demo",
+    "assets",
+    "fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
+  );
+  const [wasmBytes, foxBytes] = await Promise.all([
+    readFile(wasmPath),
+    readFile(foxPath),
+  ]);
+  const module = await WebAssembly.compile(wasmBytes);
+  let memory;
+  const writeU32 = (pointer, value) => {
+    if (memory && pointer) new DataView(memory.buffer).setUint32(pointer, value, true);
+  };
+  const instance = await WebAssembly.instantiate(module, {
+    wasi_snapshot_preview1: {
+      fd_close: () => 0,
+      fd_write: (_fd, _iov, _count, written) => {
+        writeU32(written, 0);
+        return 0;
+      },
+      fd_seek: (_fd, _low, _high, _whence, result) => {
+        if (memory && result) {
+          const view = new DataView(memory.buffer);
+          view.setUint32(result, 0, true);
+          view.setUint32(result + 4, 0, true);
+        }
+        return 0;
+      },
+    },
+  });
+  const api = instance.exports;
+  memory = api.memory;
+  api._initialize();
+
+  assert.equal(api.kitsu_emulator_abi_version(), 2);
+  assert.equal(api.kitsu_emulator_set_device_id(0x55667788, 0x11223344), 1);
+  assert.equal(api.kitsu_emulator_boot(), 0, "boot fails closed before host entropy");
+  const entropy = Uint8Array.from({ length: 48 }, (_value, index) =>
+    (index * 37 + 11) & 0xff);
+  new Uint8Array(
+    memory.buffer,
+    api.kitsu_emulator_entropy_buffer(),
+    entropy.length,
+  ).set(entropy);
+  assert.ok(entropy.length <= api.kitsu_emulator_entropy_capacity());
+  assert.equal(api.kitsu_emulator_entropy_commit(entropy.length), 1);
+  assert.ok(foxBytes.length <= api.kitsu_emulator_pack_capacity());
+  new Uint8Array(
+    memory.buffer,
+    api.kitsu_emulator_pack_buffer(),
+    foxBytes.length,
+  ).set(foxBytes);
+  assert.equal(api.kitsu_emulator_pack_commit(foxBytes.length), 1);
+  assert.equal(api.kitsu_emulator_boot(), 1);
+  for (let index = 0; index < 10; ++index) {
+    assert.equal(api.kitsu_emulator_step(16), 1);
+  }
+
+  const readDebug = () => demoModule.decodeDebugView(Uint32Array.from(
+    new Uint32Array(
+      memory.buffer,
+      api.kitsu_emulator_debug_view(),
+      api.kitsu_emulator_debug_view_bytes() / Uint32Array.BYTES_PER_ELEMENT,
+    ),
+  ));
+  const booted = readDebug();
+  assert.deepEqual(
+    [booted.screen, booted.energy, booted.curiosity, booted.affection],
+    [0, 72, 14, 5],
+  );
+  assert.equal(booted.packValid, true);
+  assert.equal(api.kitsu_emulator_framebuffer_width(), 64);
+  assert.equal(api.kitsu_emulator_framebuffer_height(), 128);
+  assert.equal(api.kitsu_emulator_framebuffer_bytes(), 8192);
+  const framebuffer = new Uint8Array(
+    memory.buffer,
+    api.kitsu_emulator_framebuffer(),
+    api.kitsu_emulator_framebuffer_bytes(),
+  );
+  assert.ok(framebuffer.some((pixel) => pixel !== 0), "real firmware renders the Fox portrait");
+
+  api.kitsu_emulator_set_prg(1);
+  assert.equal(api.kitsu_emulator_step(1), 1);
+  assert.equal(api.kitsu_emulator_step(31), 1);
+  assert.equal(api.kitsu_emulator_step(100), 1);
+  api.kitsu_emulator_set_prg(0);
+  assert.equal(api.kitsu_emulator_step(1), 1);
+  assert.equal(api.kitsu_emulator_step(31), 1);
+  const tapped = readDebug();
+  assert.deepEqual(
+    [tapped.screen, tapped.energy, tapped.curiosity, tapped.affection],
+    [0, 76, 15, 8],
+    "raw PRG timing reaches the production portrait tap action",
+  );
+
+  api.kitsu_emulator_set_prg(1);
+  assert.equal(api.kitsu_emulator_step(1), 1);
+  assert.equal(api.kitsu_emulator_step(31), 1);
+  assert.equal(api.kitsu_emulator_step(800), 1);
+  api.kitsu_emulator_set_prg(0);
+  assert.equal(api.kitsu_emulator_step(1), 1);
+  assert.equal(api.kitsu_emulator_step(31), 1);
+  assert.equal(readDebug().screen, 1, "raw PRG hold enters the production menu");
+});
+
+test("keeps public release binaries outside text conversion", async () => {
   const attributes = await readFile(path.join(projectRoot, ".gitattributes"), "utf8");
   const lines = new Set(attributes.split(/\r?\n/));
   for (const rule of [
     "platform/public-site/downloads/*.json -text",
     "platform/public-site/downloads/*.json.sig binary",
     "platform/public-site/downloads/*.apk binary",
+    "platform/public-site/demo/*.wasm binary",
+    "platform/public-site/demo/assets/*.k868 binary",
+    "platform/public-site/unlock/assets/*.k868 binary",
   ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
 });
 
-test("publishes the byte-exact signed local-first Android 2.1.6 release", async () => {
+test("publishes the byte-exact signed local-first Android 2.2.0 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -371,14 +650,14 @@ test("publishes the byte-exact signed local-first Android 2.1.6 release", async 
     channel: "stable",
     buildType: "release",
     packageId: "ptl.kitsu.app",
-    version: "2.1.6",
-    versionCode: 20,
+    version: "2.2.0",
+    versionCode: 21,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
-    bytes: 1839311,
-    sha256: "da081f9d09e6e4cd5747cbc53c6553445546618b4b1ab6d2450c2048daa4f527",
+    url: "/downloads/kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
+    bytes: 1872079,
+    sha256: "36fe0a87aba10939ea9f6d6ae9b58242c59e9205a248bb4dc23f844d220366df",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-24T18:41:20Z",
+    publishedAt: "2026-08-25T17:08:21Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -405,6 +684,7 @@ test("publishes the byte-exact signed local-first Android 2.1.6 release", async 
   assert.deepEqual(downloadEntries.filter((entry) => entry.toLowerCase().endsWith(".apk")).sort(), [
     "kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
     "kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
+    "kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
     "kitsu-k32-android-2.0.0.apk",
   ]);
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
@@ -431,6 +711,12 @@ test("ships every referenced local release asset", async () => {
     "theme.js",
     "site.js",
     "preview-release.js",
+    "demo/index.html",
+    "demo/demo.css",
+    "demo/demo.js",
+    "demo/kitsu-firmware-full.5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6.wasm",
+    "demo/assets/fox-48-frame-contact.png",
+    "demo/assets/fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
     "config.json",
     "assets/kitsu-app-icon.png",
     "assets/kitsu-k32-social-card-v1.png",
@@ -439,6 +725,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/update-ed25519-public.pem",
     "downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
     "downloads/kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
+    "downloads/kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
     "downloads/android-stable-2.0.0-20260822t123928z.json",
     "downloads/android-stable-2.0.0-20260822t123928z.json.sig",
@@ -474,7 +761,7 @@ test("publishes factual local-first policies without a runtime-service form", as
 });
 
 test("all local page, asset, and fragment links resolve", async () => {
-  const pages = ["index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
+  const pages = ["index.html", "demo/index.html", "unlock/index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
   for (const page of pages) {
     const html = await readFile(path.join(root, page), "utf8");
     for (const [, reference] of html.matchAll(/(?:href|src)=["']([^"']+)["']/g)) {
@@ -497,7 +784,7 @@ test("all local page, asset, and fragment links resolve", async () => {
 
 test("public pages contain no retired runtime-service actions or origins", async () => {
   const text = (await Promise.all([
-    "index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html",
+    "index.html", "demo/index.html", "unlock/index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html",
   ].map((relative) => readFile(path.join(root, relative), "utf8")))).join("\n");
   assert.doesNotMatch(text, /https:\/\/(?:app|api|auth|gateway)\.k32\.run/i);
   assert.doesNotMatch(text, /Connect to public gateway|Use Wi-Fi remote access|gateway enrollment|owner sign-in|contact form/i);
@@ -516,6 +803,301 @@ test("uses byte-exact authoritative K32 brand assets", async () => {
 });
 
 test("all public text assets are valid UTF-8 without mojibake", async () => {
-  const paths = ["index.html", "styles.css", "theme.js", "site.js", "preview-release.js", "README.md", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
+  const paths = ["index.html", "styles.css", "theme.js", "site.js", "preview-release.js", "README.md", "demo/index.html", "demo/demo.css", "demo/demo.js", "unlock/index.html", "unlock/unlock.css", "unlock/unlock.js", "unlock/catalog.js", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
   for (const relative of paths) assert.doesNotMatch(await readFile(path.join(root, relative), "utf8"), /(?:Ã‚|Ã¢â‚¬|Ã¢â‚¬â„¢|Ã¢â€ |Ã¢â€¡|Ã¢â„¢|Ã¢â€”|Ã¢Å“|Ã¢Å’|Ãƒ|ï¿½)/, relative);
+});
+
+test("keeps the unlock flow discoverable and accepts the Android deep-link shape", async () => {
+  const pages = [
+    "index.html", "demo/index.html", "unlock/index.html", "privacy/index.html",
+    "terms/index.html", "security/index.html", "contact/index.html",
+  ];
+  const styleDigest = await sha256(path.join(root, "styles.css"));
+  for (const page of pages) {
+    const html = await readFile(path.join(root, page), "utf8");
+    assert.match(html, /href="\/unlock\/"/, `${page}: unlock link`);
+    assert.match(
+      html,
+      new RegExp(`href="\\/styles\\.css\\?sha256=${styleDigest}"`),
+      `${page}: current shared stylesheet digest`,
+    );
+  }
+
+  const deepLink = new URL("https://k32.run/unlock/#code=K8-ABCDE-FGHJK-MNPQR");
+  assert.equal(deepLink.pathname, "/unlock/");
+  assert.equal(deepLink.search, "");
+  assert.equal(deepLink.hash, "#code=K8-ABCDE-FGHJK-MNPQR");
+  assert.equal(
+    unlockModule.unlockCodeFromFragment(deepLink.hash),
+    "K8-ABCDE-FGHJK-MNPQR",
+  );
+  assert.equal(unlockModule.unlockCodeFromFragment("?code=K8-ABCDE-FGHJK-MNPQR"), null);
+  assert.equal(unlockModule.unlockCodeFromFragment("#code=K8-ABCDE-FGHJK-MNPQR&extra=1"), null);
+  assert.equal(unlockModule.unlockCodeFromFragment("#code=k8-abcde-fghjk-mnpqr"), null);
+
+  const [unlockScript, activity, models] = await Promise.all([
+    readFile(path.join(root, "unlock", "unlock.js"), "utf8"),
+    readFile(path.join(projectRoot, "platform", "mobile", "android", "app", "src", "main", "java", "ptl", "kitsu", "app", "MainActivity.kt"), "utf8"),
+    readFile(path.join(projectRoot, "platform", "mobile", "android", "app", "src", "main", "java", "ptl", "kitsu", "app", "model", "EncounterModels.kt"), "utf8"),
+  ]);
+  assert.doesNotMatch(unlockScript, /searchParams\.get\("code"\)/);
+  assert.match(unlockScript, /unlockCodeFromFragment\(url\.hash\)/);
+  assert.match(unlockScript, /url\.hash = ""/);
+  assert.match(unlockScript, /history\.replaceState\(null, "", `\$\{url\.pathname\}\$\{url\.search\}`\)/);
+  assert.match(activity, /KITSU_UNLOCK_URL = "https:\/\/k32\.run\/unlock\/"/);
+  assert.match(activity, /encodedFragment\("code=\$\{Uri\.encode\(code\)\}"\)/);
+  assert.doesNotMatch(activity, /appendQueryParameter\("code", code\)/);
+  assert.match(activity, /require\(EncounterCodePolicy\.validCode\(code\)\)/);
+  assert.match(models, /private val unlockCode = Regex\("\^\[A-Z0-9-\]\{8,80\}\$"\)/);
+  assert.match(models, /compact\.length in 8\.\.64/);
+});
+
+test("ships a pinned, rollback-capable atomic unlock deployment script", async () => {
+  const deploy = await readFile(path.join(projectRoot, "tools", "deploy_public_unlock_atomic.sh"), "utf8");
+  assert.match(deploy, /^#!\/usr\/bin\/env bash\nset -Eeuo pipefail/);
+  assert.match(deploy, /flock -n 9/);
+  assert.match(deploy, /source_digest_mismatch/);
+  assert.match(deploy, /\.aab.*\.idsig.*\.jks.*\.keystore/);
+  assert.match(deploy, /PRIVATE KEY/);
+  assert.match(deploy, /openssl pkeyutl -verify -pubin/);
+  assert.match(deploy, /mv -Tf -- "\$next_link" "\$current"/);
+  assert.match(deploy, /KITSU_PUBLIC_UNLOCK_ROLLBACK_OK/);
+  assert.match(deploy, /\/unlock\/#code=K8-ABCDE-FGHJK-MNPQR/);
+  assert.doesNotMatch(deploy, /\/unlock\/\?code=/);
+  assert.doesNotMatch(deploy, /sshpass|password\s*=|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/i);
+});
+
+test("publishes an accessible, fail-closed local unlock surface", async () => {
+  const unlockRoot = path.join(root, "unlock");
+  const [html, styles, script, catalog] = await Promise.all([
+    readFile(path.join(unlockRoot, "index.html"), "utf8"),
+    readFile(path.join(unlockRoot, "unlock.css"), "utf8"),
+    readFile(path.join(unlockRoot, "unlock.js"), "utf8"),
+    readFile(path.join(unlockRoot, "catalog.js"), "utf8"),
+  ]);
+
+  assert.match(html, /<label for="unlock-code">Encounter code<\/label>/);
+  assert.match(html, /id="unlock-code"[^>]*aria-describedby="unlock-code-help unlock-code-error"/s);
+  assert.match(html, /id="connect-kitsu" type="button"/);
+  assert.match(html, /id="verify-code" type="submit" disabled/);
+  assert.match(html, /id="unlock-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"/);
+  assert.match(html, /id="unlock-result"[^>]*aria-busy="false"/);
+  assert.match(styles, /\.unlock-action\s*\{[^}]*min-width:[^}]*white-space:\s*nowrap/s);
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.unlock-action[\s\S]*width:\s*100%/);
+  assert.match(styles, /\.unlock-status\[data-state="unsupported"\]/);
+
+  for (const stateCopy of [
+    "Web Serial is not available in this browser. Use Chrome or Edge on a desktop computer.",
+    "Connection permission was not granted. Choose Connect Kitsu to try again.",
+    "Kitsu is disconnected. Reconnect it before verifying the code.",
+    "This code was not accepted by the connected Kitsu. Check the saved code or connect the Heltec that received it.",
+    "Code accepted for this Kitsu. The matching pet pack has not been published yet. Keep the code saved and check again after publication.",
+    "Code accepted. The matching pet pack is ready to download.",
+  ]) assert.ok(script.includes(stateCopy), stateCopy);
+
+  const scriptTags = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scriptTags.length >= 2);
+  for (const [, attributes, body] of scriptTags) {
+    assert.match(attributes, /\bsrc="[^"]+"/);
+    assert.equal(body.trim(), "");
+  }
+  assert.doesNotMatch(html, /<style\b|\sstyle=/i);
+  assert.doesNotMatch(script, /\.innerHTML\b|insertAdjacentHTML|\beval\s*\(|new Function\b/);
+  assert.doesNotMatch(`${html}\n${script}\n${catalog}`, /fox girl/i);
+  assert.doesNotMatch(`${html}\n${script}\n${catalog}`, /https?:\/\//i);
+  assert.match(html, /Content-Security-Policy/);
+  assert.match(html, /connect-src 'none'/);
+
+  const cssDigest = html.match(/href="\/unlock\/unlock\.css\?sha256=([a-f0-9]{64})"/)?.[1];
+  const scriptDigest = html.match(/src="\/unlock\/unlock\.js\?sha256=([a-f0-9]{64})"/)?.[1];
+  const catalogDigest = script.match(/\.\/catalog\.js\?sha256=([a-f0-9]{64})/)?.[1];
+  assert.equal(cssDigest, await sha256(path.join(unlockRoot, "unlock.css")));
+  assert.equal(scriptDigest, await sha256(path.join(unlockRoot, "unlock.js")));
+  assert.equal(catalogDigest, await sha256(path.join(unlockRoot, "catalog.js")));
+
+  const unlockFiles = await listFiles(unlockRoot);
+  const publishedPacks = unlockFiles.filter((file) => file.toLowerCase().endsWith(".k868"));
+  assert.deepEqual(publishedPacks, [path.join(
+    "assets",
+    "frog.06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8.k868",
+  )]);
+  assert.equal(
+    await sha256(path.join(unlockRoot, publishedPacks[0])),
+    "06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8",
+  );
+});
+
+test("normalizes unlock codes without allowing command injection", () => {
+  const requestId = "0123456789abcdef0123456789abcdef";
+  assert.equal(unlockModule.normalizeUnlockCode("  k32a-bc12 34  "), "K32ABC1234");
+  assert.equal(unlockModule.normalizeUnlockCode("ABCD<script>"), null);
+  assert.equal(unlockModule.normalizeUnlockCode("ABCD\nEFGH"), null);
+  assert.equal(unlockModule.normalizeUnlockCode("A".repeat(7)), null);
+  assert.equal(unlockModule.normalizeUnlockCode("A".repeat(65)), null);
+  assert.equal(
+    unlockModule.buildVerificationCommand("k32a-bc12 34", requestId),
+    `codes verify K32ABC1234 ${requestId}\n`,
+  );
+  assert.throws(
+    () => unlockModule.buildVerificationCommand("ABCD;reset", requestId),
+    (error) => error.code === "invalid_code",
+  );
+
+  const generated = unlockModule.createRequestId({
+    getRandomValues(bytes) {
+      bytes.forEach((_value, index) => { bytes[index] = index; });
+      return bytes;
+    },
+  });
+  assert.equal(generated, "000102030405060708090a0b0c0d0e0f");
+});
+
+test("parses only bounded, versioned verification records for the active request", () => {
+  const requestId = "0123456789abcdef0123456789abcdef";
+  const valid = {
+    schema: unlockModule.VERIFY_SCHEMA,
+    requestId,
+    status: "valid",
+    deviceId: "KT12AF",
+    boundDeviceId: "KT12AF",
+    codeId: "CODE1234",
+    packId: "A1B2C3D4",
+    rarity: "rare",
+  };
+  const parsed = unlockModule.parseVerificationLine(
+    `${unlockModule.VERIFY_MARKER}${JSON.stringify(valid)}\r`,
+    requestId,
+  );
+  assert.deepEqual(parsed, {
+    boundDeviceId: "KT12AF",
+    codeId: "CODE1234",
+    deviceId: "KT12AF",
+    packId: "A1B2C3D4",
+    rarity: "rare",
+    requestId,
+    status: "valid",
+  });
+
+  const invalid = {
+    schema: unlockModule.VERIFY_SCHEMA,
+    requestId,
+    status: "invalid",
+    deviceId: "KT12AF",
+  };
+  assert.deepEqual(
+    unlockModule.parseVerificationLine(
+      `${unlockModule.VERIFY_MARKER}${JSON.stringify(invalid)}`,
+      requestId,
+    ),
+    { deviceId: "KT12AF", requestId, status: "invalid" },
+  );
+  assert.equal(unlockModule.parseVerificationLine("ordinary firmware log", requestId), null);
+  assert.throws(
+    () => unlockModule.parseVerificationLine(
+      `${unlockModule.VERIFY_MARKER}${"x".repeat(unlockModule.MAX_SERIAL_LINE_CHARS)}`,
+      requestId,
+    ),
+    (error) => error.code === "response_too_large",
+  );
+  assert.throws(
+    () => unlockModule.parseVerificationLine(
+      `${unlockModule.VERIFY_MARKER}${JSON.stringify({ ...valid, extra: true })}`,
+      requestId,
+    ),
+    (error) => error.code === "malformed_response",
+  );
+  assert.throws(
+    () => unlockModule.parseVerificationLine(
+      `${unlockModule.VERIFY_MARKER}${JSON.stringify({ ...valid, requestId: "f".repeat(32) })}`,
+      requestId,
+    ),
+    (error) => error.code === "request_mismatch",
+  );
+  assert.throws(
+    () => unlockModule.parseVerificationLine(`${unlockModule.VERIFY_MARKER}{`, requestId),
+    (error) => error.code === "malformed_response",
+  );
+});
+
+test("rejects a valid-code response bound to a different Kitsu", () => {
+  const requestId = "0123456789abcdef0123456789abcdef";
+  const response = {
+    schema: unlockModule.VERIFY_SCHEMA,
+    requestId,
+    status: "valid",
+    deviceId: "KT12AF",
+    boundDeviceId: "KT98BC",
+    codeId: "CODE1234",
+    packId: "A1B2C3D4",
+    rarity: "mythical",
+  };
+  assert.throws(
+    () => unlockModule.parseVerificationLine(
+      `${unlockModule.VERIFY_MARKER}${JSON.stringify(response)}`,
+      requestId,
+    ),
+    (error) => error.code === "device_mismatch",
+  );
+});
+
+test("reveals only explicitly published ordinary pack assets", () => {
+  assert.deepEqual(unlockCatalogModule.PUBLISHED_WILD_PACKS, [{
+    bytes: 24_976,
+    displayName: "Frog",
+    downloadUrl: "./assets/frog.06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8.k868",
+    packId: "5CAC86A3",
+    rarity: "common",
+    schema: unlockCatalogModule.PUBLISHED_PACK_SCHEMA,
+    sha256: "06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8",
+  }]);
+  assert.equal(
+    unlockCatalogModule.publishedPackFor("5cac86a3"),
+    unlockCatalogModule.PUBLISHED_WILD_PACKS[0],
+  );
+  const starterPackIds = {
+    Cat: "FDC79D6F",
+    Fox: "6C393E21",
+    Dog: "E2B5E7BA",
+  };
+  for (const [name, reservedId] of Object.entries(starterPackIds)) {
+    assert.equal(unlockCatalogModule.publishedPackFor(reservedId), null, name);
+  }
+
+  const digest = "a".repeat(64);
+  const entry = {
+    schema: unlockCatalogModule.PUBLISHED_PACK_SCHEMA,
+    packId: "A1B2C3D4",
+    displayName: "Published pet pack",
+    rarity: "rare",
+    downloadUrl: `./assets/pet-pack.${digest}.k868`,
+    bytes: 24_976,
+    sha256: digest,
+  };
+  assert.equal(unlockCatalogModule.isPublishedPackEntry(entry), true);
+  assert.deepEqual(
+    unlockCatalogModule.publishedPackFor("a1b2c3d4", [entry]),
+    entry,
+  );
+  assert.equal(
+    unlockCatalogModule.isPublishedPackEntry({ ...entry, packId: "FDC79D6F" }),
+    false,
+  );
+  assert.equal(
+    unlockCatalogModule.isPublishedPackEntry({ ...entry, downloadUrl: "https://example.test/pet.k868" }),
+    false,
+  );
+});
+
+test("reports Web Serial absence before any device request", () => {
+  assert.equal(unlockModule.supportsWebSerial(undefined), false);
+  assert.equal(unlockModule.supportsWebSerial({}), false);
+  assert.equal(unlockModule.supportsWebSerial({ serial: {} }), false);
+  assert.equal(
+    unlockModule.supportsWebSerial({ serial: { requestPort() {} } }),
+    true,
+  );
+  assert.equal(
+    unlockModule.supportsWebSerial({ serial: { requestPort() {} } }, false),
+    false,
+  );
 });

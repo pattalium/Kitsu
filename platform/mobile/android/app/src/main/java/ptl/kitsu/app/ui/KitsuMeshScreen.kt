@@ -200,15 +200,15 @@ internal fun KitsuMeshScreen(
 
         item {
             SectionHeading(
-                title = "Nearby peers",
-                supporting = "Authenticated mesh identities recently heard by this Kitsu.",
+                title = "MeshCore peers",
+                supporting = "MeshCore identities recently heard by this Kitsu.",
             )
         }
         if (owner.peers.isEmpty()) {
             item {
                 StatePanel(
                     title = "No peers heard yet",
-                    message = "Nearby Kitsus will appear after their authenticated mesh traffic is received.",
+                    message = "Repeaters and other MeshCore peers will appear after mesh traffic is received.",
                     testTag = "mesh-peers-empty",
                 )
             }

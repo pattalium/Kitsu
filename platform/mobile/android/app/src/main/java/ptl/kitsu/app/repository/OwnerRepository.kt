@@ -9,11 +9,16 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.AdvertiseScope
+import ptl.kitsu.app.model.EncounterCodePolicy
+import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.Message
 import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.MeshConfigurationReceipt
+import ptl.kitsu.app.model.NearbyKitsu
+import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.Peer
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
@@ -22,6 +27,7 @@ import ptl.kitsu.app.security.BondedCompanion
 import ptl.kitsu.app.security.CredentialStore
 import ptl.kitsu.app.security.SafeLog
 import ptl.kitsu.app.transport.ConnectionMode
+import ptl.kitsu.app.transport.FirmwareEncounterApiPolicy
 import ptl.kitsu.app.transport.KitsuTransport
 import ptl.kitsu.app.transport.FirmwareMessageApiPolicy
 import ptl.kitsu.app.transport.TransportException
@@ -56,6 +62,9 @@ data class OwnerState(
     val status: KitsuStatus? = null,
     val history: List<HistoryEntry> = emptyList(),
     val peers: List<Peer> = emptyList(),
+    val nearbyKitsu: List<NearbyKitsu> = emptyList(),
+    val nearbyKitsuSupported: Boolean = false,
+    val nearbyKitsuErrorCode: String? = null,
     val messages: List<Message> = emptyList(),
     val messagesErrorCode: String? = null,
     val messageJournalSession: String? = null,
@@ -122,6 +131,14 @@ class OwnerRepository(
             coordinator.state.collect { connection ->
                 mutableState.value = mutableState.value.copy(
                     connection = connection,
+                    nearbyKitsu = if (connection.connected) {
+                        mutableState.value.nearbyKitsu
+                    } else emptyList(),
+                    nearbyKitsuSupported = connection.connected &&
+                        mutableState.value.nearbyKitsuSupported,
+                    nearbyKitsuErrorCode = if (connection.connected) {
+                        mutableState.value.nearbyKitsuErrorCode
+                    } else null,
                     messageJournalSession = if (connection.connected) {
                         mutableState.value.messageJournalSession
                     } else null,
@@ -401,6 +418,21 @@ class OwnerRepository(
                 )
                 val peers = transport.peers()
                 val channels = transport.channels(status.firmwareVersion)
+                var nearbyKitsuErrorCode: String? = null
+                val nearbyKitsuSupported = FirmwareEncounterApiPolicy.supportsV1(status.firmwareVersion)
+                val nearbyKitsu = if (nearbyKitsuSupported) {
+                    try {
+                        transport.nearbyKitsu().items
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        nearbyKitsuErrorCode = failure.transportCodeOr("nearby_kitsu_refresh_failed")
+                        SafeLog.warn("owner_nearby_kitsu", nearbyKitsuErrorCode!!, failure)
+                        emptyList()
+                    }
+                } else {
+                    emptyList()
+                }
                 val replaceHistory = OwnerCursorPolicy.shouldReplace(
                     lastLiveNamespace,
                     liveNamespace,
@@ -414,6 +446,9 @@ class OwnerRepository(
                         (previous.history + history.items).distinctBy { it.id }.takeLast(CachePolicy.MAX_HISTORY),
                     peers = peers.items,
                     channels = channels,
+                    nearbyKitsu = nearbyKitsu,
+                    nearbyKitsuSupported = nearbyKitsuSupported,
+                    nearbyKitsuErrorCode = nearbyKitsuErrorCode,
                     messageMarkReadSupported = FirmwareMessageApiPolicy.supportsMarkRead(
                         status.firmwareVersion,
                     ),
@@ -530,6 +565,59 @@ class OwnerRepository(
             coordinator.withTransport { it.configureMesh(enabled) }.also { refresh() }
         } finally {
             mutableState.value = mutableState.value.copy(meshConfigurationInFlight = false)
+        }
+    }
+
+    /** Reads the bounded, hardware-bound encounter-code journal over authenticated BLE. */
+    suspend fun loadEncounterCodes(): List<EncounterUnlockCode> {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        val records = linkedMapOf<String, EncounterUnlockCode>()
+        val seenCursors = linkedSetOf<String>()
+        var after: String? = null
+        var hasMore: Boolean
+        do {
+            val page = coordinator.withTransport { transport ->
+                transport.encounterCodes(after, EncounterCodePolicy.MAX_PAGE_SIZE)
+            }
+            page.items.forEach { value ->
+                if (records.put(value.vaultKey, value) != null) {
+                    throw TransportException("malformed_encounter_codes")
+                }
+            }
+            val next = page.cursor
+            if (page.hasMore && (next == null || !seenCursors.add(next))) {
+                throw TransportException("malformed_encounter_codes")
+            }
+            after = next
+            hasMore = page.hasMore
+        } while (hasMore && records.size < EncounterCodePolicy.MAX_VAULT_RECORDS)
+        return records.values.take(EncounterCodePolicy.MAX_VAULT_RECORDS)
+    }
+
+    /** Remote care is a distinct protocol and never mutates the local companion's care state. */
+    suspend fun interactWithNeighbor(
+        command: NeighborInteractionCommand,
+    ): NeighborInteractionReceipt {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        return coordinator.withTransport { transport ->
+            transport.neighborInteraction(command).also {
+                // Firmware consumes this sequence when it accepts the targeted action.
+                // Advance only the matching live session; local companion care is untouched.
+                mutableState.value = mutableState.value.copy(
+                    nearbyKitsu = mutableState.value.nearbyKitsu.map { neighbor ->
+                        if (
+                            neighbor.deviceId == command.targetDeviceId &&
+                            neighbor.sessionNonce == command.targetSessionNonce &&
+                            neighbor.nextSequence == command.sequence
+                        ) {
+                            neighbor.copy(
+                                nextSequence = if (command.sequence == 65_535L) 1L else command.sequence + 1L,
+                            )
+                        } else neighbor
+                    },
+                    nearbyKitsuErrorCode = null,
+                )
+            }
         }
     }
 
@@ -881,6 +969,9 @@ class OwnerRepository(
             status = null,
             history = emptyList(),
             peers = emptyList(),
+            nearbyKitsu = emptyList(),
+            nearbyKitsuSupported = false,
+            nearbyKitsuErrorCode = null,
             messages = emptyList(),
             messagesErrorCode = null,
             messageJournalSession = null,

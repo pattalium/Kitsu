@@ -21,6 +21,8 @@ import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.AdvertiseScope
 import ptl.kitsu.app.model.ChannelRegionScope
 import ptl.kitsu.app.model.ControllerForgetReceipt
+import ptl.kitsu.app.model.ENCOUNTER_CODES_SCHEMA
+import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.HistoryPage
@@ -660,6 +662,8 @@ private class FixtureTransport : KitsuTransport {
         FixtureScenario.setMeshEnabled(enabled)
         return MeshConfigurationReceipt(enabled, "uk_eu_narrow", 22)
     }
+    override suspend fun encounterCodes(after: String?, limit: Int) =
+        EncounterCodePage(ENCOUNTER_CODES_SCHEMA)
     override suspend fun forgetController() = ControllerForgetReceipt("kitsu.controller-forget.v1", true)
     override suspend fun firmwareUpdateStatus() = firmwareReceipt()
     override suspend fun beginFirmwareUpdate(manifest: ByteArray, signature: ByteArray) = firmwareReceipt()

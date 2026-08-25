@@ -142,6 +142,7 @@ test("accepts exactly the fixed seven-write local-only A/B serial recovery contr
     release.artifacts.map((item) => item.offset),
     [0x000000, 0x008000, 0x010000, 0x33f000, 0x340000, 0x66f000, 0x7b0000],
   );
+  assert.equal(release.artifacts.some((item) => item.offset === 0x670000), false);
   assert.equal(release.artifacts[2].path, release.artifacts[4].path);
   assert.equal(release.artifacts[2].sha256, release.artifacts[4].sha256);
   assert.equal(release.artifacts[3].path, release.artifacts[5].path);

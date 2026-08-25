@@ -9,10 +9,10 @@ signature, and the public SPKI from `updates.k32.run`. The SPKI must match the
 installed Kitsu authority fingerprint before the exact signed JSON bytes are
 accepted. All five unique artifact files are SHA-256 verified before an install is enabled and
 the latest signed manifest and artifacts are fetched again immediately before
-writing. All seven written regions are then read from flash and hash-verified.
+writing. All seven signed core regions are then read from flash and hash-verified.
 
-The signed v2 manifest and runtime both constrain an install to exactly seven
-writes, in order:
+The signed v2 manifest and runtime both constrain the core phase to exactly
+seven writes, in order:
 
 1. the reviewed rollback-enabled Kitsu bootloader at `0x000000`;
 2. the reviewed 3,072-byte Kitsu partition table at `0x008000`;
@@ -40,8 +40,17 @@ manifest and physical-acceptance record and read back like every other region.
 It remains an ordinary, replaceable ESP32-S3 bootloader and does not enable
 Secure Boot, Flash Encryption, anti-rollback eFuses, or a debug lock.
 
+After those seven core regions pass readback, the owner may use the same open
+Web Serial/ROM-loader session to install one canonical public Cat, Fox, or Dog
+bundle into the single companion slot at `0x670000`. The selected 24,976-byte
+bundle is pinned by exact SHA-256, written in a separate bounded phase, and
+read back before the one final hard reset. “Keep current pet” is the default
+and performs no companion-slot write. Changing to a different species starts
+that companion's care and bond progression fresh.
+
 There is no full-chip erase command and no OTA-data, companion-state,
-companion-pack, controller-store, MeshCore-state, coredump, or eFuse write path. Flash writes
+controller-store, MeshCore-state, coredump, or eFuse write path. The companion
+slot changes only after an explicit Cat, Fox, or Dog selection. Flash writes
 necessarily erase only the target flash sectors before programming them;
 `eraseAll` remains false.
 

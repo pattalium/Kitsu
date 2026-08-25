@@ -10,20 +10,29 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BluetoothConnected
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SystemUpdateAlt
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -44,17 +53,25 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ptl.kitsu.app.BuildConfig
+import ptl.kitsu.app.EncounterUnlockUiState
 import ptl.kitsu.app.FirmwareUpdateUiState
 import ptl.kitsu.app.MainViewModel
+import ptl.kitsu.app.model.EncounterRarity
+import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.repository.OwnerState
 import ptl.kitsu.app.security.MAX_SAVED_KITSU
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.update.FirmwareInstallStage
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 
 @Composable
 internal fun KitsuSettingsScreen(
     owner: OwnerState,
     firmware: FirmwareUpdateUiState,
+    encounterUnlocks: EncounterUnlockUiState,
     viewModel: MainViewModel,
     themePreference: KitsuThemePreference,
     onThemePreferenceChange: (KitsuThemePreference) -> Unit,
@@ -67,6 +84,8 @@ internal fun KitsuSettingsScreen(
     onOpenFirmwarePackage: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenSupportPage: () -> Unit,
+    onOpenUnlockPage: (String) -> Unit,
+    onCopyUnlockCode: (String) -> Unit,
     acceptedPolicyVersion: Int,
     blockedPeerIds: Set<String>,
     onAcceptPolicy: () -> Unit,
@@ -79,6 +98,7 @@ internal fun KitsuSettingsScreen(
     var showTerms by rememberSaveable { mutableStateOf(false) }
     var showPrivacy by rememberSaveable { mutableStateOf(false) }
     var pendingUnblockPeerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingDeleteUnlockDeviceId by rememberSaveable { mutableStateOf<String?>(null) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("screen-settings"),
@@ -231,6 +251,18 @@ internal fun KitsuSettingsScreen(
         }
 
         item {
+            EncounterUnlocksCard(
+                state = encounterUnlocks,
+                connected = owner.connection.connected,
+                enabled = !updateBusy,
+                onSync = viewModel::syncEncounterCodes,
+                onOpenUnlockPage = onOpenUnlockPage,
+                onCopyUnlockCode = onCopyUnlockCode,
+                onDeleteDevice = { pendingDeleteUnlockDeviceId = it },
+            )
+        }
+
+        item {
             KitsuCard(title = "Privacy & terms", modifier = Modifier.testTag("settings-privacy-terms")) {
                 StatusPill(
                     if (acceptedPolicyVersion == MeshUserPolicy.VERSION) {
@@ -343,7 +375,7 @@ internal fun KitsuSettingsScreen(
             title = { Text("Forget $name authorization?") },
             text = {
                 Text(
-                    "Kitsu will revoke this phone's controller root. Packs and other phone authorizations stay intact. Android may still show the Bluetooth bond in system settings.",
+                    "Kitsu will revoke this phone's controller root. Packs, other phone authorizations and saved encounter unlocks stay intact. Delete saved unlocks separately if you want them removed from this phone. Android may still show the Bluetooth bond in system settings.",
                 )
             },
             confirmButton = {
@@ -399,6 +431,257 @@ internal fun KitsuSettingsScreen(
             },
         )
     }
+
+    pendingDeleteUnlockDeviceId?.let { deviceId ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteUnlockDeviceId = null },
+            icon = { Icon(Icons.Default.DeleteSweep, contentDescription = null) },
+            title = { Text("Delete saved unlocks for $deviceId?") },
+            text = {
+                Text(
+                    "This removes only this Kitsu's encrypted code copies from this phone. It does not revoke codes stored on the Kitsu.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDeleteUnlockDeviceId = null
+                        viewModel.deleteEncounterCodesForDevice(deviceId)
+                    },
+                    enabled = !updateBusy,
+                ) { Text("Delete saved unlocks") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteUnlockDeviceId = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun EncounterUnlocksCard(
+    state: EncounterUnlockUiState,
+    connected: Boolean,
+    enabled: Boolean,
+    onSync: () -> Unit,
+    onOpenUnlockPage: (String) -> Unit,
+    onCopyUnlockCode: (String) -> Unit,
+    onDeleteDevice: (String) -> Unit,
+) {
+    var revealedCodeKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val groups = state.records.groupBy(EncounterUnlockCode::deviceId)
+    KitsuCard(
+        title = "Saved creature unlocks",
+        modifier = Modifier.testTag("encounter-unlocks"),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Icon(
+                Icons.Default.Key,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "Codes from every Kitsu stay encrypted in this phone's separate vault.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "Switching devices or forgetting a controller authorization does not delete them.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        OutlinedButton(
+            onClick = onSync,
+            enabled = connected && enabled && !state.syncing,
+            modifier = Modifier.fillMaxWidth().testTag("encounter-unlocks-sync"),
+        ) {
+            Text(if (state.syncing) "Syncing from Kitsu..." else "Sync from connected Kitsu")
+        }
+        if (!connected) {
+            Text(
+                "Connect a Kitsu to sync. Codes already saved remain available offline.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (state.loading || state.syncing) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        state.errorCode?.let { error ->
+            Text(
+                if (error == "firmware_operation_unavailable") {
+                    "This firmware does not expose encounter unlocks yet. Saved codes remain intact."
+                } else {
+                    error.humanized()
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (!state.loading && groups.isEmpty()) {
+            Text(
+                "No creature unlocks are saved on this phone yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("encounter-unlocks-empty"),
+            )
+        }
+        groups.forEach { (deviceId, records) ->
+            HorizontalDivider()
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Kitsu $deviceId", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Hardware-bound unlocks",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(
+                    onClick = { onDeleteDevice(deviceId) },
+                    enabled = enabled,
+                    modifier = Modifier.testTag("encounter-unlocks-delete-$deviceId"),
+                ) { Text("Delete") }
+            }
+            records.forEachIndexed { index, record ->
+                EncounterUnlockRow(
+                    value = record,
+                    revealed = revealedCodeKey == record.vaultKey,
+                    enabled = enabled,
+                    onToggleReveal = {
+                        revealedCodeKey = if (revealedCodeKey == record.vaultKey) null else record.vaultKey
+                    },
+                    onCopy = {
+                        onCopyUnlockCode(record.code)
+                    },
+                    onOpen = { onOpenUnlockPage(record.code) },
+                )
+                if (index != records.lastIndex) HorizontalDivider()
+            }
+        }
+        if (groups.isNotEmpty()) {
+            Text(
+                "Open unlock page uses your browser. The Kitsu app itself has no internet permission.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EncounterUnlockRow(
+    value: EncounterUnlockCode,
+    revealed: Boolean,
+    enabled: Boolean,
+    onToggleReveal: () -> Unit,
+    onCopy: () -> Unit,
+    onOpen: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag("encounter-unlock-row"),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(encounterCreatureLabel(value), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    encounterAcquiredLabel(value.acquiredAtEpoch),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            StatusPill(
+                label = encounterRarityLabel(value.rarity),
+                tone = if (value.rarity == EncounterRarity.MYTHICAL) StatusTone.ACTIVE else StatusTone.NEUTRAL,
+            )
+        }
+        Text(
+            if (revealed) value.code else maskEncounterCode(value.code),
+            style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("encounter-unlock-code"),
+        )
+        if (value.installed || value.redeemed) {
+            Text(
+                if (value.installed) "Installed" else "Redeemed",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onToggleReveal, enabled = enabled) {
+                Icon(
+                    if (revealed) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                    contentDescription = null,
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(if (revealed) "Hide" else "Show")
+            }
+            IconButton(
+                onClick = onCopy,
+                enabled = enabled,
+                modifier = Modifier.testTag("encounter-unlock-copy"),
+            ) {
+                Icon(Icons.Default.ContentCopy, contentDescription = "Copy unlock code")
+            }
+        }
+        OutlinedButton(
+            onClick = onOpen,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth().testTag("encounter-unlock-open"),
+        ) {
+            Icon(Icons.Default.OpenInBrowser, contentDescription = null)
+            Spacer(Modifier.width(4.dp))
+            Text("Open unlock page", maxLines = 1)
+        }
+    }
+}
+
+internal fun maskEncounterCode(code: String): String = when {
+    code.length <= 8 -> "•".repeat(code.length)
+    else -> code.take(4) + "••••••" + code.takeLast(4)
+}
+
+private fun encounterCreatureLabel(value: EncounterUnlockCode): String =
+    value.creatureName ?: value.packId?.let { "Creature pack ${it.toString(16).uppercase().padStart(8, '0')}" }
+        ?: "Creature unlock"
+
+private fun encounterRarityLabel(value: EncounterRarity): String = when (value) {
+    EncounterRarity.COMMON -> "Common"
+    EncounterRarity.UNCOMMON -> "Uncommon"
+    EncounterRarity.RARE -> "Rare"
+    EncounterRarity.VERY_RARE -> "Very rare"
+    EncounterRarity.EPIC -> "Epic"
+    EncounterRarity.LEGENDARY -> "Legendary"
+    EncounterRarity.MYTHICAL -> "Mythical"
+}
+
+private fun encounterAcquiredLabel(epochSeconds: Long): String {
+    if (epochSeconds <= 0L) return "Acquired time unavailable"
+    return runCatching {
+        val date = Instant.ofEpochSecond(epochSeconds).atZone(ZoneId.systemDefault()).toLocalDate()
+        "Acquired ${DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).format(date)}"
+    }.getOrDefault("Acquired time unavailable")
 }
 
 @Composable

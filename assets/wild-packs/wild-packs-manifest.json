@@ -1,0 +1,946 @@
+{
+  "animation_contract": {
+    "required_changed_pixels_per_role": 8,
+    "required_unique_frames_per_role": 3,
+    "roles": [
+      "idle",
+      "blink",
+      "pet",
+      "sleep",
+      "listen",
+      "surprise",
+      "play",
+      "tired",
+      "feed",
+      "wake",
+      "meet",
+      "evolve"
+    ],
+    "stored_frames_per_role": 4
+  },
+  "display_contract": {
+    "body_axis_x": 32,
+    "device": "Heltec WiFi LoRa 32 V3/V3.2",
+    "floor_y": 61,
+    "oled_orientation": "portrait",
+    "oled_pixels": [
+      64,
+      128
+    ],
+    "pack_frame_pixels": [
+      64,
+      64
+    ],
+    "safe_bounds": [
+      2,
+      2,
+      61,
+      61
+    ]
+  },
+  "packs": [
+    {
+      "body_axis_target_x": 32,
+      "clips": 12,
+      "contact_sheet": "frog-48-frame-contact.png",
+      "contact_sheet_sha256": "ee0bea9fda9543db663a90d1382ef0d57500c01959310dd7bf9ac7dd46a6617b",
+      "display_name": "FROG",
+      "floor_target_y": 61,
+      "format": "K868PK1",
+      "frame_canvas": [
+        64,
+        64
+      ],
+      "geometry": [
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            9,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 779,
+          "phase": 0,
+          "role": "idle"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            9,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 796,
+          "phase": 1,
+          "role": "idle"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            9,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 803,
+          "phase": 2,
+          "role": "idle"
+        },
+        {
+          "body_axis_x": 32.5,
+          "bounds": [
+            4,
+            9,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 806,
+          "phase": 3,
+          "role": "idle"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            9,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 784,
+          "phase": 0,
+          "role": "blink"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            9,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 702,
+          "phase": 1,
+          "role": "blink"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            9,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 691,
+          "phase": 2,
+          "role": "blink"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            9,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 817,
+          "phase": 3,
+          "role": "blink"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            10,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 780,
+          "phase": 0,
+          "role": "pet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            10,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 737,
+          "phase": 1,
+          "role": "pet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            10,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 761,
+          "phase": 2,
+          "role": "pet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            10,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 739,
+          "phase": 3,
+          "role": "pet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            30,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 487,
+          "phase": 0,
+          "role": "sleep"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            30,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 489,
+          "phase": 1,
+          "role": "sleep"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            30,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 497,
+          "phase": 2,
+          "role": "sleep"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            5,
+            31,
+            60,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 463,
+          "phase": 3,
+          "role": "sleep"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            7,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 749,
+          "phase": 0,
+          "role": "listen"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            5,
+            7,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 749,
+          "phase": 1,
+          "role": "listen"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            7,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 748,
+          "phase": 2,
+          "role": "listen"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            4,
+            7,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 783,
+          "phase": 3,
+          "role": "listen"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            12,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 722,
+          "phase": 0,
+          "role": "surprise"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            4,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 848,
+          "phase": 1,
+          "role": "surprise"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            7,
+            12,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 741,
+          "phase": 2,
+          "role": "surprise"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            13,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 720,
+          "phase": 3,
+          "role": "surprise"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            7,
+            22,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 587,
+          "phase": 0,
+          "role": "play"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            7,
+            14,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 618,
+          "phase": 1,
+          "role": "play"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            12,
+            4,
+            57,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 686,
+          "phase": 2,
+          "role": "play"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            7,
+            15,
+            57,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 631,
+          "phase": 3,
+          "role": "play"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            7,
+            12,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 669,
+          "phase": 0,
+          "role": "tired"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            12,
+            57,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 588,
+          "phase": 1,
+          "role": "tired"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            2,
+            23,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 551,
+          "phase": 2,
+          "role": "tired"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            31,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 471,
+          "phase": 3,
+          "role": "tired"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            5,
+            12,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 701,
+          "phase": 0,
+          "role": "feed"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            12,
+            55,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 715,
+          "phase": 1,
+          "role": "feed"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            12,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 673,
+          "phase": 2,
+          "role": "feed"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            12,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 652,
+          "phase": 3,
+          "role": "feed"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            5,
+            33,
+            57,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 373,
+          "phase": 0,
+          "role": "wake"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            5,
+            34,
+            55,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 435,
+          "phase": 1,
+          "role": "wake"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            27,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 383,
+          "phase": 2,
+          "role": "wake"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            10,
+            17,
+            56,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 551,
+          "phase": 3,
+          "role": "wake"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            9,
+            14,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 658,
+          "phase": 0,
+          "role": "meet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            2,
+            14,
+            57,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 671,
+          "phase": 1,
+          "role": "meet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            14,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 689,
+          "phase": 2,
+          "role": "meet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            5,
+            14,
+            55,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 661,
+          "phase": 3,
+          "role": "meet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            5,
+            4,
+            56,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 757,
+          "phase": 0,
+          "role": "evolve"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            4,
+            58,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 765,
+          "phase": 1,
+          "role": "evolve"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            7,
+            4,
+            59,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 773,
+          "phase": 2,
+          "role": "evolve"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            6,
+            4,
+            57,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 753,
+          "phase": 3,
+          "role": "evolve"
+        }
+      ],
+      "pack_bytes": 24976,
+      "pack_file": "frog.k868",
+      "pack_id": "5CAC86A3",
+      "pack_sha256": "06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8",
+      "rarity": "common",
+      "revision": 2,
+      "role_source_scales": {
+        "blink": 0.2828217821782178,
+        "evolve": 0.2690509259259259,
+        "feed": 0.26150442477876107,
+        "idle": 0.2828217821782178,
+        "listen": 0.2828217821782178,
+        "meet": 0.26206422018348624,
+        "pet": 0.2800490196078431,
+        "play": 0.25489035087719303,
+        "sleep": 0.25256410256410255,
+        "surprise": 0.2690509259259259,
+        "tired": 0.2694811320754717,
+        "wake": 0.23607438016528925
+      },
+      "roles": [
+        {
+          "changed_pixels": 597,
+          "durations_ms": [
+            700,
+            550,
+            700,
+            550
+          ],
+          "frame_sha256": [
+            "09477113deab62fce1e12fd0bc9b210e692b8d0ccd5440959f0d44e8d29d4a0b",
+            "77735b5b339415f5dbee1f6d0b7afeca6915488e7a73f9ce07fcd63139a0684b",
+            "87f5c70bde0de37f128649cebaa1d59475c4bac03d19771e4b1bdfcfd6876ee2",
+            "9e698d6eef136ed0bc31af04a5fb7d78b66c70ff251a797d9cc5ce583891a182"
+          ],
+          "mode": "loop",
+          "role": "idle",
+          "role_id": 0,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 696,
+          "durations_ms": [
+            600,
+            140,
+            180,
+            300
+          ],
+          "frame_sha256": [
+            "c63d2c5571ac1b83d5282454c0def61ac6af069b4ef427db6218874b5fb6d028",
+            "cfa1fe8e2b98f0c4f31f4ecd6a38066e42fd5031c5e17caad85287bae3baf7c0",
+            "2e0c2430b60764857a72bebee03b949fab54b5be10486e3a36844c7798b00688",
+            "452fe4542f1105a87c8c6c79b820e12e1003527ed8cad9508f0f0de198300fe2"
+          ],
+          "mode": "once",
+          "role": "blink",
+          "role_id": 1,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 577,
+          "durations_ms": [
+            280,
+            320,
+            450,
+            500
+          ],
+          "frame_sha256": [
+            "4482c29c692128f88ec07d8da98826a5338fb25fd4b4287fbe181caeb9de6fb4",
+            "fcc5da04f56e743fd49b5d6e51ed7be9fd1a3562fce925483c56f7e48c10bdb2",
+            "04f3133fdaa790587325871403e2a6617765de7179800b0fda699f009641a9b9",
+            "8d5b9c04a68b66f852e40d78b988f9a06f4f16573c53e8f41f6c6b6cbeebc181"
+          ],
+          "mode": "once",
+          "role": "pet",
+          "role_id": 2,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 638,
+          "durations_ms": [
+            350,
+            450,
+            800,
+            1200
+          ],
+          "frame_sha256": [
+            "6b719bba9e332e27aed886813727e222d3e3108e461368885e744aec887330a6",
+            "a2d238d2d4eb37b335349d4d3ebaae3f134bc8c50036bcf3d12e2d62562bc9f0",
+            "e5be14e52274065e397393777581afabfa071ca79a51e029919ccbc25391ee74",
+            "4776412aed585db0a37efbeff9516f8e33eb7d4053c6c8c967374b28d3fa0827"
+          ],
+          "mode": "once",
+          "role": "sleep",
+          "role_id": 3,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 894,
+          "durations_ms": [
+            500,
+            450,
+            500,
+            650
+          ],
+          "frame_sha256": [
+            "c5996b1d0691d7df033cc62aba512239540a52c024515779c4104698d70ee664",
+            "ccb6782e150328e28d8021ff700e87a02b56239b24c6f5138b93284adae0c249",
+            "8dd4f325744f9fd2c84604914e5b87a3f9ca3370c8ad41692f3403d49b9c91bd",
+            "648c8e7e3e5244b8de22e41032d79d0b90b4353ce36f200c7f293fc6043bdfc9"
+          ],
+          "mode": "loop",
+          "role": "listen",
+          "role_id": 4,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 1205,
+          "durations_ms": [
+            250,
+            220,
+            350,
+            450
+          ],
+          "frame_sha256": [
+            "65978bb1d07d4c177707b2f1256a35325b71cab80baee189f892db7c06e46f72",
+            "502b6e9854006ac598403d67221582c872e3fa2169be2bc36b8f576b74c90752",
+            "a5c85c83497c0dd43f1d71beb2c5ccda6c729cfe40b0c922de30af61f0d3ba9a",
+            "3b1ecdb79607dc6583fef3c78dd8ed2d05bf4ae13dd6eaf63b6999b9cbd70733"
+          ],
+          "mode": "once",
+          "role": "surprise",
+          "role_id": 5,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 1758,
+          "durations_ms": [
+            260,
+            240,
+            260,
+            320
+          ],
+          "frame_sha256": [
+            "7e74c70e17f2c4819fe3441efac47445e9b9e59472cd100404015f8027fecb06",
+            "3487639a62841da712c9cb59fddb621d262996bceac69113ec05548f6e95a315",
+            "ef844c303a3523f37143078ac3066d89eb1c575b12b487b9ce8fe44960c094d1",
+            "bbf0f67fe39383a8458da15c1afac87734e6c23fc7f0b353af678950254548e3"
+          ],
+          "mode": "pingpong",
+          "role": "play",
+          "role_id": 6,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 1216,
+          "durations_ms": [
+            650,
+            700,
+            900,
+            1000
+          ],
+          "frame_sha256": [
+            "1f254d28b20be0fb97cfe25dd82fbc4ea1753308a6f4df6f80a078a91e4d54a6",
+            "1c5544a9c3c66acec519f60d727d2162575e65b2319a5d915a8364cf01b41459",
+            "254d2b11d3d3025c221f225ec6e05ff42b541c21e5ad895583e4be18a70742e3",
+            "ed6945d778a859aac680ea5060e659a897d337b83368d5591f0a15f2063cb90d"
+          ],
+          "mode": "once",
+          "role": "tired",
+          "role_id": 7,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 1147,
+          "durations_ms": [
+            300,
+            250,
+            350,
+            500
+          ],
+          "frame_sha256": [
+            "febb9f307357e2dae337b76391e0a1c7244d89b7e9511f66313acdf7c19c926d",
+            "753062bca6b7355e61b7031ce97f06713a7cb5363e19ffcf2c4aa08bcc9c31a3",
+            "d7b3bfc6d1f96578262afdcca1871f9c4a9c79d383717ca83b68e243d7f49411",
+            "bfc12350a89ba65463332699d6c1e678063630062954ce0b12be3f82606e2b9a"
+          ],
+          "mode": "once",
+          "role": "feed",
+          "role_id": 8,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 1158,
+          "durations_ms": [
+            600,
+            400,
+            350,
+            450
+          ],
+          "frame_sha256": [
+            "28e5160d24e513a3239f85c1b75a720b22f1bc8857caf0a21d851dfba68536b4",
+            "48c04a31da04007ff75b33f6447f966b9e44c9566f9f2661d92dfe27c46206ac",
+            "fa23cf2e5dab53a13e738e02745904097d536b9a9951e7fcef7a756dd663abde",
+            "9bf1ad8ebe8538db04d1f2affbdfa4cd894e26f7a542065d46c1df55430f7406"
+          ],
+          "mode": "once",
+          "role": "wake",
+          "role_id": 9,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 1234,
+          "durations_ms": [
+            300,
+            350,
+            420,
+            500
+          ],
+          "frame_sha256": [
+            "9f9d9073cf29e95ad4ae66355ce824b67619515f8ff17ed93645ce2e008824af",
+            "14d7d198c07d96e7f559bec2923c47f0674818a70bfad2ed0dc33787d98606c2",
+            "83f74fd8b466898b7f2356e95a7b5efa961dad458a87608bd95663928e63046c",
+            "9a2d6d7cba5a79af57c6e1eda5ccbf462c93a870827c2e24a15c4b98a0a6d89f"
+          ],
+          "mode": "once",
+          "role": "meet",
+          "role_id": 10,
+          "unique_frames": 4
+        },
+        {
+          "changed_pixels": 1037,
+          "durations_ms": [
+            350,
+            450,
+            600,
+            700
+          ],
+          "frame_sha256": [
+            "596c6ad65d11e6393e4f995bda2679459cb363420c1fc176fd04a5f1f6c17316",
+            "11f074511b733eefec6c0ec248a731bdd519091b6bd7d03cf4f181b6478bbde4",
+            "e0111601fec7d48fab0554f2f58f382660ca531564b7fe16eb9879b0f9a32d4a",
+            "1a7a920b59cf4fdcfd73b7567f90166d7e545d158b775401098abb0f03bd8257"
+          ],
+          "mode": "once",
+          "role": "evolve",
+          "role_id": 11,
+          "unique_frames": 4
+        }
+      ],
+      "source_sha256": {
+        "frog-core.png": "ea1f45307383e7502a1326918acbded6cca9627b6275da8d265e20530fbeb4d7",
+        "frog-life.png": "5465037308c8b38347dc891256fc0c47d0aeb7d1f9b918e467cd0a7541501299",
+        "frog-social.png": "7e27397c1c73b3a6be7a0ec8816e8ffdf9fe629d8e2d0edb993b77cd7dca73c4"
+      },
+      "species": "frog",
+      "steps": 48,
+      "stored_frames": 48
+    }
+  ],
+  "private_companions_included": false,
+  "public_wild_species": [
+    "frog"
+  ],
+  "schema": "kitsu-wild-pack-release-v1",
+  "starter_companions_included": false
+}

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f3efe5" />
+  <meta name="description" content="Verify a Kitsu encounter code against the Heltec that received it and download an explicitly published pet pack." />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <link rel="icon" href="/assets/kitsu-app-icon.png?v=4f850b55" />
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/styles.css?sha256=9b2dcafd5e9f0fc8f78234c370f10557c95d512e468c4af84a94e98ad01a4252" />
+  <link rel="stylesheet" href="/unlock/unlock.css?sha256=1abc47472d4094a51e5b466aba8753778b89e4080242de6d22518ea7d51004bb" />
+  <script type="module" src="/unlock/unlock.js?sha256=cc51ec367500507d8621adff1ddab0cec43ce5b57b502ef4812005c110d4a0c9"></script>
+  <title>Unlock a Pet Pack - K32 Kitsu</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header policy-header">
+    <a class="wordmark" href="/">
+      <img src="/assets/kitsu-k32-mascot-bw-v2.png" alt="" width="48" height="48" />
+      <span translate="no"><strong>K32</strong><small>Kitsu</small></span>
+    </a>
+    <div class="header-actions">
+      <a class="policy-home" href="/">Home</a>
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme" aria-pressed="false"><span data-theme-label>Dark</span></button>
+      <a class="header-download" href="/#download">Get Android</a>
+    </div>
+  </header>
+
+  <main class="unlock-main" id="main">
+    <section class="unlock-hero" aria-labelledby="unlock-title">
+      <div>
+        <p class="eyebrow">Pet pack unlock</p>
+        <h1 id="unlock-title">Unlock a Pet Pack.</h1>
+        <p class="lede">Connect the Heltec that received the code. This page checks its hardware binding before showing any published pack.</p>
+      </div>
+      <div class="unlock-mark" aria-hidden="true">
+        <img src="/assets/kitsu-k32-mascot-bw-v2.png" alt="" width="336" height="336" fetchpriority="high" />
+      </div>
+    </section>
+
+    <div class="unlock-layout">
+      <section class="unlock-flow" aria-labelledby="check-title">
+        <h2 id="check-title">Check Your Code</h2>
+        <p>Use a USB data cable. Verification stays between this browser and the connected Kitsu over Web Serial.</p>
+
+        <div class="device-connection">
+          <div class="device-copy">
+            <strong id="device-title">Checking browser support</strong>
+            <small id="device-detail">The page will ask before opening any serial device.</small>
+          </div>
+          <button class="button unlock-action" id="connect-kitsu" type="button">Connect Kitsu</button>
+        </div>
+
+        <form class="unlock-form" id="unlock-form" aria-busy="false" novalidate>
+          <label for="unlock-code">Encounter code</label>
+          <input
+            id="unlock-code"
+            name="code"
+            type="text"
+            inputmode="text"
+            maxlength="80"
+            autocomplete="off"
+            autocapitalize="characters"
+            enterkeyhint="go"
+            spellcheck="false"
+            aria-required="true"
+            aria-invalid="false"
+            aria-describedby="unlock-code-help unlock-code-error"
+            placeholder="Example: K32A-BC12-34…"
+          />
+          <p class="field-help" id="unlock-code-help">Use 8 to 64 letters or numbers. Spaces and hyphens are optional.</p>
+          <p class="field-error" id="unlock-code-error" hidden></p>
+          <button class="button unlock-action" id="verify-code" type="submit" disabled>Verify Code</button>
+        </form>
+
+        <noscript><p class="unlock-noscript">JavaScript is required for local Web Serial verification.</p></noscript>
+      </section>
+
+      <section class="unlock-result" id="unlock-result" aria-labelledby="result-title" aria-busy="false">
+        <h2 id="result-title">Verification Result</h2>
+        <p>No account or upload is used. The connected firmware decides whether the code belongs to this hardware.</p>
+        <div class="unlock-status" id="unlock-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1" data-state="idle">Checking browser support.</div>
+        <div class="pack-result" id="pack-result" hidden>
+          <h3 id="pack-title"></h3>
+          <p id="pack-detail"></p>
+          <a class="download-action" id="pack-download" aria-disabled="true" hidden>Download .k868</a>
+          <p class="pack-integrity" id="pack-integrity"></p>
+        </div>
+      </section>
+    </div>
+
+    <section class="unlock-boundaries" aria-labelledby="checks-title">
+      <div>
+        <h2 id="checks-title">What This Page Checks</h2>
+        <p>Every boundary fails closed. A missing response or catalog record never becomes a download.</p>
+      </div>
+      <dl>
+        <div>
+          <dt>Hardware</dt>
+          <dd>The connected Kitsu must report that the code binding matches its own hardware identity.</dd>
+        </div>
+        <div>
+          <dt>Publication</dt>
+          <dd>Only an exact pack ID in the public allowlist can reveal a same-origin download.</dd>
+        </div>
+        <div>
+          <dt>Package</dt>
+          <dd>The site does not change the format. A published download is an ordinary <code translate="no">.k868</code> pet package.</dd>
+        </div>
+      </dl>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-brand" translate="no"><strong>K32 Kitsu</strong><span>Local-first portrait radio companion</span></div>
+    <nav aria-label="Project"><a href="/">Home</a><a href="/demo/">Demo</a><a href="/unlock/" aria-current="page">Unlock</a></nav>
+    <nav aria-label="Policies and contact"><a href="/privacy/">Privacy</a><a href="/security/">Security</a><a href="/contact/">Contact</a></nav>
+  </footer>
+</body>
+</html>

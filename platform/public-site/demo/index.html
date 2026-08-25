@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f3efe5" />
+  <meta name="description" content="Run the source-built Kitsu 0.17.0 firmware in a local browser runtime with its Fox companion, PRG and RST controls, and injected in-memory radio data." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Try Kitsu" />
+  <meta property="og:description" content="Run the source-built Kitsu 0.17.0 firmware with Fox in an interactive browser demo." />
+  <meta property="og:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Try Kitsu" />
+  <meta name="twitter:description" content="Run the source-built Kitsu 0.17.0 firmware with Fox in an interactive browser demo." />
+  <meta name="twitter:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
+  <link rel="icon" href="/assets/kitsu-app-icon.png" />
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/styles.css?sha256=9b2dcafd5e9f0fc8f78234c370f10557c95d512e468c4af84a94e98ad01a4252" />
+  <link rel="stylesheet" href="/demo/demo.css?sha256=a115f8a4202986a96da776b023861d3197cedd5307b8ff35b3638361d42ded03" />
+  <script type="module" src="/demo/demo.js?sha256=5a7e5fd3c1b93e42d3f5cc2a3b472dac642591d393edf09537d7a5939ecffda9"></script>
+  <title>Try Kitsu - interactive firmware demo</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to demo</a>
+
+  <header class="site-header">
+    <a class="wordmark" href="/" aria-label="K32 Kitsu home" translate="no">
+      <img src="/assets/kitsu-k32-mascot-bw-v2.png" width="48" height="48" alt="" />
+      <span><strong>K32</strong><small>Kitsu</small></span>
+    </a>
+    <nav class="primary-nav" aria-label="Primary navigation">
+      <a href="/#companion">Companion</a><a href="/#connect">Connect</a><a href="/#start">Start</a><a href="/demo/" aria-current="page">Demo</a><a href="/unlock/">Unlock</a><a href="https://docs.k32.run">Manual</a>
+    </nav>
+    <div class="header-actions">
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme" aria-pressed="false">
+        <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
+        <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.4 8.4 0 0 1 8.8 3.8 8.4 8.4 0 1 0 20.2 15.2Z"/></svg>
+        <span data-theme-label>Dark</span>
+      </button>
+      <a class="header-download" href="/#download">Get Android</a>
+    </div>
+  </header>
+
+  <main class="demo-main" id="main">
+    <section class="demo-intro" aria-labelledby="demo-title">
+      <p class="eyebrow">Interactive demo · Fox included</p>
+      <h1 id="demo-title">Meet Kitsu before you flash.</h1>
+      <p class="lede">Run the source-built Kitsu 0.17.0 firmware with Fox, operate PRG and RST, explore its screens, and inject local MeshCore radio data.</p>
+      <div class="demo-mode-notice">
+        <strong>Demo mode</strong>
+        <p>Everything presented here is for demonstration only, not a live hardware or radio function. The runtime stays in this browser and does not connect to a Heltec, Bluetooth, USB, or MeshCore network.</p>
+      </div>
+    </section>
+
+    <section class="demo-workbench" aria-labelledby="workbench-title">
+      <div class="portrait-stage">
+        <div class="oled-display" data-oled-tone="cyan" role="img" aria-label="Kitsu firmware OLED display" aria-describedby="screen-description">
+          <canvas class="oled-framebuffer" id="firmware-framebuffer" data-firmware-framebuffer width="64" height="128" aria-hidden="true"></canvas>
+        </div>
+        <p class="visually-hidden" id="screen-description" role="status" aria-live="polite" aria-atomic="true">The source-built Kitsu 0.17.0 firmware runtime is ready to be installed in the demo.</p>
+        <fieldset class="oled-tone-picker" aria-describedby="oled-tone-help">
+          <legend>OLED appearance</legend>
+          <div class="oled-tone-options">
+            <label class="oled-tone-option" for="oled-tone-cyan"><input id="oled-tone-cyan" name="oled-tone" type="radio" value="cyan" checked /><span>Heltec cyan</span></label>
+            <label class="oled-tone-option" for="oled-tone-mono"><input id="oled-tone-mono" name="oled-tone" type="radio" value="mono" /><span>Black &amp; white</span></label>
+          </div>
+          <p id="oled-tone-help">Visual tint only. Saved in this browser and kept when demo progress is reset.</p>
+        </fieldset>
+        <div class="heltec-inputs" role="group" aria-label="Simulated Heltec controls" aria-describedby="heltec-input-help">
+          <button class="board-button board-button-prg" type="button" id="prg-button"><strong>PRG</strong><span>Action</span></button>
+          <button class="board-button board-button-rst" type="button" id="rst-button"><strong>RST</strong><span>Restart</span></button>
+          <button class="prg-hold-assist" type="button" id="prg-hold-button">Hold PRG</button>
+        </div>
+        <p class="heltec-input-help" id="heltec-input-help">Tap PRG for an action. Hold it for 750 ms to select. RST reboots the firmware while its emulated persistent storage remains available.</p>
+        <div class="portrait-caption"><p><strong>Firmware framebuffer.</strong><span>Direct 64 x 128 OLED output.</span></p></div>
+      </div>
+
+      <div class="demo-controls">
+        <h2 class="visually-hidden" id="workbench-title">Interactive Heltec demo mode</h2>
+        <div class="demo-mode-switch" role="group" aria-label="Demo sections">
+          <button type="button" data-demo-view="flash" aria-pressed="true">Flash</button>
+          <button type="button" data-demo-view="device" aria-pressed="false" disabled>Device</button>
+          <button type="button" data-demo-view="care" aria-pressed="false" disabled>Care</button>
+          <button type="button" data-demo-view="mesh" aria-pressed="false" disabled>Mesh</button>
+        </div>
+
+        <section class="demo-panel" id="flash-panel" data-demo-panel="flash" aria-labelledby="flash-title">
+          <header>
+            <p class="eyebrow">Demo installer</p>
+            <h3 id="flash-title">Start from an empty demo Heltec.</h3>
+            <p>Follow the same core-and-pet sequence as the real flasher. Automatic download mode comes first; PRG + RST is available as a manual fallback. The browser never opens a port.</p>
+          </header>
+          <ol class="firmware-procedure" aria-label="Kitsu and Fox installation steps">
+            <li data-firmware-step="connect"><strong>Connect USB</strong><span>The demo cable is already connected.</span></li>
+            <li data-firmware-step="download"><strong>Enter download mode</strong><span>The flasher tries automatic reset first. If that fails, hold PRG, tap RST, then release PRG.</span></li>
+            <li data-firmware-step="write"><strong>Write Kitsu</strong><span>Load the source-built 0.17.0 browser runtime into emulated application storage.</span></li>
+            <li data-firmware-step="fox"><strong>Add Fox</strong><span>Validate the included Fox data and write it to the emulated pet partition.</span></li>
+            <li data-firmware-step="verify"><strong>Verify and restart</strong><span>Verify both emulated regions, then boot the firmware and meet Fox.</span></li>
+          </ol>
+          <div class="flash-summary">
+            <span>Heltec WiFi LoRa 32 V3</span>
+            <strong>Kitsu 0.17.0 runtime + Fox</strong>
+          </div>
+          <div class="pack-preview">
+            <div class="pack-fox-preview" aria-hidden="true"></div>
+            <div><span>Included companion</span><strong>Fox portraits</strong><small>Official Fox demo data · loaded into emulated pet storage</small></div>
+          </div>
+          <div class="flash-progress" aria-label="Simulated Kitsu and Fox installation progress" aria-describedby="flash-stage" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="flash-progress"></span></div>
+          <p class="flash-stage" id="flash-stage">Ready to load the Kitsu runtime and Fox into the emulator.</p>
+          <div class="flash-actions">
+            <button class="demo-secondary-action" type="button" id="bootloader-assist">Simulate PRG + RST</button>
+            <button class="demo-primary-action" type="button" id="flash-demo" disabled>Install Kitsu + Fox</button>
+            <a class="demo-real-link" href="https://flash.k32.run">Open the real flasher <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="panel-boundary">Demo only. These controls reproduce the user-facing sequence inside emulated storage. They do not flash a physical board, request USB, accept files or codes, or write the Xtensa firmware binary. The real flasher writes and verifies the signed core, then installs your selected official pet in the same USB session.</p>
+        </section>
+
+        <section class="demo-panel" id="device-panel" data-demo-panel="device" aria-labelledby="device-title" hidden>
+          <header>
+            <p class="eyebrow">Firmware controls</p>
+            <h3 id="device-title" tabindex="-1">Operate the firmware itself.</h3>
+            <p>The source-built 0.17.0 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior. The page only supplies the browser hardware layer.</p>
+          </header>
+          <div class="device-guide" aria-label="Current emulated firmware state">
+            <div><span>Current screen</span><strong id="device-screen-name">Not flashed</strong></div>
+            <div><span>PRG tap</span><strong id="device-short-action">Unavailable</strong></div>
+            <div><span>PRG hold</span><strong id="device-long-action">Unavailable</strong></div>
+            <div><span>Firmware runtime</span><strong id="firmware-runtime-status" role="status">Loading source-built 0.17.0 firmware</strong></div>
+          </div>
+          <div class="firmware-map">
+            <p><strong>Portrait</strong><span>See Fox, act through PRG, and read the firmware-rendered mood and energy.</span></p>
+            <p><strong>Menu</strong><span>Connect, Feed, Play, Games, Inbox, Radio, Sleep, Info, Back.</span></p>
+            <p><strong>Games</strong><span>Signal Catch and Pounce run inside the same 0.17.0 firmware loop through the single PRG button.</span></p>
+            <p><strong>Status</strong><span>Bond, vitals, memory, and firmware health pages.</span></p>
+          </div>
+          <p class="panel-boundary">The firmware screens and state transitions run locally. The browser hardware layer never advertises over Bluetooth, pairs with a device, opens USB, or transmits radio data.</p>
+        </section>
+
+        <section class="demo-panel" id="care-panel" data-demo-panel="care" aria-labelledby="care-title" hidden>
+          <header>
+            <p class="eyebrow">Demo shortcuts</p>
+            <h3 id="care-title">Jump straight to Fox.</h3>
+            <p>These shortcuts pass actions into the running firmware. For the physical interaction sequence, use PRG above.</p>
+          </header>
+          <div class="care-actions" role="group" aria-label="Care actions">
+            <button type="button" data-demo-action="pet">Pet</button>
+            <button type="button" data-demo-action="feed">Feed</button>
+            <button type="button" data-demo-action="play">Play</button>
+            <button type="button" data-demo-action="listen">Listen</button>
+          </div>
+          <div class="needs" aria-label="Fox needs">
+            <div class="need-row"><label id="energy-label" for="energy-meter">Energy</label><meter id="energy-meter" aria-labelledby="energy-label" min="0" max="100" value="72">72 out of 100</meter></div>
+            <div class="need-row"><label id="curiosity-label" for="curiosity-meter">Curiosity</label><meter id="curiosity-meter" aria-labelledby="curiosity-label" min="0" max="100" value="14">14 out of 100</meter></div>
+            <div class="need-row"><label id="affection-label" for="affection-meter">Affection</label><meter id="affection-meter" aria-labelledby="affection-label" min="0" max="100" value="5">5 out of 100</meter></div>
+          </div>
+          <p class="listen-note">Listen discovers direct nearby Kitsu frames, not MeshCore contacts. The browser injects them locally and never claims live LoRa reception.</p>
+          <button class="demo-secondary-action" type="button" id="sleep-toggle">Sleep</button>
+        </section>
+
+        <section class="demo-panel" id="mesh-panel" data-demo-panel="mesh" aria-labelledby="mesh-title" hidden>
+          <header>
+            <p class="eyebrow">Injected radio</p>
+            <h3 id="mesh-title">Explore both radio paths.</h3>
+            <p>This panel configures the shared radio profile, then injects MeshCore packets and direct nearby-Kitsu packets through their separate firmware paths.</p>
+          </header>
+          <div class="mesh-actions">
+            <button type="button" id="scan-mesh">Inject nearby nodes</button>
+            <button type="button" id="replay-encounter" disabled>Meet nearby Kitsu</button>
+          </div>
+          <ul class="mesh-peer-list" id="mesh-peer-list" aria-label="Demo mesh nodes"><li>No demo nodes discovered yet.</li></ul>
+          <form class="demo-message-form" id="demo-message-form">
+            <label for="demo-message">Message between two demo Kitsu clients on Public</label>
+            <div><input id="demo-message" name="message" type="text" maxlength="72" autocomplete="off" placeholder="Say hello to the demo mesh…" aria-describedby="demo-message-error" disabled /><button type="submit" disabled>Inject message</button></div>
+            <p class="demo-message-error" id="demo-message-error" aria-live="polite"></p>
+          </form>
+          <ul class="mesh-message-log" id="mesh-message-log" aria-label="Demo mesh messages"></ul>
+          <p class="panel-boundary">Demo only. Incoming raw packets exist only in memory, and outgoing packets are captured as local demo events. No LoRa transmission, live discovery, or external message delivery occurs.</p>
+        </section>
+
+        <div class="demo-console-footer">
+          <p class="demo-status" id="demo-status" role="status" aria-live="polite">The emulator is ready to load Kitsu 0.17.0 and Fox.</p>
+          <button type="button" id="reset-demo">Reset demo</button>
+        </div>
+        <noscript><p class="noscript">JavaScript is required for the interactive demo.</p></noscript>
+      </div>
+    </section>
+
+    <section class="demo-memory" aria-labelledby="memory-title">
+      <div>
+        <p class="eyebrow">Local memory</p>
+        <h2 id="memory-title">What Fox remembers.</h2>
+        <p>Care and encounters pass through the firmware journal. Its emulated persistent storage stays in this browser and can be reset at any time.</p>
+      </div>
+      <ul id="memory-list" aria-label="Recent Fox memories"></ul>
+    </section>
+
+    <section class="demo-truth" aria-label="Demo boundaries">
+      <div><h2>What runs</h2><p>The source-built Kitsu 0.17.0 setup and loop drive the framebuffer, PRG timing, menus, Fox behavior, care, games, journal, persistence, and MeshCore packet lifecycle.</p></div>
+      <div><h2>What is replaced</h2><p>A browser hardware layer replaces the Heltec OLED, buttons, clock, flash, NVS, Bluetooth carrier, and SX1262 radio. Radio packets are injected and captured only in memory. This is not Xtensa binary or CPU emulation, and it never reaches live hardware or RF.</p></div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-brand"><strong>K32 Kitsu</strong><span>Local-first portrait radio companion</span></div>
+    <nav aria-label="Product links"><a href="/demo/" aria-current="page">Demo</a><a href="/unlock/">Unlock</a><a href="https://docs.k32.run">Manual</a><a href="https://flash.k32.run">Firmware</a><a href="/#download">Android</a><a href="https://github.com/pattalium/Kitsu">GitHub</a></nav>
+    <nav aria-label="Policies and contact"><a href="/privacy/">Privacy</a><a href="/terms/">Terms</a><a href="/security/">Security</a><a href="/contact/">Contact</a></nav>
+  </footer>
+</body>
+</html>

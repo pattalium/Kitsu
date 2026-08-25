@@ -3,6 +3,11 @@
 platform/public-site/downloads/*.json -text
 platform/public-site/downloads/*.json.sig binary
 platform/public-site/downloads/*.apk binary
+platform/public-site/demo/*.wasm binary
+platform/public-site/demo/assets/*.k868 binary
+platform/public-site/unlock/assets/*.k868 binary
+assets/packs/*.k868 binary
+assets/wild-packs/*.k868 binary
 platform/flash-site/tests/fixtures/known-signed-message.json -text
 platform/flash-site/tests/fixtures/known-signed-message.sig.b64 -text
 platform/flash-site/tests/fixtures/update-authority-public.txt -text

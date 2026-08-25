@@ -67,7 +67,9 @@ test("static product, manual, and USB recovery surfaces link real destinations",
   assert.match(product, /https:\/\/docs\.k32\.run\/connectivity\//);
   assert.match(product, /https:\/\/flash\.k32\.run/);
   assert.match(manual, /https:\/\/github\.com\/pattalium\/Kitsu/);
-  assert.match(flasher, /seven verified writes/);
+  assert.match(flasher, /seven verified core writes/);
+  assert.match(flasher, /same USB session/);
+  assert.match(flasher, /One final reset/);
   assert.match(flasher, /rollback-enabled Kitsu bootloader/);
   assert.match(flasher, /app0 and app1/);
   assert.match(flasher, /clean private OTA journal in each slot/);
@@ -76,12 +78,13 @@ test("static product, manual, and USB recovery surfaces link real destinations",
 });
 
 test("flasher keeps its firmware controls while exposing a persistent accessible theme choice", async () => {
-  const [html, theme, styles] = await Promise.all([
+  const [html, theme, styles, app] = await Promise.all([
     text("flash-site/index.html"),
     text("flash-site/src/theme.js"),
     text("flash-site/src/styles.css"),
+    text("flash-site/src/app.js"),
   ]);
-  for (const id of ["connect", "disconnect", "refresh", "install", "progress", "progress-detail", "log"]) {
+  for (const id of ["connect", "disconnect", "refresh", "pack-select", "pack-detail", "install", "progress", "progress-detail", "log"]) {
     assert.match(html, new RegExp(`id="${id}"`), id);
   }
   assert.match(html, /type="button" data-theme-toggle/u);
@@ -93,6 +96,14 @@ test("flasher keeps its firmware controls while exposing a persistent accessible
   assert.match(styles, /--canvas: #f3efe5/u);
   assert.match(styles, /html\[data-theme="dark"\][\s\S]*--canvas: #12110f/u);
   assert.match(styles, /--display: Georgia/u);
+  assert.match(html, /<option value="preserve" selected>Keep current pet<\/option>/u);
+  for (const pet of ["fox", "cat", "dog"]) assert.match(html, new RegExp(`<option value="${pet}">`, "u"));
+  assert.doesNotMatch(html, /<input[^>]+type="file"/iu);
+  assert.match(styles, /\.pack-choice select/u);
+  assert.match(app, /let packVerified = !selectedDefinition/u);
+  assert.match(app, /resetAttempted = true;\s+await loader\.after\("hard_reset"\)/u);
+  assert.match(app, /Every selected region passed SHA-256 readback[\s\S]*No second automatic reset was attempted/u);
+  assert.match(app, /closeTransport\(\{ reset: !resetAttempted, announce: true \}\)/u);
   assert.doesNotMatch(html, /class="step">\d/u);
 });
 

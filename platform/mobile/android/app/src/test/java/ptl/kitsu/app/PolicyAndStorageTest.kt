@@ -63,6 +63,7 @@ class PolicyAndStorageTest {
                 "privateKey" to "hunter2",
                 "pairingDevice" to "private-device",
                 "secret" to "correct horse battery staple",
+                "encounter_code" to "KITSU-DO-NOT-LOG",
                 "count" to 2,
             ),
         )
@@ -70,6 +71,7 @@ class PolicyAndStorageTest {
         assertFalse(rendered.contains("hunter2"))
         assertFalse(rendered.contains("private-device"))
         assertFalse(rendered.contains("correct horse battery staple"))
+        assertFalse(rendered.contains("KITSU-DO-NOT-LOG"))
         assertTrue(rendered.contains("count=2"))
     }
 

@@ -1,0 +1,130 @@
+package ptl.kitsu.app.transport
+
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import ptl.kitsu.app.model.EncounterRarity
+import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionKind
+
+class EncounterWireCodecTest {
+    @Test
+    fun codePageAcceptsForwardFieldsAndNormalizesInstalledState() {
+        val page = EncounterWireCodec.codePage(
+            """{
+                "schema":"kitsu.encounter-codes.v1",
+                "items":[{
+                    "device_id":"KT12AF",
+                    "code_id":"event:7",
+                    "code":"KITSU-ABC-123",
+                    "pack_id":4294967295,
+                    "rarity":"mythical",
+                    "source":"mesh_repeater",
+                    "acquired_at_epoch":1787600000,
+                    "installed":true,
+                    "future_field":"ignored"
+                }],
+                "cursor":"generation:7",
+                "has_more":false,
+                "future_page_field":true
+            }""".trimIndent().toByteArray(),
+        )
+
+        val code = page.items.single()
+        assertEquals(EncounterRarity.MYTHICAL, code.rarity)
+        assertEquals(4_294_967_295L, code.packId)
+        assertTrue(code.installed)
+        assertTrue(code.redeemed)
+    }
+
+    @Test
+    fun codePageRejectsUnknownRarityAndDuplicateOpaqueIds() {
+        val unknown = runCatching {
+            EncounterWireCodec.codePage(
+                """{"schema":"kitsu.encounter-codes.v1","items":[{"device_id":"KT12AF","code_id":"a","code":"KITSU-ABC","pack_id":1,"rarity":"ultra","acquired_at_epoch":1}]}"""
+                    .toByteArray(),
+            )
+        }.exceptionOrNull() as TransportException
+        assertEquals("malformed_encounter_codes", unknown.code)
+
+        val duplicate = runCatching {
+            EncounterWireCodec.codePage(
+                """{"schema":"kitsu.encounter-codes.v1","items":[
+                    {"device_id":"KT12AF","code_id":"a","code":"KITSU-ABC","pack_id":1,"rarity":"rare","acquired_at_epoch":1},
+                    {"device_id":"KT12AF","code_id":"a","code":"KITSU-XYZ","pack_id":2,"rarity":"epic","acquired_at_epoch":2}
+                ]}""".trimIndent().toByteArray(),
+            )
+        }.exceptionOrNull() as TransportException
+        assertEquals("malformed_encounter_codes", duplicate.code)
+    }
+
+    @Test
+    fun neighborPetContractIsSeparateAndTargeted() {
+        val command = NeighborInteractionCommand(
+            actionId = "00000000-0000-0000-0000-000000000007",
+            targetDeviceId = "KT12AF",
+            targetSessionNonce = 4_294_967_295L,
+            sequence = 65_535,
+            kind = NeighborInteractionKind.PET,
+            expiresAtEpoch = 1_787_600_030,
+        )
+        val body = EncounterWireCodec.neighborActionBody(command)
+        assertEquals("KT12AF", body.getValue("target_device_id").jsonPrimitive.content)
+        assertEquals("pet", body.getValue("kind").jsonPrimitive.content)
+        assertFalse(body.containsKey("local_care"))
+
+        val receipt = EncounterWireCodec.neighborActionReceipt(
+            """{"schema":"kitsu.neighbor-action-receipt.v1","action_id":"${command.actionId}","accepted":true,"state":"delivered","future":1}"""
+                .toByteArray(),
+            command,
+        )
+        assertTrue(receipt.accepted)
+
+        val outOfRange = runCatching {
+            EncounterWireCodec.neighborActionBody(command.copy(sequence = 65_536))
+        }.exceptionOrNull() as TransportException
+        assertEquals("invalid_neighbor_sequence", outOfRange.code)
+    }
+
+    @Test
+    fun nearbyKitsuPageAcceptsExactFirmwareContractAndOrdersFreshestFirst() {
+        val page = EncounterWireCodec.nearbyKitsu(
+            """{
+                "schema":"kitsu.encounter-neighbors.v1",
+                "items":[
+                    {"device_id":"KT12AF","session_nonce":4294967295,"pack_id":1554810531,"appearance":31,"evolution_stage":4,"bond":100,"mood":14,"emote":15,"rssi":-88.5,"snr":4.0,"last_seen_age_ms":9000,"next_sequence":65535},
+                    {"device_id":"KT0001","session_nonce":7,"pack_id":1815690785,"appearance":0,"evolution_stage":0,"bond":0,"mood":0,"emote":0,"rssi":-61.0,"snr":9.5,"last_seen_age_ms":20,"next_sequence":1,"future":true}
+                ],
+                "future_page_field":true
+            }""".trimIndent().toByteArray(),
+        )
+
+        assertEquals(listOf("KT0001", "KT12AF"), page.items.map { it.deviceId })
+        assertEquals(65_535L, page.items.last().nextSequence)
+    }
+
+    @Test
+    fun nearbyKitsuPageRejectsDuplicateStaleAndOutOfRangeRecords() {
+        val invalidPayloads = listOf(
+            """{"schema":"kitsu.encounter-neighbors.v1","items":[
+                {"device_id":"KT0001","session_nonce":1,"pack_id":1,"appearance":0,"evolution_stage":0,"bond":0,"mood":0,"emote":0,"rssi":-70.0,"snr":1.0,"last_seen_age_ms":1,"next_sequence":1},
+                {"device_id":"KT0001","session_nonce":2,"pack_id":2,"appearance":0,"evolution_stage":0,"bond":0,"mood":0,"emote":0,"rssi":-70.0,"snr":1.0,"last_seen_age_ms":1,"next_sequence":1}
+            ]}""",
+            """{"schema":"kitsu.encounter-neighbors.v1","items":[
+                {"device_id":"KT0001","session_nonce":1,"pack_id":1,"appearance":0,"evolution_stage":0,"bond":0,"mood":0,"emote":0,"rssi":-70.0,"snr":1.0,"last_seen_age_ms":120001,"next_sequence":1}
+            ]}""",
+            """{"schema":"kitsu.encounter-neighbors.v1","items":[
+                {"device_id":"KT0001","session_nonce":1,"pack_id":1,"appearance":32,"evolution_stage":0,"bond":0,"mood":0,"emote":0,"rssi":-70.0,"snr":1.0,"last_seen_age_ms":1,"next_sequence":0}
+            ]}""",
+        )
+
+        invalidPayloads.forEach { payload ->
+            val failure = runCatching {
+                EncounterWireCodec.nearbyKitsu(payload.toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_encounter_neighbors", failure.code)
+        }
+    }
+}

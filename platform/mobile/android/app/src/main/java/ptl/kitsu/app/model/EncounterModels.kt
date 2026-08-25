@@ -1,0 +1,173 @@
+package ptl.kitsu.app.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import java.util.UUID
+
+const val ENCOUNTER_CODES_OPERATION = "encounter.codes.get.v1"
+const val ENCOUNTER_NEIGHBORS_OPERATION = "encounter.neighbors.get.v1"
+const val NEIGHBOR_ACTION_OPERATION = "encounter.neighbor.action.v1"
+const val ENCOUNTER_CODES_SCHEMA = "kitsu.encounter-codes.v1"
+const val ENCOUNTER_NEIGHBORS_SCHEMA = "kitsu.encounter-neighbors.v1"
+const val NEIGHBOR_ACTION_RECEIPT_SCHEMA = "kitsu.neighbor-action-receipt.v1"
+
+@Serializable
+enum class EncounterRarity {
+    @SerialName("common") COMMON,
+    @SerialName("uncommon") UNCOMMON,
+    @SerialName("rare") RARE,
+    @SerialName("very_rare") VERY_RARE,
+    @SerialName("epic") EPIC,
+    @SerialName("legendary") LEGENDARY,
+    @SerialName("mythical") MYTHICAL,
+}
+
+@Serializable
+data class EncounterUnlockCode(
+    @SerialName("device_id") val deviceId: String,
+    @SerialName("code_id") val codeId: String,
+    val code: String,
+    @SerialName("pack_id") val packId: Long? = null,
+    @SerialName("creature_name") val creatureName: String? = null,
+    val rarity: EncounterRarity,
+    val source: String? = null,
+    @SerialName("acquired_at_epoch") val acquiredAtEpoch: Long,
+    val redeemed: Boolean = false,
+    val installed: Boolean = false,
+) {
+    /** Stable local identity. The raw unlock code is deliberately excluded. */
+    val vaultKey: String get() = "$deviceId:$codeId"
+}
+
+@Serializable
+data class EncounterCodePage(
+    val schema: String,
+    val items: List<EncounterUnlockCode> = emptyList(),
+    val cursor: String? = null,
+    @SerialName("has_more") val hasMore: Boolean = false,
+)
+
+/** A live owned Kitsu heard over the dedicated, non-MeshCore nearby protocol. */
+@Serializable
+data class NearbyKitsu(
+    @SerialName("device_id") val deviceId: String,
+    @SerialName("session_nonce") val sessionNonce: Long,
+    @SerialName("pack_id") val packId: Long,
+    val appearance: Int,
+    @SerialName("evolution_stage") val evolutionStage: Int,
+    val bond: Int,
+    val mood: Int,
+    val emote: Int,
+    val rssi: Double,
+    val snr: Double,
+    @SerialName("last_seen_age_ms") val lastSeenAgeMs: Long,
+    @SerialName("next_sequence") val nextSequence: Long,
+) {
+    /** Session-bound identity suitable for Compose list keys; not a MeshCore peer ID. */
+    val sessionKey: String get() = "$deviceId:$sessionNonce"
+}
+
+@Serializable
+data class NearbyKitsuPage(
+    val schema: String,
+    val items: List<NearbyKitsu> = emptyList(),
+)
+
+@Serializable
+enum class NeighborInteractionKind {
+    @SerialName("pet") PET,
+}
+
+@Serializable
+data class NeighborInteractionCommand(
+    @SerialName("action_id") val actionId: String,
+    @SerialName("target_device_id") val targetDeviceId: String,
+    @SerialName("target_session_nonce") val targetSessionNonce: Long,
+    val sequence: Long,
+    val kind: NeighborInteractionKind,
+    @SerialName("expires_at_epoch") val expiresAtEpoch: Long,
+)
+
+@Serializable
+data class NeighborInteractionReceipt(
+    val schema: String,
+    @SerialName("action_id") val actionId: String,
+    val accepted: Boolean,
+    val state: String,
+    @SerialName("error_code") val errorCode: String? = null,
+)
+
+object EncounterCodePolicy {
+    const val MAX_PAGE_SIZE = 100
+    const val MAX_VAULT_RECORDS = 256
+    const val MAX_VAULT_PLAINTEXT_BYTES = 256 * 1024
+    const val UINT32_MAX = 4_294_967_295L
+
+    private val deviceId = Regex("^KT[0-9A-F]{4}$")
+    private val opaqueId = Regex("^[\\x21-\\x7E]{1,64}$")
+    private val unlockCode = Regex("^[A-Z0-9-]{8,80}$")
+    private val sourceToken = Regex("^[a-z0-9][a-z0-9_.:-]{0,63}$")
+
+    fun validationError(value: EncounterUnlockCode): String? = when {
+        !deviceId.matches(value.deviceId) -> "invalid_encounter_device_id"
+        !opaqueId.matches(value.codeId) -> "invalid_encounter_code_id"
+        !validCode(value.code) -> "invalid_encounter_code"
+        value.packId?.let { it !in 0L..UINT32_MAX } == true -> "invalid_encounter_pack_id"
+        value.creatureName?.let(::validCreatureName) == false -> "invalid_encounter_creature_name"
+        value.packId == null && value.creatureName == null -> "encounter_identity_required"
+        value.source?.let(sourceToken::matches) == false -> "invalid_encounter_source"
+        value.acquiredAtEpoch !in 0L..UINT32_MAX -> "invalid_encounter_time"
+        else -> null
+    }
+
+    fun validDeviceId(value: String): Boolean = deviceId.matches(value)
+    fun validOpaqueCursor(value: String): Boolean = opaqueId.matches(value)
+    fun validCode(value: String): Boolean {
+        if (!unlockCode.matches(value)) return false
+        val compact = value.filterNot { it == '-' }
+        return compact.length in 8..64
+    }
+
+    private fun validCreatureName(value: String): Boolean {
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        return value.isNotBlank() && bytes.size in 1..48 && value.none(Char::isISOControl)
+    }
+}
+
+object NeighborInteractionPolicy {
+    private val errorToken = Regex("^[a-z][a-z0-9_]{0,63}$")
+
+    fun validationError(command: NeighborInteractionCommand): String? = when {
+        runCatching { UUID.fromString(command.actionId) }.isFailure -> "invalid_neighbor_action_id"
+        !EncounterCodePolicy.validDeviceId(command.targetDeviceId) -> "invalid_neighbor_target"
+        command.targetSessionNonce !in 1L..EncounterCodePolicy.UINT32_MAX ->
+            "invalid_neighbor_session_nonce"
+        command.sequence !in 1L..NearbyKitsuPolicy.UINT16_MAX -> "invalid_neighbor_sequence"
+        command.expiresAtEpoch !in 1L..EncounterCodePolicy.UINT32_MAX -> "invalid_neighbor_expiry"
+        else -> null
+    }
+
+    fun validErrorCode(value: String): Boolean = errorToken.matches(value)
+}
+
+/** Exact bounds exported by the firmware's eight-entry, two-minute nearby roster. */
+object NearbyKitsuPolicy {
+    const val MAX_ITEMS = 8
+    const val MAX_LAST_SEEN_AGE_MS = 120_000L
+    const val UINT16_MAX = 65_535L
+
+    fun validationError(value: NearbyKitsu): String? = when {
+        !EncounterCodePolicy.validDeviceId(value.deviceId) -> "invalid_neighbor_device_id"
+        value.sessionNonce !in 1L..EncounterCodePolicy.UINT32_MAX -> "invalid_neighbor_session_nonce"
+        value.packId !in 1L..EncounterCodePolicy.UINT32_MAX -> "invalid_neighbor_pack_id"
+        value.appearance !in 0..31 -> "invalid_neighbor_appearance"
+        value.evolutionStage !in 0..7 -> "invalid_neighbor_evolution_stage"
+        value.bond !in 0..100 -> "invalid_neighbor_bond"
+        value.mood !in 0..15 -> "invalid_neighbor_mood"
+        value.emote !in 0..15 -> "invalid_neighbor_emote"
+        !value.rssi.isFinite() || !value.snr.isFinite() -> "invalid_neighbor_signal"
+        value.lastSeenAgeMs !in 0L..MAX_LAST_SEEN_AGE_MS -> "stale_neighbor"
+        value.nextSequence !in 1L..UINT16_MAX -> "invalid_neighbor_sequence"
+        else -> null
+    }
+}

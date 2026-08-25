@@ -17,7 +17,7 @@
   <link rel="icon" href="/assets/kitsu-app-icon.png" />
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/styles.css?sha256=9b2dcafd5e9f0fc8f78234c370f10557c95d512e468c4af84a94e98ad01a4252" />
-  <script type="module" src="/site.js?sha256=2c7959831321fb136f8aa560a702826e6b3ee4cec245051578b893b798925a9a"></script>
+  <script type="module" src="/site.js?sha256=db7ec9bec9311974b02c1ea057ea908cb39803c19aadf4df638841c662c8b958"></script>
   <title>K32 Kitsu - local-first radio companion</title>
 </head>
 <body>
@@ -29,7 +29,7 @@
       <span><strong>K32</strong><small>Kitsu</small></span>
     </a>
     <nav class="primary-nav" aria-label="Primary navigation">
-      <a href="#companion">Companion</a><a href="#connect">Connect</a><a href="#start">Start</a><a href="https://docs.k32.run">Manual</a>
+      <a href="#companion">Companion</a><a href="#connect">Connect</a><a href="#start">Start</a><a href="/demo/">Demo</a><a href="/unlock/">Unlock</a><a href="https://docs.k32.run">Manual</a>
     </nav>
     <div class="header-actions">
       <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme" aria-pressed="false">
@@ -49,7 +49,7 @@
         <p class="lede">Kitsu gives a small LoRa board a face, memory, personality, games, and messages. It lives on the device; the Android app talks to it directly over authenticated Bluetooth and does not need an account, gateway, or Internet connection.</p>
         <div class="hero-actions">
           <a class="button primary-button" href="#download">Download Android <span aria-hidden="true">→</span></a>
-          <a class="button secondary-button" href="https://docs.k32.run/getting-started/">Read the manual <span aria-hidden="true">↗</span></a>
+          <a class="button secondary-button" href="/demo/">Try the demo <span aria-hidden="true">→</span></a>
         </div>
         <ul class="hero-facts" aria-label="Kitsu at a glance">
           <li><strong>Lives on the radio</strong><span>Care and memory continue without a phone.</span></li>
@@ -98,7 +98,7 @@
     </section>
 
     <section class="download-section" id="download">
-      <div class="download-copy"><p class="eyebrow">Verified Android release</p><h2>Install the signed Android app.</h2><p>The release link appears only after the detached manifest, package identity, version, and signing-certificate digest pass local browser verification.</p><p class="release-contract">Kitsu Android 2.1.6 · version code 20 · Android 8.0 and newer</p><p><strong>Changing app tracks is a clean install.</strong> If you are moving from <code>app.kitsu.mobile</code>, a testing preview, or between direct-download and Play signing tracks, connect first and use <strong>Forget authorization</strong>. Then uninstall the old app, install the chosen track, and pair again. Direct and Play builds cannot update one another.</p></div>
+      <div class="download-copy"><p class="eyebrow">Verified Android release</p><h2>Install the signed Android app.</h2><p>The release link appears only after the detached manifest, package identity, version, and signing-certificate digest pass local browser verification.</p><p class="release-contract">Kitsu Android 2.2.0 · version code 21 · Android 8.0 and newer</p><p><strong>Changing app tracks is a clean install.</strong> If you are moving from <code>app.kitsu.mobile</code>, a testing preview, or between direct-download and Play signing tracks, connect first and use <strong>Forget authorization</strong>. Then uninstall the old app, install the chosen track, and pair again. Direct and Play builds cannot update one another.</p></div>
       <div class="download-cards"><div class="download-module"><div class="download-state" role="status" aria-live="polite"><span class="status" id="android-status">Checking signed Android release</span><h3 id="android-title">Kitsu Android</h3><p id="android-detail">Verifying the signed release manifest and local-first eligibility.</p></div><a id="android-download" class="download-action disabled" aria-disabled="true">Verifying release…</a><small id="android-digest">The link is enabled only after an eligible local-first manifest passes verification.</small><noscript><p class="noscript">JavaScript is required to verify the release signature before download.</p></noscript></div></div>
     </section>
 
@@ -118,7 +118,7 @@
 
   <footer>
     <div class="footer-brand"><strong>K32 Kitsu</strong><span>Local-first portrait radio companion</span></div>
-    <nav aria-label="Product links"><a href="https://docs.k32.run">Manual</a><a href="https://flash.k32.run">Firmware</a><a href="#download">Android</a><a href="https://github.com/pattalium/Kitsu">GitHub</a></nav>
+    <nav aria-label="Product links"><a href="/demo/">Demo</a><a href="/unlock/">Unlock</a><a href="https://docs.k32.run">Manual</a><a href="https://flash.k32.run">Firmware</a><a href="#download">Android</a><a href="https://github.com/pattalium/Kitsu">GitHub</a></nav>
     <nav aria-label="Policies and contact"><a href="/privacy/">Privacy</a><a href="/terms/">Terms</a><a href="/security/">Security</a><a href="/contact/">Contact</a></nav>
   </footer>
 </body>

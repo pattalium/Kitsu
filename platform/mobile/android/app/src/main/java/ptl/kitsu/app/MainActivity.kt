@@ -1,6 +1,8 @@
 package ptl.kitsu.app
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ActivityNotFoundException
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
@@ -10,6 +12,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PersistableBundle
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -28,17 +31,37 @@ import ptl.kitsu.app.ui.KitsuThemePreferences
 import ptl.kitsu.app.ui.ModerationReport
 import ptl.kitsu.app.ui.ModerationReportCodec
 import ptl.kitsu.app.update.locksCompanionControls
+import ptl.kitsu.app.model.EncounterCodePolicy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 
 internal const val KITSU_SUPPORT_URL = "https://ko-fi.com/pattalium"
+internal const val KITSU_UNLOCK_URL = "https://k32.run/unlock/"
+private const val SENSITIVE_CLIPBOARD_EXTRA = "android.content.extra.IS_SENSITIVE"
 
 internal fun kitsuSupportIntent(): Intent = Intent(
     Intent.ACTION_VIEW,
     Uri.parse(KITSU_SUPPORT_URL),
 ).addCategory(Intent.CATEGORY_BROWSABLE)
+
+internal fun kitsuUnlockIntent(code: String): Intent {
+    require(EncounterCodePolicy.validCode(code)) { "invalid_encounter_code" }
+    val uri = Uri.parse(KITSU_UNLOCK_URL).buildUpon()
+        .encodedFragment("code=${Uri.encode(code)}")
+        .build()
+    return Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
+}
+
+internal fun kitsuSensitiveUnlockClip(code: String): ClipData {
+    require(EncounterCodePolicy.validCode(code)) { "invalid_encounter_code" }
+    return ClipData.newPlainText("Kitsu unlock code", code).also { clip ->
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(SENSITIVE_CLIPBOARD_EXTRA, true)
+        }
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
@@ -162,6 +185,26 @@ class MainActivity : ComponentActivity() {
                         viewModel.showNotice("No web browser is available.")
                     } catch (_: SecurityException) {
                         viewModel.showNotice("The support page could not be opened safely.")
+                    }
+                },
+                onOpenUnlockPage = { code ->
+                    try {
+                        startActivity(kitsuUnlockIntent(code))
+                    } catch (_: ActivityNotFoundException) {
+                        viewModel.showNotice("No web browser is available.")
+                    } catch (_: IllegalArgumentException) {
+                        viewModel.showNotice("This saved unlock code is invalid.")
+                    } catch (_: SecurityException) {
+                        viewModel.showNotice("The unlock page could not be opened safely.")
+                    }
+                },
+                onCopyUnlockCode = { code ->
+                    try {
+                        getSystemService(ClipboardManager::class.java)
+                            ?.setPrimaryClip(kitsuSensitiveUnlockClip(code))
+                        viewModel.showNotice("Unlock code copied.")
+                    } catch (_: IllegalArgumentException) {
+                        viewModel.showNotice("This saved unlock code is invalid.")
                     }
                 },
                 onExportModerationReport = { report ->

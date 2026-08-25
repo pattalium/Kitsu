@@ -7,11 +7,20 @@ import androidx.lifecycle.viewModelScope
 import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.AdvertiseScope
+import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.model.MessageRoute
+import ptl.kitsu.app.model.NearbyKitsu
+import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.pairing.PairingException
 import ptl.kitsu.app.repository.OwnerRepository
 import ptl.kitsu.app.repository.OwnerState
+import ptl.kitsu.app.security.AndroidKeystoreEncounterCodeVault
+import ptl.kitsu.app.security.EncounterCodeVault
+import ptl.kitsu.app.security.EncounterCodeVaultException
+import ptl.kitsu.app.security.SafeLog
 import ptl.kitsu.app.transport.TransportException
+import ptl.kitsu.app.transport.FirmwareEncounterApiPolicy
 import ptl.kitsu.app.update.FirmwareInstallProgress
 import ptl.kitsu.app.update.FirmwareInstallStage
 import ptl.kitsu.app.update.FirmwarePackageException
@@ -39,15 +48,27 @@ data class FirmwareUpdateUiState(
     val updateId: String? = null,
 )
 
+data class EncounterUnlockUiState(
+    val records: List<EncounterUnlockCode> = emptyList(),
+    val loading: Boolean = true,
+    val syncing: Boolean = false,
+    val errorCode: String? = null,
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val services = (application as KitsuApplication).services
     private val repository: OwnerRepository = services.ownerRepository
+    private val encounterVault: EncounterCodeVault = AndroidKeystoreEncounterCodeVault(application)
 
     val owner: StateFlow<OwnerState> = repository.state
     private val mutableNotice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = mutableNotice.asStateFlow()
     private val mutableFirmware = MutableStateFlow(FirmwareUpdateUiState())
     val firmware: StateFlow<FirmwareUpdateUiState> = mutableFirmware.asStateFlow()
+    private val mutableEncounterUnlocks = MutableStateFlow(EncounterUnlockUiState())
+    val encounterUnlocks: StateFlow<EncounterUnlockUiState> = mutableEncounterUnlocks.asStateFlow()
+    private val mutableNeighborActionsInFlight = MutableStateFlow<Set<String>>(emptySet())
+    val neighborActionsInFlight: StateFlow<Set<String>> = mutableNeighborActionsInFlight.asStateFlow()
     private var importedPackage: VerifiedFirmwarePackage? = null
     private var firmwareJob: Job? = null
     private var advertiseJob: Job? = null
@@ -57,10 +78,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val messageSubmissionInFlight: StateFlow<Boolean> = messageSubmission.inFlight
 
     init {
-        // Exactly one bounded cold-start BLE attempt. A durable Disconnect suppresses it.
+        // The vault is independent from selected-device state and is hydrated before BLE sync.
         viewModelScope.launch {
+            loadEncounterVault()
+            // Exactly one bounded cold-start BLE attempt. A durable Disconnect suppresses it.
             delay(100)
-            repository.connectAndRefresh(userInitiated = false)
+            val connected = runCatching { repository.connectAndRefresh(userInitiated = false) }
+            if (connected.isSuccess && owner.value.connection.connected) {
+                syncEncounterCodesInternal(silent = true)
+            }
         }
     }
 
@@ -71,7 +97,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            runCatching { repository.connectDevice(deviceAddress) }.report("connect_failed")
+            val result = runCatching { repository.connectDevice(deviceAddress) }
+            result.report("connect_failed")
+            if (result.isSuccess) syncEncounterCodesInternal(silent = true)
         }
     }
 
@@ -230,6 +258,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { repository.configureMesh(enabled) }.report("mesh_configuration_failed")
     }
 
+    fun syncEncounterCodes() = viewModelScope.launch {
+        if (rejectWhileFirmwareBusy()) return@launch
+        syncEncounterCodesInternal(silent = false)
+    }
+
+    /** Explicit deletion only. Device selection, Disconnect, and Forget never clear this vault. */
+    fun deleteEncounterCodesForDevice(deviceId: String) = viewModelScope.launch {
+        if (rejectWhileFirmwareBusy()) return@launch
+        val result = runCatching {
+            withContext(Dispatchers.IO) { encounterVault.deleteForDevice(deviceId) }
+        }
+        result.onSuccess { records ->
+            mutableEncounterUnlocks.value = mutableEncounterUnlocks.value.copy(
+                records = records,
+                loading = false,
+                errorCode = null,
+            )
+            mutableNotice.value = "Saved unlocks for $deviceId were deleted from this phone."
+        }.onFailure { failure ->
+            SafeLog.warn("encounter_vault", failure.codeOr("encounter_vault_delete_failed"), failure)
+            mutableNotice.value = failure.codeOr("encounter_vault_delete_failed")
+        }
+    }
+
+    /** Targeted neighbor care never passes through local companion actions. */
+    fun petNeighbor(neighbor: NearbyKitsu) {
+        if (rejectWhileFirmwareBusy()) return
+        val live = owner.value.nearbyKitsu.firstOrNull {
+            it.deviceId == neighbor.deviceId &&
+                it.sessionNonce == neighbor.sessionNonce &&
+                it.nextSequence == neighbor.nextSequence
+        }
+        if (live == null || !owner.value.connection.connected) {
+            mutableNotice.value = "That Kitsu is no longer nearby. Listen again to refresh nearby Kitsu."
+            return
+        }
+        if (live.sessionKey in mutableNeighborActionsInFlight.value) return
+        mutableNeighborActionsInFlight.value += live.sessionKey
+        viewModelScope.launch {
+            val command = NeighborInteractionCommand(
+                actionId = requestId(),
+                targetDeviceId = live.deviceId,
+                targetSessionNonce = live.sessionNonce,
+                sequence = live.nextSequence,
+                kind = NeighborInteractionKind.PET,
+                expiresAtEpoch = java.time.Instant.now().epochSecond + 30L,
+            )
+            try {
+                val result = runCatching { repository.interactWithNeighbor(command) }
+                if (result.isSuccess) mutableNotice.value = "Pet is queued for the nearby Kitsu."
+                result.report("neighbor_interaction_failed")
+            } finally {
+                mutableNeighborActionsInFlight.value -= live.sessionKey
+            }
+        }
+    }
+
     fun pairController(label: String) {
         if (rejectWhileFirmwareBusy()) return
         viewModelScope.launch {
@@ -382,6 +467,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         result.report("action_failed")
     }
 
+    private suspend fun loadEncounterVault() {
+        val result = runCatching { withContext(Dispatchers.IO) { encounterVault.read() } }
+        result.onSuccess { records ->
+            mutableEncounterUnlocks.value = EncounterUnlockUiState(records = records, loading = false)
+        }.onFailure { failure ->
+            SafeLog.warn("encounter_vault", failure.codeOr("encounter_vault_read_failed"), failure)
+            mutableEncounterUnlocks.value = EncounterUnlockUiState(
+                loading = false,
+                errorCode = failure.codeOr("encounter_vault_read_failed"),
+            )
+        }
+    }
+
+    private suspend fun syncEncounterCodesInternal(silent: Boolean) {
+        if (mutableEncounterUnlocks.value.syncing) return
+        if (!owner.value.connection.connected) {
+            if (!silent) mutableNotice.value = "Connect your Kitsu to sync saved unlocks."
+            return
+        }
+        if (!FirmwareEncounterApiPolicy.supportsV1(owner.value.status?.firmwareVersion)) {
+            if (!silent) mutableNotice.value = "Update Kitsu firmware to sync encounter unlocks."
+            return
+        }
+        mutableEncounterUnlocks.value = mutableEncounterUnlocks.value.copy(
+            syncing = true,
+            errorCode = null,
+        )
+        val result = runCatching {
+            val fromKitsu = repository.loadEncounterCodes()
+            withContext(Dispatchers.IO) { encounterVault.upsert(fromKitsu) }
+        }
+        result.onSuccess { records ->
+            mutableEncounterUnlocks.value = EncounterUnlockUiState(records = records, loading = false)
+            if (!silent) mutableNotice.value = "Saved unlocks are up to date."
+        }.onFailure { failure ->
+            val code = failure.codeOr("encounter_codes_sync_failed")
+            if (code != "firmware_operation_unavailable") {
+                SafeLog.warn("encounter_sync", code, failure)
+            }
+            mutableEncounterUnlocks.value = mutableEncounterUnlocks.value.copy(
+                loading = false,
+                syncing = false,
+                errorCode = code,
+            )
+            if (!silent) {
+                mutableNotice.value = if (code == "firmware_operation_unavailable") {
+                    "This firmware does not expose encounter unlocks yet."
+                } else code
+            }
+        }
+    }
+
     private fun requestId(): String = UUID.randomUUID().toString()
 
     private fun rejectWhileFirmwareBusy(): Boolean {
@@ -396,7 +533,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun Throwable.codeOr(fallback: String): String =
         (this as? TransportException)?.code ?: (this as? PairingException)?.code ?:
-            (this as? FirmwarePackageException)?.code ?: fallback
+            (this as? FirmwarePackageException)?.code ?: (this as? EncounterCodeVaultException)?.code ?:
+            fallback
 
     private companion object {
         // Mark-read may wait behind a full mesh snapshot before its own signed

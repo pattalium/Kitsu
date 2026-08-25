@@ -18,6 +18,7 @@ certificate runtime.
 - [Complete user manual](https://docs.k32.run)
 - [Signed USB/Web Serial bootstrap and recovery](https://flash.k32.run)
 - [Public release-surface status](https://status.k32.run)
+- [Encounter and nearby-Kitsu enhancements](docs/enhancements.md)
 
 The product page exposes only the currently accepted, signed, local-first
 Android release. The firmware installer remains fail-closed until the matching
