@@ -17,6 +17,7 @@ tools/demo_wasm/full/include/wasm_platform_decl.h
 tools/demo_wasm/full/src/firmware_entry.cpp
 src/companion_brain.cpp
 src/companion_pack.cpp
+src/companion_replacement_intent.cpp
 src/encounter_protocol.cpp
 src/kitsu_advert_repeat_tracker.cpp
 src/kitsu_ble_action.cpp

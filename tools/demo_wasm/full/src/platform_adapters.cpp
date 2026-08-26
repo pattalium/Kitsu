@@ -352,6 +352,16 @@ bool Esp32LegacyConnectivityRetirementPlatform::eraseEntirePartition() {
   return true;
 }
 
+bool Esp32LegacyConnectivityRetirementPlatform::
+    eraseAfterReplacementPrepared() {
+  return true;
+}
+
+bool Esp32LegacyConnectivityRetirementPlatform::
+    eraseAfterReplacementTransaction() {
+  return true;
+}
+
 bool Esp32LegacyConnectivityRetirementPlatform::clearLegacyReplayNamespace(
     bool& changed) {
   changed = false;

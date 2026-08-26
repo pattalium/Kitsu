@@ -5,6 +5,15 @@ export const PACK_SLOT = Object.freeze({
   bytes: 0x140000,
 });
 
+export const REPLACEMENT_TRANSACTION = Object.freeze({
+  // Separate sectors preserve PREPARED if programming COMMITTED is
+  // interrupted. Fresh installs clear kitsu_conn before writing PREPARED;
+  // exact-target retries retain both sectors and clear only the signed suffix
+  // beginning at 0x7b2000.
+  prepared: Object.freeze({ offset: 0x7b0000, bytes: 0x1000 }),
+  committed: Object.freeze({ offset: 0x7b1000, bytes: 0x1000 }),
+});
+
 export const UNLOCKED_PACK_ID = "unlocked";
 
 const K868_FORMAT = Object.freeze({
@@ -25,6 +34,9 @@ const K868_FORMAT = Object.freeze({
 });
 
 const K868_MAGIC = Object.freeze([0x4b, 0x38, 0x36, 0x38, 0x50, 0x4b, 0x31, 0x00]);
+const REPLACEMENT_INTENT_MAGIC = Object.freeze([0x4b, 0x38, 0x36, 0x38, 0x52, 0x50, 0x31, 0x00]);
+const REPLACEMENT_INTENT_SCHEMA = 1;
+const REPLACEMENT_INTENT_RECORD_BYTES = 40;
 
 const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
   let crc = value;
@@ -38,26 +50,41 @@ export const PACK_CATALOG = Object.freeze({
   fox: Object.freeze({
     id: "fox",
     name: "Fox",
-    filename: "Kitsu868-v0.16.5-fox.k868",
+    filename: "Kitsu868-v0.17.2-fox.k868",
     assetUrl: new URL("../../../assets/packs/fox.k868", import.meta.url).href,
     bytes: 24976,
-    sha256: "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
+    sha256: "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d",
+    displayName: "FOX",
+    packId: 0x6c393e21,
+    revision: 2,
+    payloadCrc32: 0x20a1555a,
+    headerCrc32: 0xe7e5a0fe,
   }),
   cat: Object.freeze({
     id: "cat",
     name: "Cat",
-    filename: "Kitsu868-v0.16.5-cat.k868",
+    filename: "Kitsu868-v0.17.2-cat.k868",
     assetUrl: new URL("../../../assets/packs/cat.k868", import.meta.url).href,
     bytes: 24976,
-    sha256: "8d19d6b8bc584d9aaee5a6867504fd23c1862c907bbeb1affd9611e35bf2a6d7",
+    sha256: "49b0758ab2fdba77bff543ac3235110190896d5ce7b3456770bb44f59c09f985",
+    displayName: "CAT",
+    packId: 0xfdc79d6f,
+    revision: 2,
+    payloadCrc32: 0x757ad7f7,
+    headerCrc32: 0xd9c023e2,
   }),
   dog: Object.freeze({
     id: "dog",
     name: "Dog",
-    filename: "Kitsu868-v0.16.5-dog.k868",
+    filename: "Kitsu868-v0.17.2-dog.k868",
     assetUrl: new URL("../../../assets/packs/dog.k868", import.meta.url).href,
     bytes: 24976,
-    sha256: "8652aad28816d52fca334766ebefb5c38aec1b09dcc72783414998d17a46e261",
+    sha256: "47876efaa0f7fe4831906c94e9a3b2d5a74a267f1a6f981593525bff5476c051",
+    displayName: "DOG",
+    packId: 0xe2b5e7ba,
+    revision: 2,
+    payloadCrc32: 0xd1ceb0d6,
+    headerCrc32: 0x6001742a,
   }),
 });
 
@@ -96,7 +123,7 @@ export function validateUnlockedPackBytes(bytes) {
     fail(`unlocked companion pack is shorter than its ${K868_FORMAT.headerBytes}-byte header`);
   }
   if (bytes.byteLength > PACK_SLOT.bytes) {
-    fail(`unlocked companion pack exceeds the ${PACK_SLOT.bytes.toLocaleString()}-byte companion slot`);
+    fail(`unlocked companion pack exceeds the dedicated companion slot`);
   }
   if (K868_MAGIC.some((value, index) => bytes[index] !== value)) {
     fail("unlocked companion pack has invalid K868PK1 magic");
@@ -122,8 +149,8 @@ export function validateUnlockedPackBytes(bytes) {
   if (totalBytes !== bytes.byteLength) {
     fail(`companion pack length is ${bytes.byteLength} bytes, header declares ${totalBytes}`);
   }
-  if (PACK_SLOT.offset + totalBytes > PACK_SLOT.offset + PACK_SLOT.bytes) {
-    fail("companion pack write would cross the dedicated slot boundary");
+  if (totalBytes > PACK_SLOT.bytes) {
+    fail("companion pack write exceeds the dedicated companion slot");
   }
   if (packId === 0) fail("companion pack ID must be nonzero");
   if (revision === 0) fail("companion pack revision must be nonzero");
@@ -236,7 +263,7 @@ export async function loadUnlockedPack(file) {
     fail("unlocked companion pack file size is invalid");
   }
   if (file.size > PACK_SLOT.bytes) {
-    fail(`unlocked companion pack exceeds the ${PACK_SLOT.bytes.toLocaleString()}-byte companion slot`);
+    fail("unlocked companion pack exceeds the dedicated companion slot");
   }
   const fileBuffer = await file.arrayBuffer();
   if (!(fileBuffer instanceof ArrayBuffer)) fail("unlocked companion pack could not be read safely");
@@ -285,6 +312,262 @@ export async function verifyPackBytes(definition, bytes) {
   if (await sha256Hex(bytes) !== definition.sha256) {
     fail(`${definition.name} companion pack SHA-256 does not match the installed catalog`);
   }
+  const metadata = validateUnlockedPackBytes(bytes);
+  if (
+    metadata.displayName !== definition.displayName
+    || metadata.packId !== definition.packId
+    || metadata.revision !== definition.revision
+    || metadata.payloadCrc32 !== definition.payloadCrc32
+    || metadata.headerCrc32 !== definition.headerCrc32
+  ) {
+    fail(`${definition.name} companion pack structure does not match the installed catalog`);
+  }
+}
+
+export async function inspectInstalledPack(loader) {
+  if (!loader || typeof loader.readFlash !== "function") {
+    fail("companion-pack inspection requires an active ROM loader");
+  }
+  const header = await loader.readFlash(PACK_SLOT.offset, K868_FORMAT.headerBytes);
+  if (!(header instanceof Uint8Array) || header.byteLength !== K868_FORMAT.headerBytes) {
+    fail("installed companion header readback has an unexpected length");
+  }
+  if (header.every((value) => value === 0xff)) {
+    return Object.freeze({ status: "empty", packId: 0, name: "No installed pet" });
+  }
+  if (K868_MAGIC.some((value, index) => header[index] !== value)) {
+    fail("installed companion slot does not contain a valid K868PK1 header");
+  }
+  const totalBytes = new DataView(
+    header.buffer,
+    header.byteOffset,
+    header.byteLength,
+  ).getUint32(0x0c, true);
+  if (totalBytes < K868_FORMAT.headerBytes || totalBytes > PACK_SLOT.bytes) {
+    fail("installed companion declares an unsafe length");
+  }
+  const bytes = await loader.readFlash(PACK_SLOT.offset, totalBytes);
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== totalBytes) {
+    fail("installed companion readback has an unexpected length");
+  }
+  const metadata = validateUnlockedPackBytes(bytes);
+  return Object.freeze({
+    status: "valid",
+    name: metadata.displayName,
+    packId: metadata.packId,
+    revision: metadata.revision,
+    bytes: metadata.totalBytes,
+    payloadCrc32: metadata.payloadCrc32,
+    headerCrc32: metadata.headerCrc32,
+    sha256: await sha256Hex(bytes),
+  });
+}
+
+function replacementIntentMetadata(bytes, phase) {
+  if (!(bytes instanceof Uint8Array)
+    || bytes.byteLength !== REPLACEMENT_TRANSACTION.prepared.bytes) {
+    fail(`${phase} replacement sector readback has an unexpected length`);
+  }
+  if (bytes.every((value) => value === 0xff)) return null;
+  if (bytes.subarray(REPLACEMENT_INTENT_RECORD_BYTES).some((value) => value !== 0xff)) {
+    fail(`${phase} replacement sector contains data outside its intent record`);
+  }
+  if (REPLACEMENT_INTENT_MAGIC.some((value, index) => bytes[index] !== value)) {
+    fail(`${phase} replacement intent has invalid K868RP1 magic`);
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const schema = view.getUint16(0x08, true);
+  const recordBytes = view.getUint16(0x0a, true);
+  const sourcePackId = view.getUint32(0x0c, true);
+  const targetPackId = view.getUint32(0x10, true);
+  const targetRevision = view.getUint32(0x14, true);
+  const targetBytes = view.getUint32(0x18, true);
+  const targetPayloadCrc32 = view.getUint32(0x1c, true);
+  const targetHeaderCrc32 = view.getUint32(0x20, true);
+  const recordCrc32 = view.getUint32(0x24, true);
+  if (schema !== REPLACEMENT_INTENT_SCHEMA) {
+    fail(`${phase} replacement intent has unsupported schema ${schema}`);
+  }
+  if (recordBytes !== REPLACEMENT_INTENT_RECORD_BYTES) {
+    fail(`${phase} replacement intent has invalid record size ${recordBytes}`);
+  }
+  if (sourcePackId === 0 || targetPackId === 0 || sourcePackId === targetPackId) {
+    fail(`${phase} replacement intent has invalid source or target identity`);
+  }
+  if (targetRevision === 0 || targetBytes === 0 || targetBytes > PACK_SLOT.bytes) {
+    fail(`${phase} replacement intent has invalid target bounds`);
+  }
+
+  const crcInput = bytes.slice(8, REPLACEMENT_INTENT_RECORD_BYTES);
+  new DataView(crcInput.buffer).setUint32(0x24 - 8, 0, true);
+  const calculatedRecordCrc32 = crc32(crcInput);
+  if (recordCrc32 !== calculatedRecordCrc32) {
+    fail(
+      `${phase} replacement intent CRC mismatch: expected ${hexadecimal32(recordCrc32)}, `
+      + `calculated ${hexadecimal32(calculatedRecordCrc32)}`,
+    );
+  }
+
+  return Object.freeze({
+    sourcePackId,
+    targetPackId,
+    targetRevision,
+    targetBytes,
+    targetPayloadCrc32,
+    targetHeaderCrc32,
+    recordCrc32,
+  });
+}
+
+function intentRecordsMatch(left, right) {
+  for (let index = 0; index < REPLACEMENT_INTENT_RECORD_BYTES; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+export async function inspectReplacementTransaction(loader) {
+  if (!loader || typeof loader.readFlash !== "function") {
+    fail("replacement-transaction inspection requires an active ROM loader");
+  }
+  // Keep these reads ordered: Web Serial transports are not safe for
+  // concurrent ROM-loader commands.
+  const preparedBytes = await loader.readFlash(
+    REPLACEMENT_TRANSACTION.prepared.offset,
+    REPLACEMENT_TRANSACTION.prepared.bytes,
+  );
+  const committedBytes = await loader.readFlash(
+    REPLACEMENT_TRANSACTION.committed.offset,
+    REPLACEMENT_TRANSACTION.committed.bytes,
+  );
+  const prepared = replacementIntentMetadata(preparedBytes, "PREPARED");
+  if (!prepared) {
+    const committed = replacementIntentMetadata(committedBytes, "COMMITTED");
+    if (!committed) return Object.freeze({ status: "empty" });
+    fail("replacement transaction has COMMITTED without PREPARED");
+  }
+
+  // PREPARED is the durable source-identity anchor. A torn, malformed, or
+  // mismatched COMMITTED sector never authorizes firmware, but it also must
+  // not destroy the ability to retry the exact PREPARED target.
+  let committed;
+  let committedError;
+  try {
+    committed = replacementIntentMetadata(committedBytes, "COMMITTED");
+  } catch (error) {
+    committedError = error instanceof Error ? error.message : String(error);
+  }
+  const committedMatches = committed
+    && intentRecordsMatch(preparedBytes, committedBytes);
+  if (committed && !committedMatches) {
+    committedError = "replacement transaction PREPARED and COMMITTED records differ";
+  }
+
+  return Object.freeze({
+    status: committedMatches ? "committed" : "prepared",
+    committedState: committedMatches ? "valid" : committedError ? "invalid" : "empty",
+    committedError: committedError ?? null,
+    ...prepared,
+    preparedBytes: preparedBytes.slice(),
+    committedBytes: committedMatches ? committedBytes.slice() : null,
+  });
+}
+
+export function replacementTransactionTargets(transaction, pack) {
+  if (!transaction || !["prepared", "committed"].includes(transaction.status)) return false;
+  if (!pack?.bytes) return false;
+  const target = validateUnlockedPackBytes(pack.bytes);
+  return transaction.targetPackId === target.packId
+    && transaction.targetRevision === target.revision
+    && transaction.targetBytes === target.totalBytes
+    && transaction.targetPayloadCrc32 === target.payloadCrc32
+    && transaction.targetHeaderCrc32 === target.headerCrc32;
+}
+
+export function companionPackTransition(current, targetPack, transaction) {
+  const pending = transaction?.status === "prepared"
+    || transaction?.status === "committed";
+  if (!targetPack) {
+    if (pending
+      && !(current?.status === "valid" && current.packId === transaction.sourcePackId)) {
+      fail(
+        "Keep current pet cannot erase PREPARED unless the freshly inspected physical pack matches its saved source ID",
+      );
+    }
+    return Object.freeze({
+      destructive: false,
+      repair: false,
+      retry: false,
+      sourcePackId: null,
+    });
+  }
+  if (pending) {
+    if (!replacementTransactionTargets(transaction, targetPack)) {
+      fail(
+        `pending replacement is bound to target ID ${hexadecimal32(transaction.targetPackId)}; choose that exact pack to retry`,
+      );
+    }
+    return Object.freeze({
+      destructive: true,
+      repair: false,
+      retry: true,
+      sourcePackId: transaction.sourcePackId,
+    });
+  }
+  if (transaction?.status === "invalid") {
+    fail("a malformed replacement transaction blocks all companion writes");
+  }
+  if (current?.status === "empty") {
+    return Object.freeze({
+      destructive: false,
+      repair: false,
+      retry: false,
+      sourcePackId: 0,
+    });
+  }
+  if (current?.status === "invalid" && transaction?.status === "empty") {
+    return Object.freeze({
+      destructive: false,
+      repair: true,
+      retry: false,
+      sourcePackId: null,
+    });
+  }
+  if (current?.status !== "valid") {
+    fail("a new pet cannot be installed until the current companion slot has been validated");
+  }
+  return Object.freeze({
+    destructive: current.packId !== targetPack.definition.packId,
+    repair: false,
+    retry: false,
+    sourcePackId: current.packId,
+  });
+}
+
+export function buildReplacementIntent(sourcePackId, pack) {
+  if (!Number.isInteger(sourcePackId) || sourcePackId <= 0 || sourcePackId > 0xffffffff) {
+    fail("replacement intent requires the validated current companion ID");
+  }
+  if (!pack?.bytes) fail("replacement intent requires a validated target pack");
+  const target = validateUnlockedPackBytes(pack.bytes);
+  if (sourcePackId === target.packId) {
+    fail("same-species pack updates must not request a destructive replacement");
+  }
+  const bytes = new Uint8Array(REPLACEMENT_TRANSACTION.prepared.bytes).fill(0xff);
+  bytes.set(REPLACEMENT_INTENT_MAGIC, 0);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(0x08, REPLACEMENT_INTENT_SCHEMA, true);
+  view.setUint16(0x0a, REPLACEMENT_INTENT_RECORD_BYTES, true);
+  view.setUint32(0x0c, sourcePackId, true);
+  view.setUint32(0x10, target.packId, true);
+  view.setUint32(0x14, target.revision, true);
+  view.setUint32(0x18, target.totalBytes, true);
+  view.setUint32(0x1c, target.payloadCrc32, true);
+  view.setUint32(0x20, target.headerCrc32, true);
+  view.setUint32(0x24, 0, true);
+  view.setUint32(0x24, crc32(bytes.subarray(8, REPLACEMENT_INTENT_RECORD_BYTES)), true);
+  return bytes;
 }
 
 export async function fetchOfficialPack(packId) {

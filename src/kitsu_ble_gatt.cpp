@@ -8,6 +8,10 @@
 #include <new>
 #include <string.h>
 
+// NimBLE-Arduino 2.5.1 exposes this pinned host function from ble_gatts.c but
+// does not surface its declaration through the public C++ wrapper.
+extern "C" void ble_gatts_set_clt_cfg_perm_flags(uint8_t flags);
+
 namespace kitsu868 {
 namespace connectivity {
 namespace {
@@ -338,6 +342,13 @@ bool KitsuBleGattLink::begin(const char* deviceName,
   // Reject legacy SMP instead of negotiating down. Reflashability does not
   // weaken the authenticated Bluetooth owner channel.
   ble_hs_cfg.sm_sc_only = 1U;
+  // The automatically generated CCCD is otherwise readable/writable before
+  // encryption. Securing it makes Android's successful descriptor callback a
+  // concrete link-security boundary instead of a pre-encryption GATT-ready race.
+  ble_gatts_set_clt_cfg_perm_flags(
+      BLE_ATT_F_READ | BLE_ATT_F_WRITE | BLE_ATT_F_READ_ENC |
+      BLE_ATT_F_READ_AUTHEN | BLE_ATT_F_WRITE_ENC |
+      BLE_ATT_F_WRITE_AUTHEN);
 
   implementation->server = NimBLEDevice::createServer();
   if (!implementation->server) {
@@ -581,6 +592,30 @@ bool KitsuBleGattLink::setLocalControllerRecoveryLocked(bool locked) {
   return true;
 }
 
+bool KitsuBleGattLink::clearAllBondsForLocalRecovery(
+    BleBondClearStatus& status) {
+  status = BleBondClearStatus{};
+  if (!impl_ || !impl_->begun) return false;
+  bool allowed = false;
+  portENTER_CRITICAL(&impl_->mux);
+  allowed = impl_->localControllerRecoveryLocked && !impl_->connected &&
+      !impl_->numericPending && !impl_->requestInFlight && !impl_->txQueued;
+  portEXIT_CRITICAL(&impl_->mux);
+  if (!allowed) return false;
+
+  status.attempted = true;
+  status.bondsBefore = NimBLEDevice::getNumBonds();
+  status.deleteSucceeded = NimBLEDevice::deleteAllBonds();
+  status.bondsAfter = NimBLEDevice::getNumBonds();
+  status.verifiedEmpty = status.deleteSucceeded && status.bondsAfter == 0;
+  return status.verifiedEmpty;
+}
+
+int KitsuBleGattLink::bondCount() const {
+  if (!impl_ || !impl_->begun) return -1;
+  return NimBLEDevice::getNumBonds();
+}
+
 bool KitsuBleGattLink::confirmNumericComparison(bool accept) {
   if (!impl_ || !impl_->server) return false;
   uint16_t handle = kNoConnection;
@@ -697,6 +732,11 @@ bool KitsuBleGattLink::confirmNumericComparison(bool) { return false; }
 bool KitsuBleGattLink::setLocalControllerRecoveryLocked(bool) {
   return false;
 }
+bool KitsuBleGattLink::clearAllBondsForLocalRecovery(BleBondClearStatus& status) {
+  status = BleBondClearStatus{};
+  return false;
+}
+int KitsuBleGattLink::bondCount() const { return -1; }
 bool KitsuBleGattLink::setApplicationAuthenticated(bool) { return false; }
 bool KitsuBleGattLink::queueFrame(const uint8_t*, size_t) { return false; }
 void KitsuBleGattLink::disconnect() {}

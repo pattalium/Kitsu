@@ -12,7 +12,7 @@ use crate::{
     client_ip::trusted_client_ip,
     crypto::{contact_source_digest, sha256},
     error::ApiError,
-    pet_packs::{catalog_entry, crc32},
+    pet_packs::{crc32, downloadable_catalog_entry},
     state::AppState,
 };
 
@@ -59,7 +59,7 @@ pub async fn redeem(
     let verification = &request.verification;
     let pack_id = parse_hex_u32(&verification.pack_id).ok_or(ApiError::Forbidden)?;
     let code_id = parse_hex_u32(&verification.code_id).ok_or(ApiError::Forbidden)?;
-    let catalog = catalog_entry(pack_id).ok_or(ApiError::NotFound)?;
+    let catalog = downloadable_catalog_entry(pack_id).ok_or(ApiError::NotFound)?;
     if verification.rarity != catalog.rarity {
         return Err(ApiError::Forbidden);
     }

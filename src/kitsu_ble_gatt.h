@@ -48,6 +48,14 @@ struct BleLinkStatus {
   uint32_t pairingWindowRemainingMs = 0U;
 };
 
+struct BleBondClearStatus {
+  bool attempted = false;
+  bool deleteSucceeded = false;
+  bool verifiedEmpty = false;
+  int bondsBefore = -1;
+  int bondsAfter = -1;
+};
+
 class BleFrameDelegate {
  public:
   virtual ~BleFrameDelegate() = default;
@@ -86,6 +94,12 @@ class KitsuBleGattLink {
   // while the owner is using the physical controller-recovery UI. This lock
   // is RAM-only and does not grant or expose any BLE operation.
   bool setLocalControllerRecoveryLocked(bool locked);
+
+  // Deletes only NimBLE's peer bond records. The caller must hold the local
+  // recovery lock, prove there is no live link, and independently verify that
+  // application controller roots remain byte-for-byte unchanged.
+  bool clearAllBondsForLocalRecovery(BleBondClearStatus& status);
+  int bondCount() const;
 
   // Switches the inbound bound from the 1 KiB pre-auth/handshake maximum to
   // the frozen 16 KiB envelope maximum.  This also drops any partial frame.

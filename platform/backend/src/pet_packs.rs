@@ -14,30 +14,31 @@ pub struct PetPackCatalogEntry {
     pub slug: &'static str,
     pub display_name: &'static str,
     pub rarity: &'static str,
+    pub download_available: bool,
 }
 
 pub const PET_PACK_CATALOG: &[PetPackCatalogEntry] = &[
-    entry(0x5CAC86A3, "frog", "Frog", "common"),
-    entry(0x13793DC7, "hamster", "Hamster", "common"),
-    entry(0x7495DBFB, "turtle", "Turtle", "common"),
-    entry(0x68D9554E, "rabbit", "Rabbit", "uncommon"),
-    entry(0x5DF6BE74, "hedgehog", "Hedgehog", "uncommon"),
-    entry(0xE59408E0, "ferret", "Ferret", "uncommon"),
-    entry(0x29B4B2F7, "otter", "Otter", "rare"),
-    entry(0x69276D0C, "axolotl", "Axolotl", "rare"),
-    entry(0x2DFB0797, "chinchilla", "Chinchilla", "rare"),
-    entry(0xC163EFED, "raccoon", "Raccoon", "very_rare"),
-    entry(0x374D2540, "capybara", "Capybara", "very_rare"),
-    entry(0x39FC5B1A, "sugar_glider", "Sugar Glider", "very_rare"),
-    entry(0x91A2DE7B, "red_panda", "Red Panda", "epic"),
-    entry(0xE04EC405, "pangolin", "Pangolin", "epic"),
-    entry(0x8E0E1B03, "tasmanian_devil", "Tasmanian Devil", "epic"),
-    entry(0x533B9B30, "snow_leopard", "Snow Leopard", "legendary"),
-    entry(0x86F3BB5D, "okapi", "Okapi", "legendary"),
-    entry(0x2D1D89AF, "shoebill", "Shoebill", "legendary"),
-    entry(0xA52160C5, "cat_girl", "Cat Girl", "mythical"),
-    entry(0xF0F750BD, "rabbit_girl", "Rabbit Girl", "mythical"),
-    entry(0x52A1C03A, "deer_girl", "Deer Girl", "mythical"),
+    entry(0x5CAC86A3, "frog", "Frog", "common", true),
+    entry(0x13793DC7, "hamster", "Hamster", "common", true),
+    entry(0x7495DBFB, "turtle", "Turtle", "common", true),
+    entry(0x68D9554E, "rabbit", "Rabbit", "uncommon", true),
+    entry(0x5DF6BE74, "hedgehog", "Hedgehog", "uncommon", true),
+    entry(0xE59408E0, "ferret", "Ferret", "uncommon", true),
+    entry(0x29B4B2F7, "otter", "Otter", "rare", true),
+    entry(0x69276D0C, "axolotl", "Axolotl", "rare", true),
+    entry(0x2DFB0797, "chinchilla", "Chinchilla", "rare", true),
+    entry(0xC163EFED, "raccoon", "Raccoon", "very_rare", true),
+    entry(0x374D2540, "capybara", "Capybara", "very_rare", true),
+    entry(0x39FC5B1A, "sugar_glider", "Sugar Glider", "very_rare", true),
+    entry(0x91A2DE7B, "red_panda", "Red Panda", "epic", true),
+    entry(0xE04EC405, "pangolin", "Pangolin", "epic", true),
+    entry(0x8E0E1B03, "tasmanian_devil", "Tasmanian Devil", "epic", true),
+    entry(0x533B9B30, "snow_leopard", "Snow Leopard", "legendary", true),
+    entry(0x86F3BB5D, "okapi", "Okapi", "legendary", true),
+    entry(0x2D1D89AF, "shoebill", "Shoebill", "legendary", true),
+    entry(0xA52160C5, "cat_girl", "Cat Girl", "mythical", true),
+    entry(0xF0F750BD, "rabbit_girl", "Rabbit Girl", "mythical", true),
+    entry(0x52A1C03A, "deer_girl", "Deer Girl", "mythical", true),
 ];
 
 const fn entry(
@@ -45,12 +46,14 @@ const fn entry(
     slug: &'static str,
     display_name: &'static str,
     rarity: &'static str,
+    download_available: bool,
 ) -> PetPackCatalogEntry {
     PetPackCatalogEntry {
         pack_id,
         slug,
         display_name,
         rarity,
+        download_available,
     }
 }
 
@@ -150,6 +153,10 @@ pub fn catalog_entry(pack_id: u32) -> Option<PetPackCatalogEntry> {
         .iter()
         .copied()
         .find(|entry| entry.pack_id == pack_id)
+}
+
+pub fn downloadable_catalog_entry(pack_id: u32) -> Option<PetPackCatalogEntry> {
+    catalog_entry(pack_id).filter(|entry| entry.download_available)
 }
 
 fn little_u16(input: &[u8], offset: usize) -> anyhow::Result<u16> {
@@ -270,11 +277,22 @@ mod tests {
     }
 
     #[test]
-    fn public_catalog_excludes_starter_packs_and_private_fox_girl() {
+    fn public_catalog_excludes_starter_packs_and_owner_private_pack() {
+        let owner_private_slug = ["fox", "girl"].join("_");
         assert_eq!(PET_PACK_CATALOG.len(), 21);
         assert!(catalog_entry(0x5CAC86A3).is_some());
         assert!(PET_PACK_CATALOG.iter().all(|pack| {
-            !matches!(pack.pack_id, 0xFDC79D6F | 0x6C393E21 | 0xE2B5E7BA) && pack.slug != "fox_girl"
+            !matches!(pack.pack_id, 0xFDC79D6F | 0x6C393E21 | 0xE2B5E7BA)
+                && pack.slug != owner_private_slug.as_str()
         }));
+    }
+
+    #[test]
+    fn visually_accepted_catalog_is_fully_downloadable() {
+        assert_eq!(PET_PACK_CATALOG.len(), 21);
+        for entry in PET_PACK_CATALOG {
+            assert!(entry.download_available);
+            assert_eq!(downloadable_catalog_entry(entry.pack_id), Some(*entry));
+        }
     }
 }

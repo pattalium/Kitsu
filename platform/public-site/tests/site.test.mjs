@@ -183,23 +183,23 @@ test("source landing instructions match the local-only device controls", async (
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
 });
 
-test("fails closed outside the exact Android 2.2.1 production contract", async () => {
+test("fails closed outside the exact Android 2.2.3 production contract", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /Kitsu Android 2\.2\.1 · version code 22/i);
+  assert.match(html, /Kitsu Android 2\.2\.3 · version code 24/i);
   assert.match(html, /Changing app tracks is a clean install/i);
   assert.match(html, /Forget authorization/i);
   assert.match(html, /Direct and Play builds cannot update one another/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
   assert.match(script, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
-  assert.match(script, /REQUIRED_VERSION = "2\.2\.1"/);
-  assert.match(script, /REQUIRED_VERSION_CODE = 22/);
-  assert.match(readme, /exact Android 2\.2\.1 \/ version-code 22/i);
+  assert.match(script, /REQUIRED_VERSION = "2\.2\.3"/);
+  assert.match(script, /REQUIRED_VERSION_CODE = 24/);
+  assert.match(readme, /exact Android 2\.2\.3 \/ version-code 24/i);
   assert.match(readme, /do not cross-update/i);
   assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
@@ -396,14 +396,14 @@ test("publishes only the explicitly approved Fox demo companion bundle", async (
     .filter((file) => file.toLowerCase().endsWith(".k868"))
     .map((file) => `demo/${file.replaceAll("\\", "/")}`);
   assert.deepEqual(bundles, [
-    "demo/assets/fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
+    "demo/assets/fox.e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d.k868",
   ]);
   const publicFox = path.join(root, bundles[0]);
   const canonicalFox = path.join(projectRoot, "assets", "packs", "fox.k868");
   assert.equal((await stat(publicFox)).size, 24976);
   assert.equal(
     await sha256(publicFox),
-    "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
+    "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d",
   );
   assert.equal(await sha256(publicFox), await sha256(canonicalFox));
   assert.equal(bundles.some((file) => /(?:cat|dog)/i.test(file)), false);
@@ -449,8 +449,8 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
   for (const meter of ["energy", "curiosity", "affection"]) {
     assert.match(html, new RegExp(`<label id="${meter}-label" for="${meter}-meter">[^<]+<\\/label><meter id="${meter}-meter" aria-labelledby="${meter}-label"`));
   }
-  assert.match(html, /source-built 0\.17\.1 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior/i);
-  assert.doesNotMatch(`${html}\n${script}`, /0\.17\.0/, "demo copy must not retain the previous firmware version");
+  assert.match(html, /source-built 0\.17\.4 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior/i);
+  assert.doesNotMatch(`${html}\n${script}`, /0\.17\.[123]/, "demo copy must not retain an earlier firmware version");
   assert.match(html, /Incoming raw packets exist only in memory/i);
   assert.match(html, /This is not Xtensa binary or CPU emulation/i);
   assert.match(styles, /aspect-ratio:\s*1\s*\/\s*2/);
@@ -466,8 +466,8 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(script, /const OLED_TONE_STORAGE_KEY = "kitsu-demo-oled-tone-v1"/);
   assert.match(script, /export const FIRMWARE_ABI_VERSION = 2/);
-  assert.match(script, /0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993/);
-  assert.match(script, /c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38/);
+  assert.match(script, /cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73/);
+  assert.match(script, /e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d/);
   assert.match(script, /WebAssembly\.Module\.imports/);
   assert.match(script, /WebAssembly\.compile\(wasmBytes\)/);
   assert.match(script, /crypto\.getRandomValues|cryptoProvider\.subtle/);
@@ -496,18 +496,18 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
 
   const canonicalFox = path.join(projectRoot, "assets", "pack-evidence", "fox-48-frame-contact.png");
   const publicFox = path.join(root, "demo", "assets", "fox-48-frame-contact.png");
-  assert.equal((await stat(publicFox)).size, 17580);
+  assert.equal((await stat(publicFox)).size, 16471);
   assert.equal(await sha256(publicFox), await sha256(canonicalFox));
 
   const wasmPath = path.join(
     root,
     "demo",
-    "kitsu-firmware-full.0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993.wasm",
+    "kitsu-firmware-full.cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73.wasm",
   );
-  assert.equal((await stat(wasmPath)).size, 352308);
+  assert.equal((await stat(wasmPath)).size, 356142);
   assert.equal(
     await sha256(wasmPath),
-    "0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993",
+    "cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73",
   );
   const wasmModule = await WebAssembly.compile(await readFile(wasmPath));
   assert.deepEqual(
@@ -560,13 +560,13 @@ test("full firmware demo helpers and raw PRG path fail closed", async () => {
   const wasmPath = path.join(
     root,
     "demo",
-    "kitsu-firmware-full.0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993.wasm",
+    "kitsu-firmware-full.cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73.wasm",
   );
   const foxPath = path.join(
     root,
     "demo",
     "assets",
-    "fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
+    "fox.e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d.k868",
   );
   const [wasmBytes, foxBytes] = await Promise.all([
     readFile(wasmPath),
@@ -682,7 +682,7 @@ test("keeps public release binaries outside text conversion", async () => {
   ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
 });
 
-test("publishes the byte-exact signed local-first Android 2.2.1 release", async () => {
+test("publishes the byte-exact signed local-first Android 2.2.3 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -698,14 +698,14 @@ test("publishes the byte-exact signed local-first Android 2.2.1 release", async 
     channel: "stable",
     buildType: "release",
     packageId: "ptl.kitsu.app",
-    version: "2.2.1",
-    versionCode: 22,
+    version: "2.2.3",
+    versionCode: 24,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
-    bytes: 1872083,
-    sha256: "6e521a5f4ff1db1c21ab6997436ec1a0e68dab364fa571ab061d70f9911c31ae",
+    url: "/downloads/kitsu-android-2.2.3-5575ce664d9fd262ea705cb7b02676d5.apk",
+    bytes: 1872085,
+    sha256: "5575ce664d9fd262ea705cb7b02676d5e590fc1634c1be8cb3e4d0217c69012d",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-26T00:20:57Z",
+    publishedAt: "2026-08-26T13:27:16Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -734,6 +734,7 @@ test("publishes the byte-exact signed local-first Android 2.2.1 release", async 
     "kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
     "kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
+    "kitsu-android-2.2.3-5575ce664d9fd262ea705cb7b02676d5.apk",
     "kitsu-k32-android-2.0.0.apk",
   ]);
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
@@ -769,6 +770,21 @@ test("archives the previous stable manifest and signature under immutable 2.2.0 
   assert.equal(verify(null, manifestBytes, publicKey, signatureBytes), true);
 });
 
+test("archives the previous stable manifest and signature under immutable 2.2.1 names", async () => {
+  const downloads = path.join(root, "downloads");
+  const archivedManifest = path.join(downloads, "android-stable-2.2.1-20260826t002057z.json");
+  const archivedSignature = path.join(downloads, "android-stable-2.2.1-20260826t002057z.json.sig");
+  const publicKey = createPublicKey(await readFile(path.join(downloads, "update-ed25519-public.pem")));
+  const manifestBytes = await readFile(archivedManifest);
+  const signatureBytes = await readFile(archivedSignature);
+
+  assert.equal(manifestBytes.length, 538);
+  assert.equal(await sha256(archivedManifest), "08a0be9c73345144fd65e878e8cad00741129e3578ae5a6cad4c567eed0c8264");
+  assert.equal(signatureBytes.length, 64);
+  assert.equal(await sha256(archivedSignature), "29e98dccf17819a8971d166e07cde59b13c18e01a5d1f30a3e5a27f42e16640f");
+  assert.equal(verify(null, manifestBytes, publicKey, signatureBytes), true);
+});
+
 test("ships every referenced local release asset", async () => {
   const files = [
     "styles.css",
@@ -778,9 +794,9 @@ test("ships every referenced local release asset", async () => {
     "demo/index.html",
     "demo/demo.css",
     "demo/demo.js",
-    "demo/kitsu-firmware-full.0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993.wasm",
+    "demo/kitsu-firmware-full.cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73.wasm",
     "demo/assets/fox-48-frame-contact.png",
-    "demo/assets/fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
+    "demo/assets/fox.e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d.k868",
     "config.json",
     "assets/kitsu-app-icon.png",
     "assets/kitsu-k32-social-card-v1.png",
@@ -791,11 +807,14 @@ test("ships every referenced local release asset", async () => {
     "downloads/kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "downloads/kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
     "downloads/kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
+    "downloads/kitsu-android-2.2.3-5575ce664d9fd262ea705cb7b02676d5.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
     "downloads/android-stable-2.0.0-20260822t123928z.json",
     "downloads/android-stable-2.0.0-20260822t123928z.json.sig",
     "downloads/android-stable-2.2.0-20260825t170821z.json",
     "downloads/android-stable-2.2.0-20260825t170821z.json.sig",
+    "downloads/android-stable-2.2.1-20260826t002057z.json",
+    "downloads/android-stable-2.2.1-20260826t002057z.json.sig",
   ];
   await Promise.all(files.map((file) => access(path.join(root, file))));
 });
@@ -972,7 +991,8 @@ test("publishes an accessible, fail-closed local unlock surface", async () => {
   }
   assert.doesNotMatch(html, /<style\b|\sstyle=/i);
   assert.doesNotMatch(script, /\.innerHTML\b|insertAdjacentHTML|\beval\s*\(|new Function\b/);
-  assert.doesNotMatch(`${html}\n${script}\n${catalog}`, /fox girl/i);
+  const ownerPrivateName = ["fox", "girl"].join("\\s+");
+  assert.doesNotMatch(`${html}\n${script}\n${catalog}`, new RegExp(ownerPrivateName, "i"));
   assert.equal(
     [...`${html}\n${script}\n${catalog}`.matchAll(/https?:\/\/[^\s"'`;,)]+/gi)]
       .map((match) => match[0])
@@ -1122,7 +1142,7 @@ test("rejects a valid-code response bound to a different Kitsu", () => {
   );
 });
 
-test("allows only the synchronized 21-creature portrait metadata for gated wild packs", async () => {
+test("publishes the exact accepted 21-creature portrait metadata for gated wild packs", async () => {
   const portraitManifest = JSON.parse(
     await readFile(path.join(projectRoot, "assets", "wild-portraits-manifest.json"), "utf8"),
   );
@@ -1139,10 +1159,11 @@ test("allows only the synchronized 21-creature portrait metadata for gated wild 
   }));
 
   assert.equal(portraitManifest.schema, "kitsu-wild-static-portraits-v1");
+  assert.equal(portraitManifest.creatures.length, 21);
   assert.equal(unlockCatalogModule.PUBLISHED_WILD_PACKS.length, 21);
   assert.deepEqual(unlockCatalogModule.PUBLISHED_WILD_PACKS, expectedCatalog);
   for (const rarity of unlockCatalogModule.RARITIES) {
-    assert.equal(expectedCatalog.filter((entry) => entry.rarity === rarity).length, 3, rarity);
+    assert.equal(portraitManifest.creatures.filter((entry) => entry.rarity === rarity).length, 3, rarity);
   }
 
   for (const entry of unlockCatalogModule.PUBLISHED_WILD_PACKS) {

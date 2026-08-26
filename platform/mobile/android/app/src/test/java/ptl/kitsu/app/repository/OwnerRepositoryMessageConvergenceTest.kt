@@ -22,6 +22,7 @@ import ptl.kitsu.app.model.MessagePage
 import ptl.kitsu.app.model.RepeatSource
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
+import ptl.kitsu.app.pairing.BluetoothPairingRepairProgress
 import ptl.kitsu.app.security.BondedCompanion
 import ptl.kitsu.app.security.CredentialStore
 import ptl.kitsu.app.transport.MockKitsuTransport
@@ -188,6 +189,11 @@ class OwnerRepositoryMessageConvergenceTest {
 
         override suspend fun finishPendingPairing(
             onProgress: (ControllerPairingProgress) -> Unit,
+        ): BondedCompanion = error("not used")
+
+        override suspend fun repairBluetoothPairing(
+            deviceAddress: String,
+            onProgress: (BluetoothPairingRepairProgress) -> Unit,
         ): BondedCompanion = error("not used")
 
         override fun cancelPairing() = Unit

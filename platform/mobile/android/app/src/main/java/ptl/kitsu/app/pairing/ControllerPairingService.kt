@@ -12,8 +12,24 @@ enum class ControllerPairingStage {
     CANCELLED,
 }
 
+enum class BluetoothPairingRepairStage {
+    CHECKING_SAVED_CONTROLLER,
+    SCANNING,
+    OS_SECURE_PAIRING,
+    BOND_COMPLETE,
+    CONNECTING_GATT,
+    VERIFYING_CONTROLLER,
+    COMPLETE,
+    CANCELLED,
+}
+
 data class ControllerPairingProgress(
     val stage: ControllerPairingStage,
+    val detail: String,
+)
+
+data class BluetoothPairingRepairProgress(
+    val stage: BluetoothPairingRepairStage,
     val detail: String,
 )
 
@@ -26,6 +42,17 @@ interface ControllerPairingService {
 
     suspend fun finishPendingPairing(
         onProgress: (ControllerPairingProgress) -> Unit,
+    ): BondedCompanion
+
+    /**
+     * Recreates only Android's BLE/SMP bond for an already-authorized controller.
+     *
+     * Implementations must return the exact saved controller capability and must
+     * never run controller issuance or replace the saved controller ID/root.
+     */
+    suspend fun repairBluetoothPairing(
+        deviceAddress: String,
+        onProgress: (BluetoothPairingRepairProgress) -> Unit,
     ): BondedCompanion
 
     fun cancelPairing()

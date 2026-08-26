@@ -41,6 +41,7 @@ import ptl.kitsu.app.model.PeerPage
 import ptl.kitsu.app.model.RepeatSource
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
+import ptl.kitsu.app.pairing.BluetoothPairingRepairProgress
 import ptl.kitsu.app.repository.OwnerRepository
 import ptl.kitsu.app.security.BondedCompanion
 import ptl.kitsu.app.security.CredentialStore
@@ -477,6 +478,11 @@ private class FixturePairingService(
     ): BondedCompanion = credentials.fixture.also {
         credentials.saveBondedCompanion(it)
     }
+
+    override suspend fun repairBluetoothPairing(
+        deviceAddress: String,
+        onProgress: (BluetoothPairingRepairProgress) -> Unit,
+    ): BondedCompanion = credentials.fixture
 
     override fun cancelPairing() = Unit
 }

@@ -118,12 +118,12 @@ color or recoloring.
   anthropomorphic companion forms such as Cat Girl. These forms
   remain Kitsu companions and must retain the care, needs, bond, memory, game,
   sleep, and reaction systems rather than becoming unrelated character art.
-- Fox Girl is a private, owner-only companion. It is excluded from public
-  encounter tables, rarity rolls, unlock codes, website catalogues, public
-  downloads, Android catalogues, marketing, and the public emulator. It must
-  never be offered as an unlockable public pack. A nearby meeting may identify
-  it only through whatever public presentation the owner explicitly permits;
-  that does not grant or expose its pack.
+- Private, owner-only companions are excluded from public encounter tables,
+  rarity rolls, unlock codes, website catalogues, public downloads, Android
+  catalogues, marketing, and the public emulator. They must never be offered
+  as unlockable public packs. A nearby meeting may identify one only through
+  whatever public presentation its owner explicitly permits; that does not
+  grant or expose the pack.
 - An encountered but uninstalled creature is represented by one static,
   monochrome portrait.
 - A creature becomes fully animated only when its actual pack is installed on
@@ -144,16 +144,44 @@ identity from source art through the installed animation:
 - All four frames of an action must show the same creature and coherent motion.
   Actions may change pose, compression, or orientation, but must not change the
   creature's anatomy, style, markings, or identity.
+- Each four-frame action must read as one short motion when played in order,
+  not as four unrelated poses. Keep the creature on a stable floor and at a
+  stable apparent scale unless the named action itself requires a small,
+  continuous displacement.
+- Use these action meanings consistently: Idle is breathing or a small
+  species-specific twitch; Blink primarily changes the eyes; Pet is a pleased
+  reaction to an unseen touch; Sleep lowers or curls into rest; Listen orients
+  the creature's real ears, head, gills, or body; Surprise is a brief recoil;
+  Play is species-appropriate locomotion; Tired visibly sags; Feed lowers,
+  nibbles, or chews; Wake rises continuously from rest; Meet approaches,
+  investigates, and settles; Evolve is a confident posture change. Do not use
+  detached punctuation, floating food, effect marks, scenery, or a second
+  character to make an otherwise unreadable action understandable.
 - Meet animations for animal companions use species-appropriate behavior such
   as approaching, sniffing, attentive posture, ear or tail movement, a crouch,
   or a small body bounce. Animal companions do not wave like humans and do not
   grow human hands for an animation.
+- Mythical companions use a deliberate monochrome anime-chibi kemonomimi
+  aesthetic rather than the generic upright mascot style used in the rejected
+  first pass. Their expressive face, hair silhouette, species ears, tail,
+  antlers or other defining anatomy, body proportions, and one modest outfit
+  remain identical across every action. They stay compact and legible on the
+  64-by-64 Tamagotchi display: no realistic adult anatomy, sexualized pose or
+  outfit, costume changes, oversized props, or style changes between actions.
+  Their Meet animation uses a shy step, attentive lean, small bow, and
+  ear-or-tail response with arms down; it is not a hand wave.
 - Source actions must contain only the single companion: no second creature,
   text, scenery, detached decorative marks, gradients, anti-aliasing, or mixed
   visual styles.
 - The build step mechanically rasterizes every frame to the exact 64-by-64,
   one-bit OLED contract and enforces safe bounds, a stable floor, coherent body
   axis, meaningful frame differences, and the existing role timing contract.
+- Mechanical geometry, frame-count, hash, and similarity checks are necessary
+  but are never visual acceptance. Before a pack becomes downloadable, every
+  rasterized action must be reviewed at actual OLED scale and as an animation
+  for species identity, action meaning, coherent frame order, silhouette,
+  floor, clipping, and prohibited marks. A failed action rejects the pack until
+  that action is regenerated and reviewed again.
 - Canonical source art, action sources, contact sheets, serialized frames, and
   full pack bytes remain private release inputs. The public catalog may expose
   only the approved static 16-by-18 portrait and non-sensitive metadata before

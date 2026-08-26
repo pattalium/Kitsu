@@ -25,10 +25,34 @@ assert.match(appSource, /new ESPLoader/);
 assert.match(appSource, /loader\.chip\?\.CHIP_NAME !== "ESP32-S3"/);
 assert.match(appSource, /eraseAll: false/);
 assert.match(appSource, /Signed core phase complete/);
-assert.match(appSource, /same USB session writes the validated/);
+assert.match(appSource, /packSelect\.value = "preserve"/);
+assert.match(appSource, /window\.addEventListener\("pageshow"/);
+assert.match(appSource, /DESTRUCTIVE PET REPLACEMENT/);
+assert.match(appSource, /buildReplacementIntent/);
+assert.match(appSource, /inspectReplacementTransaction/);
+assert.match(appSource, /replacementRetryCoreArtifacts/);
+assert.match(appSource, /currentTransaction\.preparedBytes\.slice\(\)/);
+assert.match(appSource, /Keep current pet cannot clear the pending PREPARED/);
+assert.match(appSource, /companionPackTransition\(currentPack, latestPack, currentTransaction\)/);
+assert.ok(
+  appSource.indexOf("data: replacementPrepared.bytes")
+    < appSource.indexOf("fileArray: [{ data: latestPack.bytes"),
+  "PREPARED must precede every target pack write",
+);
+assert.ok(
+  appSource.indexOf("await verifyReadback(latestPack")
+    < appSource.indexOf("data: replacementCommitted.bytes"),
+  "COMMITTED must follow exact target pack readback",
+);
 assert.doesNotMatch(appSource, /\.eraseFlash\s*\(|\.eraseRegion\s*\(|eraseAll:\s*true/);
 assert.match(packSource, /offset: 0x670000/);
 assert.match(packSource, /bytes: 0x140000/);
+assert.match(packSource, /REPLACEMENT_TRANSACTION/);
+assert.match(packSource, /offset: 0x7b0000/);
+assert.match(packSource, /offset: 0x7b1000/);
+assert.match(packSource, /committedState: committedMatches \? "valid"/);
+assert.match(packSource, /freshly inspected physical pack matches its saved source ID/);
+assert.match(packSource, /current\?\.status === "invalid" && transaction\?\.status === "empty"/);
 assert.match(packSource, /PACK_CATALOG/);
 const fileInputs = html.match(/<input\b[^>]*\btype\s*=\s*(?:["']file["']|file\b)[^>]*>/gi) ?? [];
 assert.equal(fileInputs.length, 1, "dist must contain only the unlocked companion-pack file input");
@@ -52,9 +76,9 @@ assert.match(releaseSource, /UPDATE_AUTHORITY_SPKI_SHA256/);
 assert.equal(JSON.parse(packageJson).dependencies["esptool-js"], "0.6.1");
 
 const expectedPackHashes = new Set([
-  "8d19d6b8bc584d9aaee5a6867504fd23c1862c907bbeb1affd9611e35bf2a6d7",
-  "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
-  "8652aad28816d52fca334766ebefb5c38aec1b09dcc72783414998d17a46e261",
+  "49b0758ab2fdba77bff543ac3235110190896d5ce7b3456770bb44f59c09f985",
+  "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d",
+  "47876efaa0f7fe4831906c94e9a3b2d5a74a267f1a6f981593525bff5476c051",
 ]);
 assert.equal(entries.some((entry) => entry.endsWith(".k868")), false, "source-format pack paths must not collide with the server's protected extension denylist");
 const packs = entries.filter((entry) => entry.endsWith(".pet"));

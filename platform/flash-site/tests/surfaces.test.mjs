@@ -68,7 +68,7 @@ test("static product, manual, and USB recovery surfaces link real destinations",
   assert.match(product, /https:\/\/flash\.k32\.run/);
   assert.match(manual, /https:\/\/github\.com\/pattalium\/Kitsu/);
   assert.match(flasher, /seven verified core writes/);
-  assert.match(flasher, /same USB session/);
+  assert.match(flasher, /no intermediate starter is booted/);
   assert.match(flasher, /One final reset/);
   assert.match(flasher, /rollback-enabled Kitsu bootloader/);
   assert.match(flasher, /app0 and app1/);
@@ -78,11 +78,12 @@ test("static product, manual, and USB recovery surfaces link real destinations",
 });
 
 test("flasher keeps its firmware controls while exposing a persistent accessible theme choice", async () => {
-  const [html, theme, styles, app] = await Promise.all([
+  const [html, theme, styles, app, packs] = await Promise.all([
     text("flash-site/index.html"),
     text("flash-site/src/theme.js"),
     text("flash-site/src/styles.css"),
     text("flash-site/src/app.js"),
+    text("flash-site/src/packs.js"),
   ]);
   for (const id of ["connect", "disconnect", "refresh", "pack-select", "unlocked-pack-field", "unlocked-pack-file", "pack-detail", "install", "progress", "progress-detail", "log"]) {
     assert.match(html, new RegExp(`id="${id}"`), id);
@@ -98,18 +99,48 @@ test("flasher keeps its firmware controls while exposing a persistent accessible
   assert.match(styles, /--display: Georgia/u);
   assert.match(html, /<option value="preserve" selected>Keep current pet<\/option>/u);
   for (const pet of ["fox", "cat", "dog"]) assert.match(html, new RegExp(`<option value="${pet}">`, "u"));
-  assert.match(html, /<option value="unlocked">Unlocked \.k868 file<\/option>/u);
+  assert.match(html, /<option value="unlocked">Replace with unlocked \.k868 file<\/option>/u);
   assert.match(html, /<input id="unlocked-pack-file"[^>]+type="file"[^>]+accept="\.k868,application\/octet-stream"[^>]+aria-describedby="pack-detail"/iu);
   assert.doesNotMatch(html, /<option value="(?:frog|hamster|turtle|rabbit|hedgehog|ferret|otter|axolotl|chinchilla|raccoon|capybara|sugar_glider|red_panda|pangolin|tasmanian_devil|snow_leopard|okapi|shoebill|cat_girl|rabbit_girl|deer_girl)">/iu);
   assert.match(styles, /\.pack-choice select/u);
   assert.match(styles, /\.unlocked-pack-field input/u);
   assert.match(app, /loadUnlockedPack/u);
+  assert.match(app, /packSelect\.value = "preserve"/u);
+  assert.match(app, /window\.addEventListener\("pageshow"[\s\S]*event\.persisted[\s\S]*packSelect\.value = "preserve"/u);
+  assert.match(app, /inspectInstalledPack\(loader\)/u);
+  assert.match(app, /inspectReplacementTransaction\(loader\)/u);
+  assert.match(app, /DESTRUCTIVE PET REPLACEMENT/u);
+  assert.match(app, /currentTransaction\.preparedBytes\.slice\(\)[\s\S]*buildReplacementIntent\(transition\.sourcePackId, latestPack\)/u);
+  assert.match(app, /companionPackTransition\(currentPack, latestPack, currentTransaction\)/u);
+  assert.match(app, /if \(\["empty", "prepared", "committed"\]\.includes\(installedReplacementTransaction\?\.status\)[\s\S]*replacementTransactionsMatch/u);
+  assert.match(app, /const explicitRepair = latestPack[\s\S]*currentTransaction\.status === "empty"[\s\S]*installedPack\?\.status === "invalid"/u);
+  assert.match(packs, /if \(!targetPack\)[\s\S]*current\?\.status === "valid"[\s\S]*current\.packId === transaction\.sourcePackId/u);
+  assert.match(packs, /current\?\.status === "invalid" && transaction\?\.status === "empty"/u);
+  assert.match(packs, /replacementTransactionTargets\(transaction, targetPack\)/u);
+  assert.match(app, /replacementRetryCoreArtifacts\(verifiedRelease\)/u);
+  assert.match(app, /PREPARED\/COMMITTED remain untouched/u);
   assert.match(app, /packForInstall\(selectedPackId, selectedPack\)/u);
   assert.match(app, /fileArray: \[\{ data: latestPack\.bytes, address: latestPack\.record\.offset \}\]/u);
   assert.match(app, /let packVerified = !packRequested/u);
   assert.match(app, /resetAttempted = true;\s+await loader\.after\("hard_reset"\)/u);
   assert.match(app, /Every selected region passed SHA-256 readback[\s\S]*No second automatic reset was attempted/u);
-  assert.match(app, /closeTransport\(\{ reset: !resetAttempted, announce: true \}\)/u);
+  assert.match(app, /const holdInLoader = destructiveReplacement[\s\S]*replacementRetry \|\| packWriteStarted/u);
+  assert.match(app, /closeTransport\(\{ reset: !resetAttempted && !holdInLoader, announce: true \}\)/u);
+  assert.ok(
+    app.indexOf("data: replacementPrepared.bytes")
+      < app.indexOf("fileArray: [{ data: latestPack.bytes"),
+    "PREPARED must be written before any target pack byte",
+  );
+  assert.ok(
+    app.indexOf("await verifyReadback(latestPack")
+      < app.indexOf("data: replacementCommitted.bytes"),
+    "COMMITTED must be written only after exact target pack readback",
+  );
+  assert.match(app, /if \(!replacementRetry\)[\s\S]*data: replacementPrepared\.bytes/u);
+  assert.match(app, /await verifyReadback\(replacementPrepared[\s\S]*packWriteStarted = true/u);
+  assert.match(app, /Keep current pet cannot clear the pending PREPARED/u);
+  assert.match(app, /No PREPARED or COMMITTED record will be written/u);
+  assert.match(app, /preserves legacy vitals[\s\S]*clears pack-specific traits and gifts/u);
   assert.doesNotMatch(html, /class="step">\d/u);
 });
 

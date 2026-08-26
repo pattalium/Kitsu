@@ -47,6 +47,9 @@ import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingProtocol
 import ptl.kitsu.app.pairing.ControllerPairingService
 import ptl.kitsu.app.pairing.ControllerPairingStage
+import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
+import ptl.kitsu.app.pairing.BluetoothPairingRepairProgress
+import ptl.kitsu.app.pairing.BluetoothPairingRepairStage
 import ptl.kitsu.app.pairing.PairingChannel
 import ptl.kitsu.app.pairing.PairingException
 import ptl.kitsu.app.security.BondedCompanion
@@ -66,6 +69,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emitAll
@@ -283,6 +287,71 @@ class BleKitsuTransport(
         }
     }
 
+    override suspend fun repairBluetoothPairing(
+        deviceAddress: String,
+        onProgress: (BluetoothPairingRepairProgress) -> Unit,
+    ): BondedCompanion = pairingMutex.withLock {
+        val profile = credentials.bondedCompanions().firstOrNull {
+            it.deviceAddress.equals(deviceAddress, ignoreCase = true)
+        } ?: throw PairingException("saved_controller_not_found")
+        val missing = missingPermissions()
+        if (missing.isNotEmpty()) throw PairingException(
+            BluetoothPairingRepairPolicy.PERMISSION_REQUIRED,
+        )
+        val activeJob = currentCoroutineContext()[Job]
+            ?: throw PairingException("bluetooth_pairing_repair_failed")
+        pairingJob = activeJob
+        try {
+            runCatching {
+                onProgress(
+                    BluetoothPairingRepairProgress(
+                        BluetoothPairingRepairStage.CHECKING_SAVED_CONTROLLER,
+                        "checking_saved_controller",
+                    ),
+                )
+            }
+            disconnect()
+            val repaired = repairBluetoothBondWithPermission(profile) { progress ->
+                runCatching { onProgress(progress) }
+            }
+            val unchanged = credentials.bondedCompanions().firstOrNull {
+                it.deviceAddress.equals(profile.deviceAddress, ignoreCase = true) &&
+                    it.controllerIdB64 == profile.controllerIdB64 &&
+                    it.controllerRootB64 == profile.controllerRootB64
+            }
+            if (unchanged == null || repaired != profile) {
+                throw PairingException("saved_controller_changed_during_repair")
+            }
+            runCatching {
+                onProgress(
+                    BluetoothPairingRepairProgress(
+                        BluetoothPairingRepairStage.BOND_COMPLETE,
+                        "bluetooth_bond_repaired_controller_kept",
+                    ),
+                )
+            }
+            repaired
+        } catch (failure: CancellationException) {
+            withContext(NonCancellable) {
+                runCatching {
+                    onProgress(
+                        BluetoothPairingRepairProgress(
+                            BluetoothPairingRepairStage.CANCELLED,
+                            "bluetooth_pairing_repair_cancelled",
+                        ),
+                    )
+                }
+            }
+            throw PairingException("bluetooth_pairing_repair_cancelled", failure)
+        } finally {
+            // Bond repair never owns an authenticated application session. The
+            // repository performs exactly one fresh GATT attempt after this newly
+            // completed bond and reuses the saved controller capability there.
+            withContext(NonCancellable) { disconnect() }
+            if (pairingJob === activeJob) pairingJob = null
+        }
+    }
+
     override fun cancelPairing() {
         pairingJob?.cancel(CancellationException("pairing_cancelled"))
     }
@@ -304,10 +373,16 @@ class BleKitsuTransport(
             is DeviceScan.Failed -> throw PairingException(scan.code)
         }
         val saved = credentials.bondedCompanions()
-        if (saved.size >= MAX_SAVED_KITSU && saved.none {
-                it.deviceAddress.equals(device.address, ignoreCase = true)
-            }
-        ) throw PairingException("controller_device_limit")
+        // A full controller pairing always receives a fresh random controller
+        // ID from Kitsu. Pairing a device address that is already saved would
+        // therefore consume another firmware slot while replacing this phone's
+        // only copy of the old root. Use the dedicated bond-repair path instead;
+        // if the application authorization is truly gone, the owner must first
+        // remove the obsolete controller explicitly on Kitsu and from this phone.
+        if (saved.any { it.deviceAddress.equals(device.address, ignoreCase = true) }) {
+            throw PairingException("controller_already_saved_use_repair_or_forget")
+        }
+        if (saved.size >= MAX_SAVED_KITSU) throw PairingException("controller_device_limit")
 
         report(
             ControllerPairingProgress(
@@ -401,6 +476,60 @@ class BleKitsuTransport(
             if (pairingInbox === inbox) pairingInbox = null
             inbox.close()
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun repairBluetoothBondWithPermission(
+        profile: BondedCompanion,
+        report: (BluetoothPairingRepairProgress) -> Unit,
+    ): BondedCompanion {
+        val adapter = manager?.adapter ?: throw PairingException("bluetooth_unavailable")
+        if (!adapter.isEnabled) throw PairingException("bluetooth_disabled")
+        scanPrerequisiteError()?.let { throw PairingException(it) }
+
+        val known = runCatching { adapter.getRemoteDevice(profile.deviceAddress) }
+            .getOrElse { throw PairingException("saved_controller_address_invalid", it) }
+        val androidStillBonded = known.bondState == BluetoothDevice.BOND_BONDED ||
+            adapter.bondedDevices.any {
+                it.address.equals(profile.deviceAddress, ignoreCase = true) &&
+                    it.bondState == BluetoothDevice.BOND_BONDED
+            }
+        if (androidStillBonded) {
+            // Android's supported SDK does not expose removeBond(). Do not use a
+            // hidden API in a Play build: the owner must explicitly Forget this
+            // system bond, while the encrypted Kitsu controller root stays saved.
+            throw PairingException(BluetoothPairingRepairPolicy.ANDROID_FORGET_REQUIRED)
+        }
+        if (known.bondState == BluetoothDevice.BOND_BONDING) {
+            throw PairingException("android_bluetooth_pairing_in_progress")
+        }
+
+        report(
+            BluetoothPairingRepairProgress(
+                BluetoothPairingRepairStage.SCANNING,
+                "scanning_saved_kitsu_for_repair",
+            ),
+        )
+        val device = when (val scan = scanForKnown(profile.deviceAddress)) {
+            is DeviceScan.Found -> scan.device
+            DeviceScan.Absent -> throw PairingException("repair_device_absent")
+            is DeviceScan.Failed -> throw PairingException("repair_scan_failed")
+        }
+        if (device.bondState != BluetoothDevice.BOND_NONE) {
+            throw PairingException(BluetoothPairingRepairPolicy.ANDROID_FORGET_REQUIRED)
+        }
+
+        report(
+            BluetoothPairingRepairProgress(
+                BluetoothPairingRepairStage.OS_SECURE_PAIRING,
+                "accept_android_pairing_code_then_confirm_on_kitsu",
+            ),
+        )
+        if (!ensureFreshBonded(device)) throw PairingException("secure_bond_failed")
+        if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            throw PairingException("secure_bond_verification_failed")
+        }
+        return profile
     }
 
     @SuppressLint("MissingPermission")
@@ -657,29 +786,98 @@ class BleKitsuTransport(
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private suspend fun ensureFreshBonded(device: BluetoothDevice): Boolean {
+        // A repair retry is authorized only by a bond that this invocation starts
+        // from BOND_NONE and observes reaching BOND_BONDED. An already-cached bond
+        // must first be explicitly removed in Android Bluetooth settings.
+        if (device.bondState != BluetoothDevice.BOND_NONE) return false
+        return withContext(Dispatchers.Main.immediate) {
+            val result = CompletableDeferred<Boolean>()
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+                    @Suppress("DEPRECATION")
+                    val changed = if (Build.VERSION.SDK_INT >= 33) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    if (changed?.address?.equals(device.address, ignoreCase = true) != true) return
+                    when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
+                        BluetoothDevice.BOND_BONDED -> result.complete(true)
+                        BluetoothDevice.BOND_NONE -> result.complete(false)
+                    }
+                }
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    context.registerReceiver(
+                        receiver,
+                        IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
+                        Context.RECEIVER_EXPORTED,
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+                }
+                if (device.bondState != BluetoothDevice.BOND_NONE) return@withContext false
+                if (!device.createBond() && device.bondState !in listOf(
+                        BluetoothDevice.BOND_BONDING,
+                        BluetoothDevice.BOND_BONDED,
+                    )
+                ) return@withContext false
+                if (device.bondState == BluetoothDevice.BOND_BONDED) result.complete(true)
+                val completed = withTimeoutOrNull(OS_BOND_TIMEOUT_MILLIS) { result.await() } == true &&
+                    device.bondState == BluetoothDevice.BOND_BONDED
+                if (!completed) return@withContext false
+
+                // ACTION_BOND_STATE_CHANGED can precede bondedDevices cache
+                // convergence on some Android builds. Bound that OS propagation
+                // window before allowing the repository's sole fresh GATT attempt.
+                val registrationDeadline = android.os.SystemClock.elapsedRealtime() +
+                    BOND_REGISTRATION_TIMEOUT_MILLIS
+                do {
+                    val registered = manager?.adapter?.bondedDevices?.any {
+                        it.address.equals(device.address, ignoreCase = true) &&
+                            it.bondState == BluetoothDevice.BOND_BONDED
+                    } == true
+                    if (registered) return@withContext true
+                    delay(BOND_REGISTRATION_POLL_MILLIS)
+                } while (android.os.SystemClock.elapsedRealtime() < registrationDeadline)
+                false
+            } finally {
+                runCatching { context.unregisterReceiver(receiver) }
+            }
+        }
+    }
+
     private val callback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) {
+                runCatching { gatt.close() }
+                return
+            }
+            val failureCode = GattStatusPolicy.connectionFailure(status)
             when {
                 newState == BluetoothProfile.STATE_DISCONNECTED -> {
-                    if (this@BleKitsuTransport.gatt === gatt) {
-                        this@BleKitsuTransport.gatt = null
-                        negotiatedMtu = 23
-                        writeCharacteristic = null
-                        notifyCharacteristic = null
-                        envelopeSession = null
-                        connectedDeviceAddress = null
-                        messageProtocolVersion = 1
-                        messageMarkReadAvailable = false
-                        connectionReady?.complete(ConnectResult.Failed("gatt_status_$status"))
-                        pairingInbox?.close(PairingException("gatt_disconnected"))
-                        failPending("gatt_disconnected")
-                        disconnectObserver?.invoke("gatt_disconnected")
-                    }
+                    this@BleKitsuTransport.gatt = null
+                    negotiatedMtu = 23
+                    writeCharacteristic = null
+                    notifyCharacteristic = null
+                    envelopeSession = null
+                    connectedDeviceAddress = null
+                    messageProtocolVersion = 1
+                    messageMarkReadAvailable = false
+                    connectionReady?.complete(ConnectResult.Failed(failureCode))
+                    pairingInbox?.close(PairingException(failureCode))
+                    failPending(failureCode)
+                    disconnectObserver?.invoke(failureCode)
                     runCatching { gatt.close() }
                 }
                 status != BluetoothGatt.GATT_SUCCESS ->
-                    connectionReady?.complete(ConnectResult.Failed("gatt_status_$status"))
+                    connectionReady?.complete(ConnectResult.Failed(failureCode))
                 newState == BluetoothProfile.STATE_CONNECTED -> {
                     val mtuStarted = runCatching { gatt.requestMtu(517) }.getOrDefault(false)
                     if (!mtuStarted && !gatt.discoverServices()) {
@@ -691,6 +889,7 @@ class BleKitsuTransport(
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 connectionReady?.complete(ConnectResult.Failed("service_discovery_failed"))
                 return
@@ -735,15 +934,18 @@ class BleKitsuTransport(
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (descriptor.uuid != CLIENT_CONFIGURATION_UUID) return
+            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt) ||
+                descriptor.uuid != CLIENT_CONFIGURATION_UUID
+            ) return
             connectionReady?.complete(
                 if (status == BluetoothGatt.GATT_SUCCESS) ConnectResult.Connected
-                else ConnectResult.Failed("notify_descriptor_write_failed"),
+                else ConnectResult.Failed(GattStatusPolicy.notificationSubscriptionFailure(status)),
             )
         }
 
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) return
             if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu.coerceAtLeast(23)
             val started = try {
                 gatt.discoverServices()
@@ -760,7 +962,7 @@ class BleKitsuTransport(
             characteristic: BluetoothGattCharacteristic,
             status: Int,
         ) {
-            if (this@BleKitsuTransport.gatt !== gatt ||
+            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt) ||
                 characteristic.uuid != configuration.write
             ) return
             writeCompletion?.complete(status)
@@ -1281,6 +1483,8 @@ class BleKitsuTransport(
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val CONNECT_TIMEOUT_MILLIS = 12_000L
         private const val OS_BOND_TIMEOUT_MILLIS = 90_000L
+        private const val BOND_REGISTRATION_TIMEOUT_MILLIS = 2_000L
+        private const val BOND_REGISTRATION_POLL_MILLIS = 50L
         // A valid authenticated response may carry up to 12 KiB and therefore
         // hundreds of 20-byte notification fragments when Android negotiates
         // the minimum MTU. Ten seconds falsely classified slow mesh snapshots

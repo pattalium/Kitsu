@@ -5,10 +5,16 @@ import { resolve } from "node:path";
 
 const wasmPath = resolve(process.argv[2] ?? "");
 const packPath = resolve(process.argv[3] ?? "assets/packs/fox.k868");
-const [wasm, pack] = await Promise.all([
+const firmwareSourcePath = resolve("src/main.cpp");
+const [wasm, pack, firmwareSource] = await Promise.all([
   readFile(wasmPath),
   readFile(packPath),
+  readFile(firmwareSourcePath, "utf8"),
 ]);
+const firmwareVersion = firmwareSource.match(
+  /constexpr char FIRMWARE_VERSION\[\]\s*=\s*"([^"]+)"/,
+)?.[1];
+assert.ok(firmwareVersion, "firmware source must declare FIRMWARE_VERSION");
 const module = await WebAssembly.compile(wasm);
 assert.deepEqual(
   WebAssembly.Module.imports(module).map(({ module: namespace, name }) =>
@@ -310,7 +316,12 @@ const litPixels = frame.reduce((sum, value) => sum + (value ? 1 : 0), 0);
 assert.ok(litPixels > 0, "firmware must render at least one OLED pixel");
 const bootFrameCount = verifyBootFrameHistory(target);
 const bootSerial = serialText(target);
-assert.match(bootSerial, /KITSU_BOOT firmware=Kitsu868 version=0\.17\.1/);
+assert.match(
+  bootSerial,
+  new RegExp(`KITSU_BOOT firmware=Kitsu868 version=${
+    firmwareVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  }`),
+);
 assert.match(bootSerial, /KITSU_READY uid=/);
 
 // The host replaces only NimBLE transport. Exercise the same encrypted,

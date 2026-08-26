@@ -5,6 +5,7 @@
 // supplies source-compatible adapters before main.cpp includes its headers.
 
 #include "Arduino.h"
+#include "companion_replacement_intent.h"
 #include "kitsu_ble_ota.h"
 #include "kitsu_companion_protocol.h"
 #include "kitsu_device_security.h"
@@ -12,6 +13,21 @@
 #include "mesh_discovery_journal.h"
 
 namespace kitsu868 {
+
+// The browser emulator has no serial-flasher transaction partition. Supply an
+// erased, canonical view so the unmodified setup path exercises the normal
+// no-replacement boot without adding a production-only hook.
+class CompanionReplacementTransactionStorage {
+ public:
+  bool beginAndRead(CompanionReplacementTransaction& transaction) {
+    transaction = CompanionReplacementTransaction{};
+    return true;
+  }
+  bool consume() { return true; }
+  bool preparedSectorCanonical() const { return true; }
+  bool committedSectorCanonical() const { return true; }
+};
+
 namespace connectivity {
 
 class Esp32DeviceSecurityStorage final : public DeviceSecurityStorage {
@@ -62,6 +78,8 @@ class Esp32LegacyConnectivityRetirementPlatform final
   bool readPartition(size_t offset, uint8_t* output,
                      size_t outputBytes) override;
   bool eraseEntirePartition() override;
+  bool eraseAfterReplacementPrepared() override;
+  bool eraseAfterReplacementTransaction() override;
   bool clearLegacyReplayNamespace(bool& changed) override;
 };
 

@@ -246,8 +246,26 @@ internal fun NeedMeter(
 }
 
 internal fun String.humanized(): String = when (this) {
+    "controller_already_saved_use_repair_or_forget" ->
+        "This Kitsu already has a saved controller on this phone. Use Repair Bluetooth pairing, or explicitly forget the old controller before issuing a new one."
     "controller_full" ->
         "Kitsu already has four controllers. On Kitsu: CONNECT > CONTROLLERS; remove a slot; reopen Pair Phone; retry."
+    "gatt_status_19", "bluetooth_pairing_repair_required", "bond_missing_repair_required" ->
+        "Bluetooth security pairing needs repair"
+    "android_bluetooth_forget_required" ->
+        "Forget the old Kitsu bond in Android Bluetooth settings to continue"
+    "repair_bluetooth_permission_required" ->
+        "Bluetooth permission is required to repair this pairing"
+    "saved_controller_authorization_missing" ->
+        "The saved controller authorization is no longer present on Kitsu"
+    "checking_saved_controller" -> "Checking the saved controller authorization"
+    "scanning_saved_kitsu_for_repair" -> "Looking for the saved Kitsu"
+    "accept_android_pairing_code_then_confirm_on_kitsu" ->
+        "Accept Android's pairing code, then confirm it on Kitsu"
+    "bluetooth_bond_repaired_controller_kept" ->
+        "New Bluetooth bond complete; saved controller kept"
+    "one_fresh_gatt_retry" -> "Verifying the new bond once"
+    "saved_controller_authenticated" -> "Saved controller authenticated"
     else -> replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 

@@ -10,9 +10,81 @@ MESSAGE_READ = (ROOT / "src" / "kitsu_message_read_contract.cpp").read_text(
     encoding="utf-8"
 )
 PROFILE = (ROOT / "platformio.ini").read_text(encoding="utf-8")
+COMPANION_PACK = (ROOT / "src" / "companion_pack.cpp").read_text(
+    encoding="utf-8"
+)
+REPLACEMENT_INTENT = (
+    ROOT / "src" / "companion_replacement_intent.h"
+).read_text(encoding="utf-8")
 
 
 class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
+    def test_replacement_transaction_does_not_shrink_k868_capacity(self):
+        self.assertIn("expected > partition_->size", COMPANION_PACK)
+        self.assertNotIn("KITSU_REPLACEMENT", COMPANION_PACK)
+        self.assertIn(
+            "KITSU_COMPANION_PACK_MAX_BYTES = 0x140000U", REPLACEMENT_INTENT
+        )
+        self.assertIn(
+            "KITSU_REPLACEMENT_PREPARED_FLASH_OFFSET = 0x7b0000U",
+            REPLACEMENT_INTENT,
+        )
+        self.assertIn(
+            "KITSU_REPLACEMENT_COMMITTED_FLASH_OFFSET = 0x7b1000U",
+            REPLACEMENT_INTENT,
+        )
+
+    def test_pack_mismatch_is_non_destructive_without_one_shot_authorization(self):
+        setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
+        replacement = setup.split(
+            "kitsu868::CompanionReplacementTransaction replacementTransaction", 1
+        )[1].split("companionBrain.syncSleeping", 1)[0]
+        self.assertEqual(MAIN.count("CompanionBrain::clearStoredState()"), 1)
+        authorized = replacement.split("if (replacementAuthorized)", 1)[1].split(
+            "else if (firstPackAssignment)", 1
+        )[0]
+        self.assertIn("CompanionBrain::clearStoredState()", authorized)
+        self.assertIn("companionReplacementTransactionAuthorizes", replacement)
+        self.assertIn("companionPack.quarantineUnapprovedReplacement()", replacement)
+        self.assertIn("reason=replacement-not-authorized", replacement)
+        self.assertIn("packIdentityStateSaved = saveState()", replacement)
+        self.assertIn("legacyConnectivityRetirementReady &&", replacement)
+        self.assertIn(
+            "companionReplacementIntentValid(\n          replacementTransaction.prepared)",
+            replacement,
+        )
+        self.assertIn(
+            "replacementTransactionStorage.preparedSectorCanonical()", replacement
+        )
+        self.assertIn(
+            "replacementTransactionStorage.committedSectorCanonical()", replacement
+        )
+        self.assertIn("replacementTransactionStorage.consume()", authorized)
+        self.assertIn(
+            "legacyConnectivityRetirementPlatform,\n"
+            "              replacementPreservation",
+            replacement,
+        )
+        self.assertIn("LegacyConnectivityPreservation::Prepared", replacement)
+        self.assertIn("LegacyConnectivityPreservation::Transaction", replacement)
+        self.assertLess(
+            authorized.index("packIdentityStateSaved = saveState()"),
+            authorized.index("replacementTransactionStorage.consume()"),
+        )
+        self.assertIn("pack_replacement_pending=true", authorized)
+        self.assertIn("const uint32_t brainPackId = collectiblePackId != 0U", replacement)
+        self.assertIn("companionBrain.begin(wisp.uid.c_str(), brainPackId)", replacement)
+        self.assertNotIn("clearStoredState()", replacement.split("else {", 1)[1])
+
+        self.assertLess(
+            replacement.index("replacementTransactionStorage.beginAndRead"),
+            replacement.index("KitsuLegacyConnectivityRetirement::run"),
+        )
+        self.assertLess(
+            replacement.index("KitsuLegacyConnectivityRetirement::run"),
+            replacement.index("loadState()"),
+        )
+
     def test_normal_runtime_is_local_ble_mesh_and_companion_only(self):
         includes = MAIN.split("namespace {", 1)[0]
         for forbidden in (
@@ -239,7 +311,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn(
             "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
         )
-        self.assertIn('FIRMWARE_VERSION[] = "0.16.5"', MAIN)
+        self.assertIn('FIRMWARE_VERSION[] = "0.17.4"', MAIN)
         setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
         self.assertIn("chatSession = esp_random()", setup)
         self.assertIn("if (chatSession == 0U) chatSession = 1U", setup)

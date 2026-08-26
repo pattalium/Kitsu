@@ -151,6 +151,128 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         self.assertNotIn("preferences_.clear", storage)
         self.assertIn("preferences_.remove(key)", storage)
 
+    def test_ble_bond_recovery_keeps_controller_authority_and_is_local_only(self) -> None:
+        main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        gatt = (ROOT / "src/kitsu_ble_gatt.cpp").read_text(encoding="utf-8")
+        policy = (ROOT / "src/kitsu_ble_bond_recovery.h").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("CLEAR BLE", main)
+        self.assertIn("CONTROLLERS KEPT", main)
+        self.assertIn("CONTROLLER_RECOVERY_HOLD_MS = 5000UL", main)
+        commit = main.split("void commitControllerRecovery", 1)[1].split(
+            "void uiWrappedText", 1
+        )[0]
+        self.assertIn("controllerRecoveryBleDisconnected(now)", commit)
+        self.assertIn("captureControllerAuthorities", commit)
+        self.assertIn("controllerAuthoritiesUnchanged", commit)
+        self.assertIn("clearBleBondsForLocalRecovery", commit)
+        self.assertIn("controllers_unchanged=%s", commit)
+        for forbidden in (
+            "revokeControllerAfterPhysicalConfirmation",
+            "revokeAllControllersAfterPhysicalConfirmation",
+            "preferences.",
+            "companionPack",
+            "companionBrain",
+            "encounterCodes",
+            "meshSettings",
+        ):
+            bond_branch = commit.split("if (clearBleBonds)", 1)[1].split(
+                "if (!resetAll)", 1
+            )[0]
+            self.assertNotIn(forbidden, bond_branch)
+
+        clear_api = gatt.split(
+            "bool KitsuBleGattLink::clearAllBondsForLocalRecovery", 1
+        )[1].split("int KitsuBleGattLink::bondCount", 1)[0]
+        self.assertIn("localControllerRecoveryLocked", clear_api)
+        self.assertIn("!impl_->connected", clear_api)
+        self.assertIn("NimBLEDevice::deleteAllBonds()", clear_api)
+        self.assertIn("NimBLEDevice::getNumBonds()", clear_api)
+        self.assertNotIn("Preferences", clear_api)
+        self.assertIn("roots[kKitsuControllerCapacity]", policy)
+        self.assertIn("controllerAuthoritiesUnchanged", policy)
+        self.assertIn("clearControllerAuthoritySnapshot", policy)
+        self.assertIn("ble_gatts_set_clt_cfg_perm_flags", gatt)
+        self.assertIn("BLE_ATT_F_WRITE_AUTHEN", gatt)
+        self.assertIn("ble_bonds", main)
+        self.assertIn("controllers", main)
+
+    def test_android_status19_repair_reuses_one_saved_controller(self) -> None:
+        android = ROOT / "platform/mobile/android/app/src/main/java/ptl/kitsu/app"
+        transport = (android / "transport/BleKitsuTransport.kt").read_text(
+            encoding="utf-8"
+        )
+        callback_policy = (android / "transport/GattCallbackBindingPolicy.kt").read_text(
+            encoding="utf-8"
+        )
+        repository = (android / "repository/OwnerRepository.kt").read_text(
+            encoding="utf-8"
+        )
+        ui = (android / "ui/KitsuSettingsScreen.kt").read_text(encoding="utf-8")
+
+        self.assertIn('0x13 -> "bluetooth_pairing_repair_required"', callback_policy)
+        callback = transport.split(
+            "private val callback = object : BluetoothGattCallback()", 1
+        )[1].split("private fun acceptBytes", 1)[0]
+        for lifecycle in (
+            "onConnectionStateChange",
+            "onServicesDiscovered",
+            "onDescriptorWrite",
+            "onMtuChanged",
+            "onCharacteristicWrite",
+            "onCharacteristicChanged",
+        ):
+            section = callback.split(f"override fun {lifecycle}", 1)[1]
+            self.assertIn("GattCallbackBindingPolicy.accepts", section, lifecycle)
+
+        repair_transport = transport.split(
+            "override suspend fun repairBluetoothPairing", 1
+        )[1].split("override fun cancelPairing", 1)[0]
+        self.assertIn("repairBluetoothBondWithPermission", repair_transport)
+        self.assertIn("saved_controller_changed_during_repair", repair_transport)
+        self.assertNotIn("ControllerPairingProtocol().pair", repair_transport)
+        self.assertNotIn("saveBondedCompanion", repair_transport)
+        self.assertNotIn("MAX_SAVED_KITSU", repair_transport)
+        repair_bond = transport.split(
+            "private suspend fun repairBluetoothBondWithPermission", 1
+        )[1].split("private suspend fun connectWithPermission", 1)[0]
+        self.assertIn("ensureFreshBonded", repair_bond)
+        self.assertIn("ANDROID_FORGET_REQUIRED", repair_bond)
+        self.assertNotIn("ControllerPairingProtocol().pair", repair_bond)
+        self.assertNotIn("saveBondedCompanion", repair_bond)
+
+        repair_repository = repository.split(
+            "suspend fun repairBluetoothPairing", 1
+        )[1].split("fun cancelBluetoothPairingRepair", 1)[0]
+        self.assertEqual(
+            repair_repository.count("coordinator.connect(userInitiated = true)"),
+            1,
+        )
+        self.assertNotIn("pairController(", repair_repository)
+        self.assertNotIn("saveBondedCompanion", repair_repository)
+        self.assertNotIn("removeBondedCompanion", repair_repository)
+        self.assertIn("does not consume another controller slot", ui)
+        self.assertIn("encounter unlocks, and app data stay unchanged", ui)
+        self.assertIn("CLEAR BLE BONDS / CONTROLLERS KEPT", ui)
+        self.assertIn(
+            "enabled = !updateBusy && owner.savedKitsu.size < MAX_SAVED_KITSU",
+            ui,
+        )
+        new_pairing = transport.split(
+            "private suspend fun pairControllerWithPermission", 1
+        )[1].split("private suspend fun repairBluetoothBondWithPermission", 1)[0]
+        self.assertIn("controller_already_saved_use_repair_or_forget", new_pairing)
+        self.assertIn("saved.any", new_pairing)
+        self.assertIn("saved.size >= MAX_SAVED_KITSU", new_pairing)
+        self.assertLess(
+            new_pairing.index("controller_already_saved_use_repair_or_forget"),
+            new_pairing.index("ControllerPairingProtocol().pair"),
+        )
+        self.assertIn("BOND_REGISTRATION_TIMEOUT_MILLIS", transport)
+        self.assertIn("notificationSubscriptionFailure(status)", transport)
+
     def test_active_esp32_security_has_no_enrollment_crypto_adapter(self) -> None:
         header = (ROOT / "src/kitsu_esp32_security.h").read_text(encoding="utf-8")
         source = (ROOT / "src/kitsu_esp32_security.cpp").read_text(encoding="utf-8")
@@ -182,11 +304,16 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         ):
             self.assertIn(literal, header)
         self.assertIn("eraseEntirePartition()", header)
+        self.assertIn("eraseAfterReplacementPrepared()", header)
+        self.assertIn("eraseAfterReplacementTransaction()", header)
         self.assertNotIn("erasePartition(size_t", header)
         self.assertIn("esp_partition_find_first(", source)
         self.assertIn("exactEsp32Partition(partition_)", source)
         self.assertIn("esp_partition_erase_range(partition_, 0U,", source)
-        self.assertIn("verifyErased(platform, readbackErased)", source)
+        self.assertIn(
+            "verifyErased(platform, firstRetiredByte, readbackErased)", source
+        )
+        self.assertIn("KITSU_REPLACEMENT_TRANSACTION_BYTES", source)
         self.assertIn("PartitionReadbackFailed", source)
         self.assertIn("nvs_open(kLegacyLanReplayNamespace, NVS_READONLY", source)
         self.assertIn("nvs_erase_all(handle)", source)

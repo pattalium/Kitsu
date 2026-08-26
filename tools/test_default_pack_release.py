@@ -20,17 +20,17 @@ APPROVED_PACKS = {
     "cat": {
         "name": "CAT",
         "id": 0xFDC79D6F,
-        "sha256": "8d19d6b8bc584d9aaee5a6867504fd23c1862c907bbeb1affd9611e35bf2a6d7",
+        "sha256": "49b0758ab2fdba77bff543ac3235110190896d5ce7b3456770bb44f59c09f985",
     },
     "fox": {
         "name": "FOX",
         "id": 0x6C393E21,
-        "sha256": "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
+        "sha256": "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d",
     },
     "dog": {
         "name": "DOG",
         "id": 0xE2B5E7BA,
-        "sha256": "8652aad28816d52fca334766ebefb5c38aec1b09dcc72783414998d17a46e261",
+        "sha256": "47876efaa0f7fe4831906c94e9a3b2d5a74a267f1a6f981593525bff5476c051",
     },
 }
 EXPECTED_ROLES = tuple(range(12))
@@ -203,7 +203,8 @@ def test_public_literal_boundary() -> None:
     }
     text_suffixes = {
         ".md", ".py", ".cjs", ".js", ".mjs", ".ts", ".tsx", ".kt",
-        ".kts", ".cpp", ".h", ".json", ".txt", ".html", ".css", ".toml",
+        ".kts", ".cpp", ".h", ".rs", ".sh", ".ps1", ".json", ".txt",
+        ".html", ".css", ".toml",
     }
     offenders = []
     for path in ROOT.rglob("*"):

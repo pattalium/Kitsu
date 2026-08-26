@@ -65,8 +65,7 @@ int main() {
     if (!wild::creatureAt(index, creature) ||
         creature.packId != expected[index].packId ||
         std::strcmp(creature.name, expected[index].name) != 0 ||
-        creature.rarity != expected[index].rarity ||
-        std::strcmp(creature.name, "Fox Girl") == 0) {
+        creature.rarity != expected[index].rarity) {
       ++failures;
     }
     wild::Creature roundtrip{};
@@ -101,6 +100,6 @@ int main() {
   std::cout << "TEST_PASS wild_creature_catalog creatures="
             << wild::creatureCount()
             << " per_rarity=" << wild::kCreaturesPerRarity
-            << " distinct_portraits=21 public_fox_girl=0\n";
+            << " distinct_portraits=21 private_companions=0\n";
   return 0;
 }

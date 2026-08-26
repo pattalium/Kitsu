@@ -59,6 +59,7 @@ import ptl.kitsu.app.MainViewModel
 import ptl.kitsu.app.model.EncounterRarity
 import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.repository.OwnerState
+import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
 import ptl.kitsu.app.security.MAX_SAVED_KITSU
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.update.FirmwareInstallStage
@@ -81,6 +82,8 @@ internal fun KitsuSettingsScreen(
     onPairController: (String) -> Unit,
     onRetryPairingBlePermissions: () -> Unit,
     onFinishPairing: () -> Unit,
+    onRepairBluetoothPairing: () -> Unit,
+    onOpenBluetoothSettingsForRepair: () -> Unit,
     onOpenFirmwarePackage: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onOpenSupportPage: () -> Unit,
@@ -121,6 +124,8 @@ internal fun KitsuSettingsScreen(
                 onEnableBluetooth = onEnableBluetooth,
                 onOpenLocationSettings = onOpenLocationSettings,
                 onOpenAppSettings = onOpenAppSettings,
+                onRepairBluetoothPairing = onRepairBluetoothPairing,
+                onOpenBluetoothSettingsForRepair = onOpenBluetoothSettingsForRepair,
             )
         }
 
@@ -693,12 +698,23 @@ private fun SettingsConnectionCard(
     onEnableBluetooth: () -> Unit,
     onOpenLocationSettings: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    onRepairBluetoothPairing: () -> Unit,
+    onOpenBluetoothSettingsForRepair: () -> Unit,
 ) {
     val presentation = connectionPresentation(owner)
     val selected = owner.savedKitsu.firstOrNull {
         it.deviceAddress.equals(owner.activeDeviceAddress, ignoreCase = true)
     }
     val locationAction = locationSettingsActionState(owner.connection.detail, owner.errorCode, updateBusy)
+    val repairCode = sequenceOf(owner.errorCode, owner.connection.detail)
+        .firstOrNull {
+            BluetoothPairingRepairPolicy.shouldOfferRepair(it) ||
+                it == BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING
+        }
+        ?: owner.errorCode
+        ?: owner.connection.detail
+    val repairAvailable = selected != null &&
+        BluetoothPairingRepairPolicy.shouldOfferRepair(repairCode)
     KitsuCard(title = "Bluetooth connection") {
         Row(
             Modifier.fillMaxWidth(),
@@ -729,7 +745,8 @@ private fun SettingsConnectionCard(
                 ) { Text("Disconnect") }
             }
             owner.connection.mode == ConnectionMode.PERMISSION_REQUIRED ||
-                owner.errorCode == "bluetooth_permission_required" -> Column(
+                owner.errorCode == "bluetooth_permission_required" ||
+                owner.errorCode == BluetoothPairingRepairPolicy.PERMISSION_REQUIRED -> Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
@@ -738,9 +755,82 @@ private fun SettingsConnectionCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRequestBlePermissions, enabled = !updateBusy) { Text("Allow Bluetooth") }
+                    Button(
+                        onClick = if (owner.errorCode == BluetoothPairingRepairPolicy.PERMISSION_REQUIRED) {
+                            onRepairBluetoothPairing
+                        } else onRequestBlePermissions,
+                        enabled = !updateBusy,
+                    ) { Text("Allow Bluetooth") }
                     TextButton(onClick = onOpenAppSettings, enabled = !updateBusy) { Text("App settings") }
                 }
+            }
+            owner.repairingBluetoothPairing -> Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator()
+                    Column {
+                        Text("Repairing Bluetooth pairing", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            owner.bluetoothPairingRepairProgress?.detail?.humanized()
+                                ?: "Waiting for secure Android pairing",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    "Your saved controller authorization, pet, packs, encounter unlocks, and app data stay unchanged.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = viewModel::cancelBluetoothPairingRepair,
+                    enabled = !updateBusy,
+                    modifier = Modifier.testTag("bluetooth-repair-cancel"),
+                ) { Text("Cancel repair") }
+            }
+            repairAvailable -> Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                StatusPill("Repair needed", StatusTone.ACTIVE)
+                Text(
+                    if (BluetoothPairingRepairPolicy.requiresAndroidForget(repairCode)) {
+                        "First, on Kitsu use CONNECT > CONTROLLERS > CLEAR BLE BONDS / CONTROLLERS KEPT and hold PRG for 5 seconds. Then open CONNECT > BLUETOOTH > PAIR PHONE. Open Android Bluetooth settings, Forget this Kitsu, and return here; repair resumes with the same saved controller authorization."
+                    } else {
+                        "Android and Kitsu no longer agree on the Bluetooth security bond. On Kitsu, use CONNECT > CONTROLLERS > CLEAR BLE BONDS / CONTROLLERS KEPT and hold PRG for 5 seconds, then open CONNECT > BLUETOOTH > PAIR PHONE and repair here. This reuses the existing controller ID and does not consume another controller slot."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("bluetooth-repair-guidance"),
+                )
+                Button(
+                    onClick = if (BluetoothPairingRepairPolicy.requiresAndroidForget(repairCode)) {
+                        onOpenBluetoothSettingsForRepair
+                    } else onRepairBluetoothPairing,
+                    enabled = !owner.loading && !owner.pairing && !updateBusy,
+                    modifier = Modifier.fillMaxWidth().testTag("bluetooth-repair-start"),
+                ) {
+                    Text(
+                        if (BluetoothPairingRepairPolicy.requiresAndroidForget(repairCode)) {
+                            "Open Bluetooth settings"
+                        } else "Repair Bluetooth pairing",
+                    )
+                }
+            }
+            repairCode == BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING -> Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                StatusPill("Controller missing", StatusTone.NEGATIVE)
+                Text(
+                    "The new Android bond works, but Kitsu rejected this phone's saved controller authorization. No controller was added or replaced. Check CONNECT > CONTROLLERS on Kitsu before choosing whether to issue a new authorization.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("saved-controller-missing"),
+                )
             }
             owner.connection.detail == "bluetooth_disabled" || owner.errorCode == "bluetooth_disabled" ->
                 Button(onClick = onEnableBluetooth, enabled = !updateBusy) { Text("Turn on Bluetooth") }
@@ -840,14 +930,14 @@ private fun PairingCard(
                 )
                 Button(
                     onClick = { onPairController(pairingLabel) },
-                    enabled = owner.savedKitsu.size < MAX_SAVED_KITSU && !updateBusy,
+                    enabled = !updateBusy && owner.savedKitsu.size < MAX_SAVED_KITSU,
                     modifier = Modifier.fillMaxWidth().testTag("pairing-start"),
                 ) { Text("Pair this phone") }
                 if (owner.savedKitsu.size >= MAX_SAVED_KITSU) {
                     Text(
-                        "The saved-device limit is full. Forget one authorization before pairing another.",
+                        "The saved-device limit is full. Repair Bluetooth pairing for a saved Kitsu, or forget one saved controller before pairing a different Kitsu.",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }

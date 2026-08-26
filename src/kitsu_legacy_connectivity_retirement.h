@@ -27,6 +27,12 @@ enum class LegacyConnectivityRetirementResult : uint8_t {
   ReplayNamespaceFailed,
 };
 
+enum class LegacyConnectivityPreservation : uint8_t {
+  None = 0,
+  Prepared,
+  Transaction,
+};
+
 const char* legacyConnectivityRetirementResultName(
     LegacyConnectivityRetirementResult result);
 bool legacyConnectivityRetirementSucceeded(
@@ -49,13 +55,20 @@ class LegacyConnectivityRetirementPlatform {
   virtual bool readPartition(size_t offset, uint8_t* output,
                              size_t outputBytes) = 0;
   virtual bool eraseEntirePartition() = 0;
+  // Erases the fixed retired tail after only the canonical PREPARED sector.
+  virtual bool eraseAfterReplacementPrepared() = 0;
+  // Erases the fixed retired tail beginning after the two 4 KiB companion
+  // replacement-transaction sectors. No caller-selected range is accepted.
+  virtual bool eraseAfterReplacementTransaction() = 0;
   virtual bool clearLegacyReplayNamespace(bool& changed) = 0;
 };
 
 class KitsuLegacyConnectivityRetirement {
  public:
   static LegacyConnectivityRetirementResult run(
-      LegacyConnectivityRetirementPlatform& platform);
+      LegacyConnectivityRetirementPlatform& platform,
+      LegacyConnectivityPreservation preservation =
+          LegacyConnectivityPreservation::None);
 };
 
 #if defined(ARDUINO_ARCH_ESP32)
@@ -67,6 +80,8 @@ class Esp32LegacyConnectivityRetirementPlatform final
   bool readPartition(size_t offset, uint8_t* output,
                      size_t outputBytes) override;
   bool eraseEntirePartition() override;
+  bool eraseAfterReplacementPrepared() override;
+  bool eraseAfterReplacementTransaction() override;
   bool clearLegacyReplayNamespace(bool& changed) override;
 
  private:

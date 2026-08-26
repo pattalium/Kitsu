@@ -833,7 +833,7 @@ def test_legacy_production_entrypoints_withdrawn() -> None:
 
 def test_historical_stable_offset_imports_remain_defined() -> None:
     # The pinned 0.11.1 stable packager remains the public rollback path until
-    # physical acceptance promotes 0.16.5. Its imports must stay loadable even
+    # physical acceptance promotes 0.17.4. Its imports must stay loadable even
     # though the v2 candidate does not write OTA selection data.
     assert packager.OTA_DATA_OFFSET == 0x00E000
     assert packager.APP_OFFSET == packager.APP0_OFFSET == 0x010000
@@ -842,19 +842,31 @@ def test_historical_stable_offset_imports_remain_defined() -> None:
 def test_runner_pins_candidate_and_reviewed_runtime() -> None:
     runner = (TOOLS / "package_kitsu_reflashable.cmd").read_text(encoding="utf-8")
     normalized = runner.replace("/", "\\").lower()
-    assert 'if "%firmware_version%"=="" set "firmware_version=0.16.5"' in normalized
-    assert "esptool411-runtime\\scripts\\python.exe" in normalized
-    assert "esptool411-runtime\\scripts\\esptool.exe" in normalized
+    assert 'if "%firmware_version%"=="" set "firmware_version=0.17.4"' in normalized
+    assert "platformio-core-runtime\\scripts\\python.exe" in normalized
+    assert (
+        "private\\tooling\\platformio-core\\packages\\tool-esptoolpy"
+        "\\esptool.py"
+    ) in normalized
     assert (
         "framework-arduinoespressif32\\tools\\sdk\\esp32s3\\qio_qspi"
         "\\include\\sdkconfig.h"
     ) in normalized
     assert '--sdkconfig "%sdkconfig%"' in normalized
-    assert "esptool-py310" not in normalized
-    assert "esptool411-bootstrap" not in normalized
+    assert "esptool411-runtime" not in normalized
+    assert "%userprofile%\\.platformio" not in normalized
     if os.name == "nt":
-        tool = ROOT.parent / "esptool411-runtime" / "Scripts" / "esptool.exe"
-        completed = run([str(tool), "version"], success=True)
+        python = ROOT.parent / "platformio-core-runtime" / "Scripts" / "python.exe"
+        tool = (
+            ROOT.parent.parent
+            / "private"
+            / "tooling"
+            / "platformio-core"
+            / "packages"
+            / "tool-esptoolpy"
+            / "esptool.py"
+        )
+        completed = run([str(python), str(tool), "version"], success=True)
         assert "4.11.0" in completed.stdout
 
 

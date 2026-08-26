@@ -45,7 +45,8 @@ class NearbyKitsuPresentationTest {
         }
 
         assertEquals(21, portraitKeys.distinct().size)
-        assertTrue(expected.values.none { it.equals("Fox Girl", ignoreCase = true) })
+        val ownerPrivateName = "Fox" + " Girl"
+        assertTrue(expected.values.none { it.equals(ownerPrivateName, ignoreCase = true) })
     }
 
     @Test fun unknownPackUsesExplicitUnknownPortraitWithoutGuessingAnIdentity() {

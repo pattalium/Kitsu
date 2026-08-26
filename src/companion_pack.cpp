@@ -77,7 +77,8 @@ bool CompanionPack::validateHeader() {
       static_cast<uint64_t>(header_.clipCount) * sizeof(KitsuPackClip) +
       static_cast<uint64_t>(header_.stepCount) * sizeof(KitsuPackStep) +
       static_cast<uint64_t>(header_.frameCount) * KITSU_FRAME_BYTES;
-  if (expected != header_.totalBytes || expected > partition_->size) {
+  if (expected != header_.totalBytes ||
+      expected > partition_->size) {
     fail("size");
     return false;
   }
@@ -218,6 +219,10 @@ bool CompanionPack::begin() {
   activeClipValid_ = false;
   cachedFrameIndex_ = 0xffff;
   return true;
+}
+
+void CompanionPack::quarantineUnapprovedReplacement() {
+  fail("replacement-not-authorized");
 }
 
 bool CompanionPack::chooseExactClip(CompanionRole role, uint8_t appearanceVariant,

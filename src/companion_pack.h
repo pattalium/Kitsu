@@ -99,7 +99,18 @@ class CompanionPack {
   uint32_t revision() const { return valid_ ? header_.revision : 0; }
   uint16_t frameCount() const { return valid_ ? header_.frameCount : 0; }
   uint32_t bytes() const { return valid_ ? header_.totalBytes : 0; }
+  uint32_t payloadCrc32() const {
+    return valid_ ? header_.payloadCrc32 : 0;
+  }
+  uint32_t headerCrc32() const {
+    return valid_ ? header_.headerCrc32 : 0;
+  }
   size_t capacity() const { return partition_ ? partition_->size : 0; }
+
+  // A valid but unapproved different pack must never become live: doing so
+  // would make the normal brain loader initialize and persist fresh state for
+  // the wrong ID.  Quarantine leaves the original NVS state untouched.
+  void quarantineUnapprovedReplacement();
 
   // Selects one exact weighted clip and keeps it active until the next call.
   // Rendering and timing therefore always refer to the same selected clip.

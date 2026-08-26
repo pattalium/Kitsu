@@ -214,6 +214,30 @@ void testListenAndSleep() {
   assert(kitsu868::portrait::rectangleFits(0, 22, 64, 64));
 }
 
+void testWildEncounterVariants() {
+  const Label unavailable[] = {
+      {"WILD ENCOUNTER", 2, 1},
+      {"SIGNAL LOST", 48, 2},
+      {"TAP OR HOLD", 108, 1},
+  };
+  const Label revealed[] = {
+      {"WILD ENCOUNTER", 2, 1},
+      {"TASMANIAN DEVIL", 15, 1},
+      {"VERY RARE", 69, 1},
+      {"CODE FOUND", 85, 1},
+      {"REPEATER FIND", 99, 1},
+      {"TAP OR HOLD", 114, 1},
+  };
+  const Label hidden[] = {
+      {"NO CODE", 85, 1},
+      {"SIGNAL FIND", 99, 1},
+  };
+  assertScreen(unavailable);
+  assertScreen(revealed);
+  assertScreen(hidden);
+  assert(kitsu868::portrait::rectangleFits(16, 29, 32, 36));
+}
+
 void testStatusPages() {
   const Label identity[] = {
       {"A COMPANION PACK NAME MAY BE LONG", 6, 1},
@@ -297,12 +321,13 @@ int main() {
   testInboxVariants();
   testActiveGames();
   testListenAndSleep();
+  testWildEncounterVariants();
   testStatusPages();
   testPairPhoneVariants();
   testControllerRecoveryVariants();
   puts("PASS portrait_ui_layout_host");
   puts("  canvas: 64x128; content: 60px");
-  puts("  screens: pet menu connect inbox game-menu game listen sleep status phone controller-recovery");
+  puts("  screens: pet menu connect inbox game-menu game listen sleep wild-encounter status phone controller-recovery");
   puts("  phone states: unavailable compare grant authenticated securing open closed");
   return 0;
 }

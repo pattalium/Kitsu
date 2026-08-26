@@ -1,5 +1,7 @@
 #include "kitsu_legacy_connectivity_retirement.h"
 
+#include "companion_replacement_intent.h"
+
 #include <string.h>
 
 namespace kitsu868 {
@@ -17,10 +19,11 @@ bool exactPartition(const LegacyConnectivityPartition& partition) {
 }
 
 bool verifyErased(LegacyConnectivityRetirementPlatform& platform,
+                  size_t firstByte,
                   bool& erased) {
   erased = true;
   uint8_t chunk[kVerificationChunkBytes]{};
-  for (size_t offset = 0U; offset < kLegacyConnectivityPartitionBytes;
+  for (size_t offset = firstByte; offset < kLegacyConnectivityPartitionBytes;
        offset += sizeof(chunk)) {
     if (!platform.readPartition(offset, chunk, sizeof(chunk))) return false;
     for (size_t index = 0U; index < sizeof(chunk); ++index) {
@@ -28,6 +31,22 @@ bool verifyErased(LegacyConnectivityRetirementPlatform& platform,
     }
   }
   return true;
+}
+
+bool preservedPrefixBytes(LegacyConnectivityPreservation preservation,
+                          size_t& bytes) {
+  switch (preservation) {
+    case LegacyConnectivityPreservation::None:
+      bytes = 0U;
+      return true;
+    case LegacyConnectivityPreservation::Prepared:
+      bytes = KITSU_REPLACEMENT_INTENT_SECTOR_BYTES;
+      return true;
+    case LegacyConnectivityPreservation::Transaction:
+      bytes = KITSU_REPLACEMENT_TRANSACTION_BYTES;
+      return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -59,23 +78,41 @@ bool legacyConnectivityRetirementSucceeded(
 }
 
 LegacyConnectivityRetirementResult KitsuLegacyConnectivityRetirement::run(
-    LegacyConnectivityRetirementPlatform& platform) {
+    LegacyConnectivityRetirementPlatform& platform,
+    LegacyConnectivityPreservation preservation) {
   LegacyConnectivityPartition partition{};
   if (!platform.inspectPartition(partition) || !exactPartition(partition)) {
     return LegacyConnectivityRetirementResult::InvalidPartition;
   }
 
+  size_t firstRetiredByte = 0U;
+  if (!preservedPrefixBytes(preservation, firstRetiredByte)) {
+    return LegacyConnectivityRetirementResult::InvalidPartition;
+  }
   bool partitionErased = false;
-  if (!verifyErased(platform, partitionErased)) {
+  if (!verifyErased(platform, firstRetiredByte, partitionErased)) {
     return LegacyConnectivityRetirementResult::PartitionReadFailed;
   }
   bool retired = false;
   if (!partitionErased) {
-    if (!platform.eraseEntirePartition()) {
+    bool erased = false;
+    switch (preservation) {
+      case LegacyConnectivityPreservation::None:
+        erased = platform.eraseEntirePartition();
+        break;
+      case LegacyConnectivityPreservation::Prepared:
+        erased = platform.eraseAfterReplacementPrepared();
+        break;
+      case LegacyConnectivityPreservation::Transaction:
+        erased = platform.eraseAfterReplacementTransaction();
+        break;
+    }
+    if (!erased) {
       return LegacyConnectivityRetirementResult::PartitionEraseFailed;
     }
     bool readbackErased = false;
-    if (!verifyErased(platform, readbackErased) || !readbackErased) {
+    if (!verifyErased(platform, firstRetiredByte, readbackErased) ||
+        !readbackErased) {
       return LegacyConnectivityRetirementResult::PartitionReadbackFailed;
     }
     retired = true;
@@ -146,6 +183,24 @@ bool Esp32LegacyConnectivityRetirementPlatform::eraseEntirePartition() {
   return exactEsp32Partition(partition_) &&
       esp_partition_erase_range(partition_, 0U,
                                 kLegacyConnectivityPartitionBytes) == ESP_OK;
+}
+
+bool Esp32LegacyConnectivityRetirementPlatform::
+    eraseAfterReplacementPrepared() {
+  return exactEsp32Partition(partition_) &&
+      esp_partition_erase_range(
+          partition_, KITSU_REPLACEMENT_INTENT_SECTOR_BYTES,
+          kLegacyConnectivityPartitionBytes -
+              KITSU_REPLACEMENT_INTENT_SECTOR_BYTES) == ESP_OK;
+}
+
+bool Esp32LegacyConnectivityRetirementPlatform::
+    eraseAfterReplacementTransaction() {
+  return exactEsp32Partition(partition_) &&
+      esp_partition_erase_range(
+          partition_, KITSU_REPLACEMENT_TRANSACTION_BYTES,
+          kLegacyConnectivityPartitionBytes -
+              KITSU_REPLACEMENT_TRANSACTION_BYTES) == ESP_OK;
 }
 
 bool Esp32LegacyConnectivityRetirementPlatform::clearLegacyReplayNamespace(

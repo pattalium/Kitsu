@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   FLASH_PLAN,
   pemToSpki,
+  replacementRetryCoreArtifacts,
+  REPLACEMENT_RETRY_RETAINED_BYTES,
   reverifyArtifacts,
   sha256Hex,
   UPDATE_AUTHORITY_SPKI_SHA256,
@@ -288,5 +290,47 @@ test("pre-write reverification requires the complete seven-region release", asyn
   assert.equal(
     await sha256Hex(new Uint8Array(FLASH_PLAN.legacyConnectivityBytes).fill(0xff)),
     FLASH_PLAN.legacyConnectivitySha256,
+  );
+});
+
+test("replacement retry preserves both transaction sectors and clears only the signed suffix", async () => {
+  const untouched = Array.from({ length: 6 }, (_, index) => ({
+    record: { role: `signed_${index}`, offset: index, bytes: 1, sha256: "0".repeat(64) },
+    bytes: new Uint8Array([index]),
+  }));
+  const fullClear = new Uint8Array(FLASH_PLAN.legacyConnectivityBytes).fill(0xff);
+  const release = {
+    artifacts: [
+      ...untouched,
+      {
+        record: {
+          role: "legacy_connectivity_clear",
+          offset: FLASH_PLAN.legacyConnectivityOffset,
+          bytes: FLASH_PLAN.legacyConnectivityBytes,
+          sha256: FLASH_PLAN.legacyConnectivitySha256,
+        },
+        bytes: fullClear,
+      },
+    ],
+  };
+
+  const retry = await replacementRetryCoreArtifacts(release);
+  assert.equal(retry.length, 7);
+  assert.deepEqual(retry.slice(0, 6), untouched);
+  const suffix = retry[6];
+  assert.equal(REPLACEMENT_RETRY_RETAINED_BYTES, 0x2000);
+  assert.equal(suffix.record.offset, 0x7b2000);
+  assert.equal(suffix.record.bytes, 0x3e000);
+  assert.equal(suffix.record.offset + suffix.record.bytes, 0x7f0000);
+  assert.equal(suffix.bytes.every((value) => value === 0xff), true);
+  assert.equal(await sha256Hex(suffix.bytes), suffix.record.sha256);
+
+  const changed = fullClear.slice();
+  changed[REPLACEMENT_RETRY_RETAINED_BYTES] = 0;
+  await assert.rejects(
+    replacementRetryCoreArtifacts({
+      artifacts: [...untouched, { ...release.artifacts[6], bytes: changed }],
+    }),
+    /exact signed legacy-connectivity clear artifact/,
   );
 });

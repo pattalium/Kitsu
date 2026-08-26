@@ -23,6 +23,9 @@ import ptl.kitsu.app.model.Peer
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
 import ptl.kitsu.app.pairing.PairingException
+import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
+import ptl.kitsu.app.pairing.BluetoothPairingRepairProgress
+import ptl.kitsu.app.pairing.BluetoothPairingRepairStage
 import ptl.kitsu.app.security.BondedCompanion
 import ptl.kitsu.app.security.CredentialStore
 import ptl.kitsu.app.security.SafeLog
@@ -81,6 +84,8 @@ data class OwnerState(
     val errorCode: String? = null,
     val pairing: Boolean = false,
     val pairingProgress: ControllerPairingProgress? = null,
+    val repairingBluetoothPairing: Boolean = false,
+    val bluetoothPairingRepairProgress: BluetoothPairingRepairProgress? = null,
     val meshConfigurationInFlight: Boolean = false,
     val meshAdvertisementInFlight: Boolean = false,
 )
@@ -155,7 +160,7 @@ class OwnerRepository(
 
     suspend fun connectAndRefresh(userInitiated: Boolean = false) {
         initialHydration.await()
-        if (mutableState.value.pairing) return
+        if (mutableState.value.pairing || mutableState.value.repairingBluetoothPairing) return
         val selected = mutableState.value.activeDeviceAddress ?: credentials.bondedCompanion()?.deviceAddress
         if (selected == null) {
             mutableState.value = mutableState.value.copy(loading = false, errorCode = null)
@@ -212,6 +217,8 @@ class OwnerRepository(
             errorCode = null,
             pairing = false,
             pairingProgress = null,
+            repairingBluetoothPairing = false,
+            bluetoothPairingRepairProgress = null,
         )
     }
 
@@ -673,6 +680,95 @@ class OwnerRepository(
     }
 
     fun cancelPairing() = pairingService.cancelPairing()
+
+    /**
+     * Repairs only the selected saved controller's Android SMP bond.
+     *
+     * The controller ID/root is snapshotted and verified unchanged. The one GATT
+     * connection below is the only retry allowed after a newly completed OS bond.
+     */
+    suspend fun repairBluetoothPairing(deviceAddress: String) {
+        initialHydration.await()
+        val before = credentials.bondedCompanions().firstOrNull {
+            it.deviceAddress.equals(deviceAddress, ignoreCase = true)
+        } ?: throw PairingException("saved_controller_not_found")
+        val active = credentials.bondedCompanion()
+        if (active == null || !active.deviceAddress.equals(deviceAddress, ignoreCase = true) ||
+            active.controllerIdB64 != before.controllerIdB64 ||
+            active.controllerRootB64 != before.controllerRootB64
+        ) throw PairingException("select_saved_controller_before_repair")
+
+        stopEvents()
+        coordinator.disconnect(suppressAutomaticReconnect = false)
+        mutableState.value = mutableState.value.copy(
+            loading = false,
+            errorCode = null,
+            repairingBluetoothPairing = true,
+            bluetoothPairingRepairProgress = BluetoothPairingRepairProgress(
+                BluetoothPairingRepairStage.CHECKING_SAVED_CONTROLLER,
+                "checking_saved_controller",
+            ),
+        )
+        try {
+            val repaired = pairingService.repairBluetoothPairing(deviceAddress) { progress ->
+                mutableState.value = mutableState.value.copy(
+                    repairingBluetoothPairing = true,
+                    bluetoothPairingRepairProgress = progress,
+                )
+            }
+            val after = credentials.bondedCompanions().firstOrNull {
+                it.deviceAddress.equals(deviceAddress, ignoreCase = true)
+            }
+            if (repaired != before || after != before) {
+                throw PairingException("saved_controller_changed_during_repair")
+            }
+
+            mutableState.value = mutableState.value.copy(
+                bluetoothPairingRepairProgress = BluetoothPairingRepairProgress(
+                    BluetoothPairingRepairStage.CONNECTING_GATT,
+                    "one_fresh_gatt_retry",
+                ),
+            )
+            val connection = coordinator.connect(userInitiated = true)
+            if (!connection.connected) {
+                val code = if (connection.detail == "controller_auth_failed") {
+                    BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING
+                } else connection.detail
+                throw PairingException(code)
+            }
+            mutableState.value = mutableState.value.copy(
+                bluetoothPairingRepairProgress = BluetoothPairingRepairProgress(
+                    BluetoothPairingRepairStage.VERIFYING_CONTROLLER,
+                    "saved_controller_authenticated",
+                ),
+            )
+            OwnerConnectRefreshOrder.run(
+                subscribe = {
+                    if (coordinator.state.value.connected) subscribeToEvents()
+                },
+                initialRefresh = ::refresh,
+            )
+            mutableState.value = mutableState.value.copy(
+                repairingBluetoothPairing = false,
+                bluetoothPairingRepairProgress = BluetoothPairingRepairProgress(
+                    BluetoothPairingRepairStage.COMPLETE,
+                    "bluetooth_pairing_repaired_controller_kept",
+                ),
+                errorCode = null,
+            )
+        } catch (failure: Throwable) {
+            val code = (failure as? PairingException)?.code ?: "bluetooth_pairing_repair_failed"
+            mutableState.value = mutableState.value.copy(
+                loading = false,
+                repairingBluetoothPairing = false,
+                bluetoothPairingRepairProgress = null,
+                errorCode = code,
+            )
+            throw failure
+        }
+    }
+
+    fun cancelBluetoothPairingRepair() = pairingService.cancelPairing()
 
     /** Revokes this app's authenticated controller on Kitsu before deleting the local root. */
     suspend fun forgetController(deviceAddress: String) {
@@ -1136,6 +1232,7 @@ class OwnerRepository(
         val LOCAL_PREREQUISITE_ERRORS = setOf(
             "bluetooth_permission_required",
             "pairing_bluetooth_permission_required",
+            BluetoothPairingRepairPolicy.PERMISSION_REQUIRED,
         )
         const val UNBOUND_UPDATE_ABORT_ID =
             "0000000000000000000000000000000000000000000000000000000000000000"

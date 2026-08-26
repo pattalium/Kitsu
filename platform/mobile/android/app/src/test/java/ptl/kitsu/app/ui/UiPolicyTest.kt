@@ -55,8 +55,19 @@ class UiPolicyTest {
         )
     }
 
+    @Test fun existingControllerCannotBeSilentlyReissued() {
+        assertEquals(
+            "This Kitsu already has a saved controller on this phone. Use Repair Bluetooth pairing, or explicitly forget the old controller before issuing a new one.",
+            "controller_already_saved_use_repair_or_forget".humanized(),
+        )
+    }
+
     @Test fun bluetoothPermissionDenialRetainsTheInitiatingFlow() {
         assertEquals("bluetooth_permission_required", blePermissionErrorCode(pairing = false))
         assertEquals("pairing_bluetooth_permission_required", blePermissionErrorCode(pairing = true))
+        assertEquals(
+            "repair_bluetooth_permission_required",
+            blePermissionErrorCode(pairing = true, repair = true),
+        )
     }
 }

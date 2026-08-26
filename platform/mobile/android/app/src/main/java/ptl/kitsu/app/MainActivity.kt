@@ -66,7 +66,7 @@ internal fun kitsuSensitiveUnlockClip(code: String): ClipData {
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
-    private enum class BleContinuation { CONNECT, PAIR_CONTROLLER, FINISH_PAIRING }
+    private enum class BleContinuation { CONNECT, PAIR_CONTROLLER, FINISH_PAIRING, REPAIR_PAIRING }
 
     private var permissionContinuation = BleContinuation.CONNECT
     private var bluetoothContinuation = BleContinuation.CONNECT
@@ -85,6 +85,15 @@ class MainActivity : ComponentActivity() {
         viewModel.reconnectBluetooth()
     }
 
+    private val bluetoothSettingsRepairLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        // Android has no supported app API for deleting a stale bond. After the
+        // owner returns from the system Forget screen, retry only the dedicated
+        // saved-controller repair flow.
+        requestBlePermissions(BleContinuation.REPAIR_PAIRING)
+    }
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
@@ -94,7 +103,10 @@ class MainActivity : ComponentActivity() {
         ) {
             continueAfterPermission(permissionContinuation)
         } else {
-            viewModel.reportBlePermissionDenied(permissionContinuation != BleContinuation.CONNECT)
+            viewModel.reportBlePermissionDenied(
+                pairing = permissionContinuation != BleContinuation.CONNECT,
+                repair = permissionContinuation == BleContinuation.REPAIR_PAIRING,
+            )
         }
     }
 
@@ -164,6 +176,12 @@ class MainActivity : ComponentActivity() {
                 },
                 onFinishPairing = {
                     requestBlePermissions(BleContinuation.FINISH_PAIRING)
+                },
+                onRepairBluetoothPairing = {
+                    requestBlePermissions(BleContinuation.REPAIR_PAIRING)
+                },
+                onOpenBluetoothSettingsForRepair = {
+                    bluetoothSettingsRepairLauncher.launch(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
                 },
                 onOpenFirmwarePackage = {
                     // File providers do not agree on a MIME type for `.kitsu-fw`; the strict
@@ -262,6 +280,7 @@ class MainActivity : ComponentActivity() {
                 pendingPairingLabel = null
             }
             BleContinuation.FINISH_PAIRING -> viewModel.finishPendingPairing()
+            BleContinuation.REPAIR_PAIRING -> viewModel.repairBluetoothPairing()
         }
     }
 

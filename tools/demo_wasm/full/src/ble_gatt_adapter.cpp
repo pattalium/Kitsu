@@ -386,6 +386,18 @@ bool KitsuBleGattLink::setLocalControllerRecoveryLocked(bool locked) {
   return true;
 }
 
+bool KitsuBleGattLink::clearAllBondsForLocalRecovery(
+    BleBondClearStatus& status) {
+  status = BleBondClearStatus{};
+  // The emulator has no persistent OS/SMP bond store. Do not pretend that a
+  // browser-host session exercised the ESP32 NimBLE NVS deletion fallback.
+  return false;
+}
+
+int KitsuBleGattLink::bondCount() const {
+  return impl_ && host.begun ? 0 : -1;
+}
+
 bool KitsuBleGattLink::setApplicationAuthenticated(bool authenticated) {
   if (!impl_ || !host.begun) return false;
   if (host.deliveringFrame) {

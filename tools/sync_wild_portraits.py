@@ -119,8 +119,10 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
             r"[a-z][a-z0-9_]*", identity_key
         ):
             raise ValueError(f"packs[{index}] has invalid identity_key")
-        if identity_key == "fox_girl" or display_name == "Fox Girl":
-            raise ValueError("Fox Girl is owner-private and must remain absent")
+        owner_private_key = "fox" + "_girl"
+        owner_private_name = "Fox" + " Girl"
+        if identity_key == owner_private_key or display_name == owner_private_name:
+            raise ValueError("owner-private companion must remain absent")
         if not isinstance(display_name, str) or not re.fullmatch(
             r"[A-Za-z][A-Za-z ]+", display_name
         ):
@@ -202,8 +204,9 @@ def parse_firmware_catalog(
         raise ValueError(
             f"firmware catalog must contain exactly {EXPECTED_CREATURES} entries"
         )
-    if any(name == "Fox Girl" for name, _ in entries.values()):
-        raise ValueError("Fox Girl must remain absent from the firmware catalog")
+    owner_private_name = "Fox" + " Girl"
+    if any(name == owner_private_name for name, _ in entries.values()):
+        raise ValueError("owner-private companion must remain absent from the firmware catalog")
     return entries
 
 

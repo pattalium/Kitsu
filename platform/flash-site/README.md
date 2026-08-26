@@ -49,14 +49,74 @@ K868PK1 version, header and fixed layout, canvas and count bounds, clip and step
 references, display name, slot boundary, payload CRC32, and header CRC32 before
 computing its readback SHA-256. The selected bundle is written in a separate
 bounded phase and read back before the one final hard reset. "Keep current
-pet" is the default and performs no companion-slot write. Changing to a
-different species starts that companion's care and bond progression fresh.
+pet" is forced on every page load and performs no companion-partition write,
+including no write to a private or unlocked pack already on the board.
 
-There is no full-chip erase command and no OTA-data, companion-state,
-controller-store, MeshCore-state, coredump, or eFuse write path. The companion
-slot changes only after an explicit Cat, Fox, Dog, or locally validated unlocked
-file selection. Flash writes necessarily erase only the target flash sectors
-before programming them; `eraseAll` remains false.
+Before any pet replacement, the installer reads both transaction sectors and
+then structurally validates the physical pack. A same-ID revision update
+preserves progression. A different pack ID is a destructive species
+replacement and requires a second, species-specific confirmation. Its 40-byte
+CRC-protected intent binds the validated old pack ID to the new pack ID,
+revision, length, header CRC, and payload CRC. Identical copies use separate
+4 KiB sectors in the already-retired `kitsu_conn` area: PREPARED at `0x7b0000`
+and COMMITTED at `0x7b1000`.
+
+For a fresh replacement, the normal signed core clear is read back first. The
+browser then writes and reads back PREPARED before writing any target-pack byte.
+Only after the entire target pack passes exact SHA-256 readback does it write
+and read back COMMITTED. A power or USB loss can therefore leave the source
+identity intact without authorizing a half-written target. Firmware requires
+both structurally valid, byte-identical records, the stored source ID, and all
+validated target metadata before companion state may be reset.
+
+On reconnect, a valid PREPARED record remains the sole source of the old pet
+identity even if COMMITTED is erased, torn, or mismatched and even if the
+physical pack is already the target, partial, or invalid. Such a COMMITTED
+sector is treated as uncommitted, never as authorization. Only the exact target
+bound by PREPARED may retry; the browser never infers the source from the
+post-failure physical pack. A retry keeps both transaction sectors untouched,
+derives an erased suffix from the already SHA-verified signed retirement image,
+and writes/readbacks only `0x7b2000..0x7effff`. It then verifies the retained
+PREPARED sector again before touching the target and replaces COMMITTED only
+after target readback. This avoids a retry-time erase window in which a power
+loss could otherwise discard the only saved source ID.
+
+The default Preserve choice is deliberately blocked while PREPARED is pending
+and the physical pack is partial, invalid, already the target, or any ID other
+than the saved source. Running the ordinary full core clear in that state would
+silently discard the recovery record. Preserve may cancel a stale transaction
+only when the complete physical pack validates with the saved source ID; then
+no companion-pack byte or pet progress is changed. Malformed PREPARED and
+COMMITTED-without-PREPARED states fail closed and block companion writes.
+
+Firmware validates canonical record bytes and all-`0xff` sector padding before
+retirement. With PREPARED-only or torn COMMITTED, it preserves the PREPARED
+sector and erases/verifies the remaining retired tail. With a canonical,
+byte-identical pair, it preserves both transaction sectors and retires only the
+tail. It consumes both records only after durably saving an explicitly
+authorized target identity. A missing, interrupted, stale, mismatched, or
+non-durable transaction cannot clear companion state: firmware quarantines the
+physical pack mismatch and loads the brain using the stored original pack ID.
+Thus neither a failed pack write nor a temporary starter pack can overwrite the
+existing companion. The transaction never borrows space from the companion
+slot: the full original `0x140000`-byte `.k868` capacity, format, and
+structural/CRC trust model remain unchanged.
+
+If both transaction sectors are erased but the physical pack is invalid, the
+owner may explicitly select a fully verified pack as a byte-level repair. This
+path writes no PREPARED or COMMITTED record and therefore cannot authorize a
+species reset. Firmware activates the repaired pack only when its ID matches
+durable companion state or when migrating a legacy packless device; otherwise
+it quarantines the pack. A true empty-slot first assignment preserves legacy
+vitals while establishing the pack brain identity and clearing pack-specific
+traits and gifts.
+
+There is no full-chip erase command and no OTA-data, controller-store,
+MeshCore-state, coredump, or eFuse write path. The browser never edits NVS;
+only firmware may reset companion state after validating and consuming the
+explicit one-shot species-replacement authorization. Flash writes necessarily
+erase only the target flash sectors before programming them; `eraseAll` remains
+false.
 
 Run `npm ci` followed by `npm run check`. Deploy only `dist/`, never this source
 tree or `node_modules/`. Physical browser acceptance still requires a Heltec

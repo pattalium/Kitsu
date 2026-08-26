@@ -13,6 +13,7 @@ import ptl.kitsu.app.model.NearbyKitsu
 import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.pairing.PairingException
+import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
 import ptl.kitsu.app.repository.OwnerRepository
 import ptl.kitsu.app.repository.OwnerState
 import ptl.kitsu.app.security.AndroidKeystoreEncounterCodeVault
@@ -105,9 +106,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reconnectBluetooth() = connect()
 
-    fun reportBlePermissionDenied(pairing: Boolean) {
-        repository.reportLocalError(blePermissionErrorCode(pairing))
-        mutableNotice.value = if (pairing) {
+    fun reportBlePermissionDenied(pairing: Boolean, repair: Boolean = false) {
+        repository.reportLocalError(blePermissionErrorCode(pairing, repair))
+        mutableNotice.value = if (repair) {
+            "Bluetooth permission is required to repair this saved pairing."
+        } else if (pairing) {
             "Bluetooth permission is required to pair this phone."
         } else {
             "Bluetooth permission is required to connect."
@@ -341,6 +344,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.cancelPairing()
     }
 
+    fun repairBluetoothPairing(deviceAddress: String? = owner.value.activeDeviceAddress) {
+        if (rejectWhileFirmwareBusy()) return
+        if (deviceAddress == null) {
+            mutableNotice.value = "Select a saved Kitsu before repairing Bluetooth pairing."
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { repository.repairBluetoothPairing(deviceAddress) }
+            val code = (result.exceptionOrNull() as? PairingException)?.code
+            mutableNotice.value = when (code) {
+                BluetoothPairingRepairPolicy.ANDROID_FORGET_REQUIRED ->
+                    "Android still has the old bond. Open Bluetooth settings, forget this Kitsu, then continue repair."
+                BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING ->
+                    "The Bluetooth bond is repaired, but Kitsu no longer has this saved controller authorization."
+                "repair_device_absent" ->
+                    "Kitsu was not found. Open Pair Phone on Kitsu, keep it close, then retry."
+                "secure_bond_failed", "secure_bond_verification_failed" ->
+                    "Android did not finish secure pairing. Open Pair Phone on Kitsu and retry."
+                null -> if (result.isSuccess) {
+                    "Bluetooth pairing repaired. Saved controller kept."
+                } else {
+                    "Bluetooth pairing repair failed. No saved controller or app data was changed."
+                }
+                else -> code
+            }
+        }
+    }
+
+    fun cancelBluetoothPairingRepair() {
+        if (rejectWhileFirmwareBusy()) return
+        repository.cancelBluetoothPairingRepair()
+    }
+
     fun forgetController(deviceAddress: String) = viewModelScope.launch {
         if (rejectWhileFirmwareBusy()) return@launch
         runCatching { repository.forgetController(deviceAddress) }.report("controller_forget_failed")
@@ -546,5 +582,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
-internal fun blePermissionErrorCode(pairing: Boolean): String =
-    if (pairing) "pairing_bluetooth_permission_required" else "bluetooth_permission_required"
+internal fun blePermissionErrorCode(pairing: Boolean, repair: Boolean = false): String = when {
+    repair -> BluetoothPairingRepairPolicy.PERMISSION_REQUIRED
+    pairing -> "pairing_bluetooth_permission_required"
+    else -> "bluetooth_permission_required"
+}

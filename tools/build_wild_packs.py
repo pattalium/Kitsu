@@ -404,6 +404,61 @@ def publish_portraits(
     )
 
 
+def verify_visual_acceptance(
+    acceptance_path: Path,
+    results: list[dict[str, object]],
+    project_root: Path,
+) -> str:
+    """Bind human visual approval to the exact rasterized release inputs.
+
+    Mechanical pack checks deliberately cannot decide whether an animal still
+    looks like itself or whether four frames tell the named action. Publication
+    therefore requires a separate, private record that approves every role and
+    pins both the resulting pack and the reviewed contact sheet.
+    """
+    resolved = acceptance_path.resolve()
+    require_private_path(resolved, project_root, "visual acceptance record")
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or set(payload) != {"schema", "packs"}:
+        raise ValueError("visual acceptance record must contain exactly schema and packs")
+    if payload["schema"] != "kitsu-wild-visual-acceptance-v1":
+        raise ValueError("unsupported visual acceptance schema")
+    records = payload["packs"]
+    if not isinstance(records, list) or len(records) != len(results):
+        raise ValueError("visual acceptance must cover every selected pack exactly once")
+
+    expected_roles = [role.name for role in base.ROLE_SPECS]
+    by_identity: dict[str, dict[str, object]] = {}
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {
+            "accepted_roles",
+            "contact_sheet_sha256",
+            "identity_key",
+            "pack_sha256",
+        }:
+            raise ValueError("visual acceptance pack record has unexpected fields")
+        identity = record["identity_key"]
+        if not isinstance(identity, str) or identity in by_identity:
+            raise ValueError("visual acceptance contains an invalid or duplicate identity")
+        accepted_roles = record["accepted_roles"]
+        if accepted_roles != expected_roles:
+            raise ValueError(
+                f"{identity}: visual acceptance must approve all roles in canonical order"
+            )
+        by_identity[identity] = record
+
+    if set(by_identity) != {str(result["identity_key"]) for result in results}:
+        raise ValueError("visual acceptance identity set differs from the selected build")
+    for result in results:
+        identity = str(result["identity_key"])
+        record = by_identity[identity]
+        if record["pack_sha256"] != result["pack_sha256"]:
+            raise ValueError(f"{identity}: accepted pack SHA-256 does not match")
+        if record["contact_sheet_sha256"] != result["contact_sheet_sha256"]:
+            raise ValueError(f"{identity}: accepted contact-sheet SHA-256 does not match")
+    return base.sha256_file(resolved)
+
+
 def parse_args() -> argparse.Namespace:
     project_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -416,6 +471,14 @@ def parse_args() -> argparse.Namespace:
         help="Build only the named identity for a private checkpoint; repeat as needed.",
     )
     parser.add_argument("--publish-static-portraits", action="store_true")
+    parser.add_argument(
+        "--visual-acceptance",
+        type=Path,
+        help=(
+            "Private kitsu-wild-visual-acceptance-v1 record binding every "
+            "approved action to this exact build; required for publication."
+        ),
+    )
     parser.add_argument(
         "--public-portrait-dir",
         type=Path,
@@ -440,6 +503,13 @@ def main() -> int:
 
     selected = list(dict.fromkeys(args.species or WILD_SPECIES.keys()))
     results = [build_species(source_dir, private_output, species) for species in selected]
+    visual_acceptance_sha256 = None
+    if args.visual_acceptance is not None:
+        visual_acceptance_sha256 = verify_visual_acceptance(
+            args.visual_acceptance, results, project_root
+        )
+    if args.publish_static_portraits and visual_acceptance_sha256 is None:
+        raise ValueError("static portrait publication requires exact visual acceptance")
     manifest = {
         "schema": "kitsu-wild-pack-private-release-v2",
         "identity_keys": selected,
@@ -462,7 +532,9 @@ def main() -> int:
             "required_unique_frames_per_role": 3,
             "required_changed_pixels_per_role": 8,
             "source_asset_per_role": True,
+            "mechanical_validation_is_visual_acceptance": False,
         },
+        "visual_acceptance_sha256": visual_acceptance_sha256,
         "packs": results,
     }
     manifest_path = private_output / "wild-packs-manifest.json"
@@ -484,7 +556,8 @@ def main() -> int:
             f"identity={result['identity_key']} name={result['display_name']} "
             f"rarity={result['rarity']} id={result['pack_id']} "
             f"frames={result['stored_frames']} clips={result['clips']} "
-            f"bytes={result['pack_bytes']} sha256={result['pack_sha256']}"
+            f"bytes={result['pack_bytes']} sha256={result['pack_sha256']} "
+            f"visual_accepted={visual_acceptance_sha256 is not None}"
         )
     print(f"PRIVATE_WILD_MANIFEST {manifest_path}")
     return 0

@@ -1,4 +1,5 @@
 #include "../src/kitsu_legacy_connectivity_retirement.h"
+#include "../src/companion_replacement_intent.h"
 
 #include <assert.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 
 using kitsu868::connectivity::KitsuLegacyConnectivityRetirement;
 using kitsu868::connectivity::LegacyConnectivityPartition;
+using kitsu868::connectivity::LegacyConnectivityPreservation;
 using kitsu868::connectivity::LegacyConnectivityRetirementPlatform;
 using kitsu868::connectivity::LegacyConnectivityRetirementResult;
 using kitsu868::connectivity::kLegacyConnectivityPartitionAddress;
@@ -15,6 +17,7 @@ using kitsu868::connectivity::kLegacyConnectivityPartitionBytes;
 using kitsu868::connectivity::kLegacyConnectivityPartitionLabel;
 using kitsu868::connectivity::kLegacyConnectivityPartitionSubtype;
 using kitsu868::connectivity::kLegacyConnectivityPartitionType;
+using kitsu868::KITSU_REPLACEMENT_TRANSACTION_BYTES;
 
 namespace {
 
@@ -45,7 +48,7 @@ class MemoryPlatform final : public LegacyConnectivityRetirementPlatform {
       return false;
     }
     memcpy(output, bytes.data() + offset, outputBytes);
-    if (corruptReadback && eraseCalls != 0U && offset == 0U &&
+    if (corruptReadback && eraseCalls != 0U && offset == lastEraseOffset &&
         outputBytes != 0U) {
       output[0] = 0U;
     }
@@ -54,8 +57,30 @@ class MemoryPlatform final : public LegacyConnectivityRetirementPlatform {
 
   bool eraseEntirePartition() override {
     ++eraseCalls;
+    lastEraseOffset = 0U;
     if (failErase) return false;
     std::fill(bytes.begin(), bytes.end(), static_cast<uint8_t>(0xffU));
+    return true;
+  }
+
+  bool eraseAfterReplacementPrepared() override {
+    ++eraseCalls;
+    ++preparedEraseCalls;
+    lastEraseOffset = kitsu868::KITSU_REPLACEMENT_INTENT_SECTOR_BYTES;
+    if (failErase) return false;
+    std::fill(
+        bytes.begin() + kitsu868::KITSU_REPLACEMENT_INTENT_SECTOR_BYTES,
+        bytes.end(), static_cast<uint8_t>(0xffU));
+    return true;
+  }
+
+  bool eraseAfterReplacementTransaction() override {
+    ++eraseCalls;
+    ++tailEraseCalls;
+    lastEraseOffset = KITSU_REPLACEMENT_TRANSACTION_BYTES;
+    if (failErase) return false;
+    std::fill(bytes.begin() + KITSU_REPLACEMENT_TRANSACTION_BYTES,
+              bytes.end(), static_cast<uint8_t>(0xffU));
     return true;
   }
 
@@ -82,6 +107,9 @@ class MemoryPlatform final : public LegacyConnectivityRetirementPlatform {
   size_t inspectCalls = 0U;
   size_t readCalls = 0U;
   size_t eraseCalls = 0U;
+  size_t preparedEraseCalls = 0U;
+  size_t tailEraseCalls = 0U;
+  size_t lastEraseOffset = 0U;
   size_t namespaceChecks = 0U;
   size_t namespaceEraseWrites = 0U;
 };
@@ -147,6 +175,72 @@ void testStrictPartitionIdentityFailsBeforeAuthority() {
   rejected(size);
 }
 
+void testValidReplacementPrefixSurvivesRetirementAndRetry() {
+  MemoryPlatform platform;
+  for (size_t index = 0U; index < KITSU_REPLACEMENT_TRANSACTION_BYTES;
+       ++index) {
+    platform.bytes[index] = static_cast<uint8_t>((index * 29U) & 0xffU);
+  }
+  const std::vector<uint8_t> expectedPrefix(
+      platform.bytes.begin(),
+      platform.bytes.begin() + KITSU_REPLACEMENT_TRANSACTION_BYTES);
+  platform.bytes[KITSU_REPLACEMENT_TRANSACTION_BYTES] = 0xa5U;
+  platform.bytes.back() = 0x00U;
+
+  assert(KitsuLegacyConnectivityRetirement::run(
+             platform, LegacyConnectivityPreservation::Transaction) ==
+         LegacyConnectivityRetirementResult::OkRetired);
+  assert(platform.eraseCalls == 1U);
+  assert(platform.tailEraseCalls == 1U);
+  assert(std::equal(expectedPrefix.begin(), expectedPrefix.end(),
+                    platform.bytes.begin()));
+  assert(std::all_of(
+      platform.bytes.begin() + KITSU_REPLACEMENT_TRANSACTION_BYTES,
+      platform.bytes.end(),
+      [](uint8_t value) { return value == 0xffU; }));
+
+  const size_t eraseCalls = platform.eraseCalls;
+  assert(KitsuLegacyConnectivityRetirement::run(
+             platform, LegacyConnectivityPreservation::Transaction) ==
+         LegacyConnectivityRetirementResult::OkAlreadyClean);
+  assert(platform.eraseCalls == eraseCalls);
+  assert(std::equal(expectedPrefix.begin(), expectedPrefix.end(),
+                    platform.bytes.begin()));
+
+  MemoryPlatform failure;
+  failure.bytes[0U] = 0x4bU;
+  failure.bytes[KITSU_REPLACEMENT_TRANSACTION_BYTES] = 0x11U;
+  failure.failErase = true;
+  assert(KitsuLegacyConnectivityRetirement::run(
+             failure, LegacyConnectivityPreservation::Transaction) ==
+         LegacyConnectivityRetirementResult::PartitionEraseFailed);
+  assert(failure.bytes[0U] == 0x4bU);
+  assert(failure.tailEraseCalls == 1U);
+
+  MemoryPlatform tornCommit;
+  for (size_t index = 0U;
+       index < kitsu868::KITSU_REPLACEMENT_INTENT_SECTOR_BYTES; ++index) {
+    tornCommit.bytes[index] = static_cast<uint8_t>((index * 17U) & 0xffU);
+  }
+  const std::vector<uint8_t> expectedPrepared(
+      tornCommit.bytes.begin(),
+      tornCommit.bytes.begin() +
+          kitsu868::KITSU_REPLACEMENT_INTENT_SECTOR_BYTES);
+  tornCommit.bytes[kitsu868::KITSU_REPLACEMENT_INTENT_SECTOR_BYTES] = 0x4bU;
+  tornCommit.bytes[KITSU_REPLACEMENT_TRANSACTION_BYTES] = 0x22U;
+  assert(KitsuLegacyConnectivityRetirement::run(
+             tornCommit, LegacyConnectivityPreservation::Prepared) ==
+         LegacyConnectivityRetirementResult::OkRetired);
+  assert(tornCommit.preparedEraseCalls == 1U);
+  assert(std::equal(expectedPrepared.begin(), expectedPrepared.end(),
+                    tornCommit.bytes.begin()));
+  assert(std::all_of(
+      tornCommit.bytes.begin() +
+          kitsu868::KITSU_REPLACEMENT_INTENT_SECTOR_BYTES,
+      tornCommit.bytes.end(),
+      [](uint8_t value) { return value == 0xffU; }));
+}
+
 void testFailuresAreClosedAndRetryable() {
   MemoryPlatform readFailure;
   readFailure.bytes[0U] = 0U;
@@ -209,6 +303,7 @@ void testResultNamesAndSuccessBoundary() {
 int main() {
   testRetiresWholePartitionAndNamespaceOnce();
   testStrictPartitionIdentityFailsBeforeAuthority();
+  testValidReplacementPrefixSurvivesRetirementAndRetry();
   testFailuresAreClosedAndRetryable();
   testResultNamesAndSuccessBoundary();
   return 0;

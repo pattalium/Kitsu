@@ -1,9 +1,9 @@
 export const FIRMWARE_WASM_SHA256 =
-  "0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993";
+  "cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73";
 export const FIRMWARE_WASM_URL =
   "/demo/kitsu-firmware-full." + FIRMWARE_WASM_SHA256 + ".wasm";
 export const FOX_PACK_SHA256 =
-  "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38";
+  "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d";
 export const FOX_PACK_URL =
   "/demo/assets/fox." + FOX_PACK_SHA256 + ".k868";
 export const FIRMWARE_ABI_VERSION = 2;
@@ -1170,7 +1170,7 @@ function initializeDemo() {
   async function activateRuntime(options = {}) {
     const generation = ++operationGeneration;
     setBusy(true);
-    setRuntimeStatus("Starting source-built 0.17.1 firmware");
+    setRuntimeStatus("Starting source-built 0.17.4 firmware");
     const nextTarget = await instantiateRuntime(assets.module, {
       deviceId: targetDeviceId,
       pack: assets.pack,
@@ -1186,7 +1186,7 @@ function initializeDemo() {
     volatileSnapshot = null;
     meshReady = false;
     lastPersistentSignature = "";
-    setRuntimeStatus("Kitsu 0.17.1 running");
+    setRuntimeStatus("Kitsu 0.17.4 running");
     await replayBootFrames(target, generation);
     if (generation !== operationGeneration || target !== nextTarget) return false;
     setBusy(false);
@@ -1195,7 +1195,7 @@ function initializeDemo() {
     setView(options.keepView ? activeView : "device", !options.keepView);
     setStatus(options.restored
       ? "Kitsu restarted from its emulated persistent storage."
-      : "Kitsu 0.17.1 and Fox are running in the browser.");
+      : "Kitsu 0.17.4 and Fox are running in the browser.");
     return true;
   }
 
@@ -1218,7 +1218,7 @@ function initializeDemo() {
     if (generation !== operationGeneration) return;
     setProgress(
       48,
-      "Loading the source-built 0.17.1 runtime into emulated application storage.",
+      "Loading the source-built 0.17.4 runtime into emulated application storage.",
       "write",
       ["connect", "download"],
     );
@@ -1243,7 +1243,7 @@ function initializeDemo() {
       if (!activated) return;
       setProgress(
         100,
-        "Kitsu 0.17.1 and Fox verified. The firmware is running.",
+        "Kitsu 0.17.4 and Fox verified. The firmware is running.",
         "",
         ["connect", "download", "write", "fox", "verify"],
       );
@@ -1683,7 +1683,7 @@ function initializeDemo() {
 
   async function loadAndRestore() {
     setBusy(true);
-    setRuntimeStatus("Loading and verifying source-built 0.17.1 firmware");
+    setRuntimeStatus("Loading and verifying source-built 0.17.4 firmware");
     setStatus("Loading the source-built firmware runtime and Fox data.");
     try {
       assets = await loadFullFirmwareAssets();
@@ -1697,7 +1697,7 @@ function initializeDemo() {
         });
       } else {
         setBusy(false);
-        setStatus("The emulator is ready to load Kitsu 0.17.1 and Fox.");
+        setStatus("The emulator is ready to load Kitsu 0.17.4 and Fox.");
         updateAvailability();
       }
     } catch (error) {

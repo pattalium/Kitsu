@@ -31,9 +31,11 @@ export const FLASH_PLAN = Object.freeze({
   legacyConnectivityOffset: 0x7b0000,
   legacyConnectivityBytes: 0x040000,
   legacyConnectivitySha256: "3b874d3ba46c638fc3094f8e92fb744ca974893873f8885f54e23760f9b6311b",
-  applicationBytes: 938048,
-  applicationSha256: "928b7084e02754dad054b970358937542580fa7a1e65a664d1cfc6c8c12ac0fd",
+  applicationBytes: 944384,
+  applicationSha256: "15ed90387644e355d31338bb3da6a18406b51d1a5ddd953efa7387930b78c111",
 });
+
+export const REPLACEMENT_RETRY_RETAINED_BYTES = 0x002000;
 
 const TOP_LEVEL_KEYS = [
   "schema",
@@ -496,4 +498,38 @@ export async function reverifyArtifacts(release) {
       fail(`${artifact.record.role} artifact changed after verification`);
     }
   }
+}
+
+export async function replacementRetryCoreArtifacts(release) {
+  if (!release || !Array.isArray(release.artifacts) || release.artifacts.length !== 7) {
+    fail("verified release is not loaded for replacement retry");
+  }
+  const legacyClear = release.artifacts[6];
+  if (
+    legacyClear?.record?.role !== "legacy_connectivity_clear"
+    || legacyClear.record.offset !== FLASH_PLAN.legacyConnectivityOffset
+    || legacyClear.record.bytes !== FLASH_PLAN.legacyConnectivityBytes
+    || legacyClear.record.sha256 !== FLASH_PLAN.legacyConnectivitySha256
+    || !(legacyClear.bytes instanceof Uint8Array)
+    || legacyClear.bytes.byteLength !== FLASH_PLAN.legacyConnectivityBytes
+    || await sha256Hex(legacyClear.bytes) !== FLASH_PLAN.legacyConnectivitySha256
+  ) {
+    fail("replacement retry requires the exact signed legacy-connectivity clear artifact");
+  }
+  if (legacyClear.bytes.some((value) => value !== 0xff)) {
+    fail("signed legacy-connectivity clear artifact is not erased bytes");
+  }
+
+  const suffixBytes = legacyClear.bytes.slice(REPLACEMENT_RETRY_RETAINED_BYTES);
+  const suffixRecord = Object.freeze({
+    ...legacyClear.record,
+    role: "legacy_connectivity_clear_preserving_replacement_transaction",
+    offset: legacyClear.record.offset + REPLACEMENT_RETRY_RETAINED_BYTES,
+    bytes: suffixBytes.byteLength,
+    sha256: await sha256Hex(suffixBytes),
+  });
+  return Object.freeze([
+    ...release.artifacts.slice(0, 6),
+    Object.freeze({ record: suffixRecord, bytes: suffixBytes }),
+  ]);
 }

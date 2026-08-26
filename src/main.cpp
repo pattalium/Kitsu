@@ -8,9 +8,11 @@
 
 #include "companion_brain.h"
 #include "companion_pack.h"
+#include "companion_replacement_intent.h"
 #include "encounter_protocol.h"
 #include "kitsu_chat_contract.h"
 #include "kitsu_ble_action.h"
+#include "kitsu_ble_bond_recovery.h"
 #include "kitsu_ble_gatt.h"
 #include "kitsu_ble_ota.h"
 #include "kitsu_ble_session.h"
@@ -34,7 +36,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.17.1";
+constexpr char FIRMWARE_VERSION[] = "0.17.4";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 constexpr uint32_t SIGNAL_STATE_MAGIC = 0x4b534731;  // "KSG1"
@@ -172,6 +174,9 @@ enum class ControllerRecoveryResult : uint8_t {
   RemovedAll,
   Unchanged,
   StorageNeedsReboot,
+  BleBondsCleared,
+  BleBondStoreError,
+  ControllerAuthorityChanged,
 };
 
 enum class ActiveGame : uint8_t { None, SignalCatch, PounceFetch };
@@ -426,8 +431,10 @@ uint32_t buttonChangedAt = 0;
 uint32_t buttonPressedAt = 0;
 constexpr uint8_t CONTROLLER_RECOVERY_RESET_INDEX =
     kitsu868::connectivity::kKitsuControllerCapacity;
-constexpr uint8_t CONTROLLER_RECOVERY_BACK_INDEX =
+constexpr uint8_t CONTROLLER_RECOVERY_BLE_BONDS_INDEX =
     CONTROLLER_RECOVERY_RESET_INDEX + 1U;
+constexpr uint8_t CONTROLLER_RECOVERY_BACK_INDEX =
+    CONTROLLER_RECOVERY_BLE_BONDS_INDEX + 1U;
 constexpr uint8_t CONTROLLER_RECOVERY_OPTION_COUNT =
     CONTROLLER_RECOVERY_BACK_INDEX + 1U;
 static_assert(kitsu868::connectivity::kKitsuControllerCapacity == 4U,
@@ -440,6 +447,9 @@ uint8_t controllerRecoveryOriginalCount = 0U;
 uint32_t controllerRecoveryDeadline = 0U;
 ControllerRecoveryResult controllerRecoveryResult =
     ControllerRecoveryResult::None;
+kitsu868::connectivity::ControllerAuthoritySnapshot
+    controllerRecoveryAuthoritySnapshot{};
+bool controllerRecoveryAuthoritySnapshotValid = false;
 String serialLine;
 bool serialOverflow = false;
 bool serialControlRejected = false;
@@ -549,6 +559,12 @@ class FirmwareBleBridge final
   bool ready() const { return begun_; }
   bool localControllerRecoveryLocked() const {
     return !begun_ || localControllerRecoveryLocked_;
+  }
+  int bleBondCount() const { return begun_ ? link_.bondCount() : -1; }
+  bool clearBleBondsForLocalRecovery(
+      kitsu868::connectivity::BleBondClearStatus& status) {
+    return begun_ && localControllerRecoveryLocked_ &&
+        link_.clearAllBondsForLocalRecovery(status);
   }
   kitsu868::connectivity::BleLinkStatus linkStatus(uint32_t now) const {
     return link_.status(now);
@@ -3691,8 +3707,8 @@ void applyCoreState(const CoreStateV2& state) {
   lastEncounterGift = state.lastGift;
 }
 
-void saveState() {
-  if (!storageReady) return;
+bool saveState() {
+  if (!storageReady) return false;
   CoreStateV2 state{};
   state.bytes = sizeof(CoreStateV2);
   memset(state.uid, 0, sizeof(state.uid));
@@ -3709,9 +3725,19 @@ void saveState() {
   state.unlockedTraits = unlockedTraits;
   state.collectedGifts = collectedGifts;
   state.crc32 = coreStateCrc(state);
-  if (preferences.putBytes("core_v2", &state, sizeof(state)) != sizeof(state)) {
+  const bool written =
+      preferences.putBytes("core_v2", &state, sizeof(state)) == sizeof(state);
+  CoreStateV2 verification{};
+  const bool readBack = written &&
+      preferences.getBytesLength("core_v2") == sizeof(verification) &&
+      preferences.getBytes("core_v2", &verification, sizeof(verification)) ==
+          sizeof(verification) &&
+      validCoreState(verification) &&
+      memcmp(&verification, &state, sizeof(state)) == 0;
+  if (!readBack) {
     Serial.println("KITSU_WARN core_flush=false");
   }
+  return readBack;
 }
 
 void persistProgress() {
@@ -3958,6 +3984,15 @@ bool controllerRecoveryDeadlineReached(uint32_t now, uint32_t deadline) {
   return deadline != 0U && static_cast<int32_t>(now - deadline) >= 0;
 }
 
+bool controllerRecoveryRequiresReboot() {
+  return controllerRecoveryResult ==
+             ControllerRecoveryResult::StorageNeedsReboot ||
+      controllerRecoveryResult ==
+             ControllerRecoveryResult::BleBondStoreError ||
+      controllerRecoveryResult ==
+             ControllerRecoveryResult::ControllerAuthorityChanged;
+}
+
 uint32_t controllerRecoverySecondsRemaining(uint32_t now,
                                             uint32_t deadline) {
   if (controllerRecoveryDeadlineReached(now, deadline)) return 0U;
@@ -3985,6 +4020,9 @@ String controllerFingerprint(
 
 void clearControllerRecoveryTarget() {
   memset(controllerRecoveryTargetId, 0, sizeof(controllerRecoveryTargetId));
+  kitsu868::connectivity::clearControllerAuthoritySnapshot(
+      controllerRecoveryAuthoritySnapshot);
+  controllerRecoveryAuthoritySnapshotValid = false;
   controllerRecoveryTargetSlot = 0U;
   controllerRecoveryOriginalCount = 0U;
 }
@@ -4046,6 +4084,16 @@ bool armControllerRecovery(uint32_t now, uint8_t selection) {
   } else if (selection == CONTROLLER_RECOVERY_RESET_INDEX &&
              controllerRecoveryOriginalCount != 0U) {
     controllerRecoveryTargetSlot = CONTROLLER_RECOVERY_RESET_INDEX;
+  } else if (selection == CONTROLLER_RECOVERY_BLE_BONDS_INDEX &&
+             companionBle.bleBondCount() > 0) {
+    controllerRecoveryTargetSlot = CONTROLLER_RECOVERY_BLE_BONDS_INDEX;
+    controllerRecoveryAuthoritySnapshotValid =
+        kitsu868::connectivity::captureControllerAuthorities(
+            deviceSecurity, controllerRecoveryAuthoritySnapshot);
+    if (!controllerRecoveryAuthoritySnapshotValid) {
+      clearControllerRecoveryTarget();
+      return false;
+    }
   } else {
     clearControllerRecoveryTarget();
     return false;
@@ -4065,8 +4113,87 @@ void commitControllerRecovery(uint32_t now) {
     return;
   }
 
+  const bool clearBleBonds =
+      controllerRecoveryTargetSlot == CONTROLLER_RECOVERY_BLE_BONDS_INDEX;
   const bool resetAll =
       controllerRecoveryTargetSlot == CONTROLLER_RECOVERY_RESET_INDEX;
+  if (clearBleBonds) {
+    kitsu868::connectivity::ControllerAuthoritySnapshot beforeDelete{};
+    const bool beforeStillValid = controllerRecoveryAuthoritySnapshotValid &&
+        kitsu868::connectivity::captureControllerAuthorities(
+            deviceSecurity, beforeDelete) &&
+        kitsu868::connectivity::controllerAuthoritiesUnchanged(
+            controllerRecoveryAuthoritySnapshot, beforeDelete);
+    kitsu868::connectivity::clearControllerAuthoritySnapshot(beforeDelete);
+    if (!beforeStillValid) {
+      kitsu868::connectivity::clearControllerAuthoritySnapshot(
+          controllerRecoveryAuthoritySnapshot);
+      controllerRecoveryAuthoritySnapshotValid = false;
+      controllerRecoveryResult =
+          ControllerRecoveryResult::ControllerAuthorityChanged;
+      controllerRecoveryDeadline = 0U;
+      Serial.println(
+          "KITSU_BLE_BOND_CLEAR physical_confirmed=true live_link=false "
+          "attempted=false controllers_unchanged=false outcome=blocked");
+      enterScreen(Screen::ControllerResult);
+      return;
+    }
+
+    kitsu868::connectivity::BleBondClearStatus bondStatus{};
+    companionBle.clearBleBondsForLocalRecovery(bondStatus);
+    kitsu868::connectivity::ControllerAuthoritySnapshot afterDelete{};
+    const bool afterCaptured =
+        kitsu868::connectivity::captureControllerAuthorities(
+            deviceSecurity, afterDelete);
+    const kitsu868::connectivity::BleBondRecoveryOutcome outcome =
+        afterCaptured
+            ? kitsu868::connectivity::evaluateBleBondRecovery(
+                  bondStatus.deleteSucceeded, bondStatus.bondsBefore,
+                  bondStatus.bondsAfter,
+                  controllerRecoveryAuthoritySnapshot, afterDelete)
+            : kitsu868::connectivity::BleBondRecoveryOutcome::InvalidSnapshot;
+    const bool controllersUnchanged = afterCaptured &&
+        kitsu868::connectivity::controllerAuthoritiesUnchanged(
+            controllerRecoveryAuthoritySnapshot, afterDelete);
+    kitsu868::connectivity::clearControllerAuthoritySnapshot(afterDelete);
+    kitsu868::connectivity::clearControllerAuthoritySnapshot(
+        controllerRecoveryAuthoritySnapshot);
+    controllerRecoveryAuthoritySnapshotValid = false;
+    switch (outcome) {
+      case kitsu868::connectivity::BleBondRecoveryOutcome::Cleared:
+        controllerRecoveryResult = ControllerRecoveryResult::BleBondsCleared;
+        break;
+      case kitsu868::connectivity::BleBondRecoveryOutcome::ControllerAuthorityChanged:
+      case kitsu868::connectivity::BleBondRecoveryOutcome::InvalidSnapshot:
+        controllerRecoveryResult =
+            ControllerRecoveryResult::ControllerAuthorityChanged;
+        break;
+      case kitsu868::connectivity::BleBondRecoveryOutcome::BondStoreError:
+        controllerRecoveryResult =
+            ControllerRecoveryResult::BleBondStoreError;
+        break;
+    }
+    Serial.printf(
+        "KITSU_BLE_BOND_CLEAR physical_confirmed=true live_link=false "
+        "attempted=%s delete_all=%s bonds_before=%d bonds_after=%d "
+        "controllers_before=%u controllers_after=%u "
+        "controllers_unchanged=%s outcome=%u\n",
+        bondStatus.attempted ? "true" : "false",
+        bondStatus.deleteSucceeded ? "true" : "false",
+        bondStatus.bondsBefore, bondStatus.bondsAfter,
+        static_cast<unsigned>(controllerRecoveryOriginalCount),
+        static_cast<unsigned>(deviceSecurity.status().controllerCount),
+        controllersUnchanged ? "true" : "false",
+        static_cast<unsigned>(outcome));
+    controllerRecoveryDeadline =
+        controllerRecoveryResult ==
+                ControllerRecoveryResult::BleBondsCleared
+            ? now + CONTROLLER_RECOVERY_RESULT_TIMEOUT_MS
+            : 0U;
+    enterScreen(Screen::ControllerResult);
+    return;
+  }
+
   if (!resetAll) {
     uint8_t current[kitsu868::connectivity::kKitsuControllerIdBytes]{};
     const bool targetUnchanged = deviceSecurity.controllerAtSlot(
@@ -4699,6 +4826,15 @@ void renderControllerManager() {
     uiTextCentered("RESET ALL", 31, 2);
     uiTextCentered(String(count) + " STORED", 56);
     uiTextCentered(count == 0U ? "NO ACTION" : "HOLD SELECT", 78);
+  } else if (controllerRecoverySelection ==
+             CONTROLLER_RECOVERY_BLE_BONDS_INDEX) {
+    // Monochrome 64 px layout for: CLEAR BLE BONDS / CONTROLLERS KEPT.
+    const int bonds = companionBle.bleBondCount();
+    uiTextCentered("CLEAR", 19, 2);
+    uiTextCentered("BLE BONDS", 40);
+    uiTextCentered("CONTROLLERS", 57);
+    uiTextCentered("KEPT", 70);
+    uiTextCentered(bonds > 0 ? "HOLD SELECT" : "NO BONDS", 83);
   } else {
     uiTextCentered("BACK", 36, 2);
     uiTextCentered("HOLD RETURN", 69);
@@ -4710,8 +4846,38 @@ void renderControllerManager() {
 
 void renderControllerConfirm() {
   const uint32_t now = millis();
+  const bool clearBleBonds =
+      controllerRecoveryTargetSlot == CONTROLLER_RECOVERY_BLE_BONDS_INDEX;
   const bool resetAll =
       controllerRecoveryTargetSlot == CONTROLLER_RECOVERY_RESET_INDEX;
+  if (clearBleBonds) {
+    uiTextCentered("CLEAR", 2, 2);
+    uiTextCentered("BLE BONDS", 23);
+    uiTextCentered(String(companionBle.bleBondCount()) + " STORED", 38);
+    uiTextCentered("CONTROLLERS", 51);
+    uiTextCentered("KEPT", 64);
+    if (!controllerRecoveryBleDisconnected(now)) {
+      uiTextCentered("BLE LINKED", 76);
+      uiTextCentered("CANCELLED", 89);
+    } else if (stableButton) {
+      const uint32_t held = now - buttonPressedAt;
+      const uint32_t holdRemaining = held >= CONTROLLER_RECOVERY_HOLD_MS
+          ? 0U
+          : (CONTROLLER_RECOVERY_HOLD_MS - held + 999U) / 1000U;
+      uiTextCentered("KEEP HOLDING " + String(holdRemaining) + "S", 78);
+    } else {
+      uiTextCentered("HOLD PRG", 76);
+      uiTextCentered("5S TO CLEAR", 89);
+    }
+    uiTextCentered("TAP CANCEL", 102);
+    uiTextCentered("EXPIRES " +
+                       String(controllerRecoverySecondsRemaining(
+                           now, controllerRecoveryDeadline)) +
+                       "S",
+                   114);
+    return;
+  }
+
   uiTextCentered(resetAll ? "REMOVE ALL" : "REMOVE", 4,
                  resetAll ? 1 : 2);
   if (resetAll) {
@@ -4724,18 +4890,20 @@ void renderControllerConfirm() {
   }
 
   if (!controllerRecoveryBleDisconnected(now)) {
-    uiTextCentered("BLE LINKED", resetAll ? 49 : 60);
-    uiTextCentered("CANCELLED", resetAll ? 67 : 76, 2);
+    uiTextCentered("BLE LINKED", (resetAll || clearBleBonds) ? 49 : 60);
+    uiTextCentered("CANCELLED", (resetAll || clearBleBonds) ? 67 : 76, 2);
   } else if (stableButton) {
     const uint32_t held = now - buttonPressedAt;
     const uint32_t holdRemaining = held >= CONTROLLER_RECOVERY_HOLD_MS
         ? 0U
         : (CONTROLLER_RECOVERY_HOLD_MS - held + 999U) / 1000U;
-    uiTextCentered("KEEP HOLDING", resetAll ? 48 : 60);
-    uiTextCentered(String(holdRemaining) + "S", resetAll ? 65 : 76, 2);
+    uiTextCentered("KEEP HOLDING", (resetAll || clearBleBonds) ? 50 : 60);
+    uiTextCentered(String(holdRemaining) + "S",
+                   (resetAll || clearBleBonds) ? 67 : 76, 2);
   } else {
-    uiTextCentered("HOLD PRG", resetAll ? 48 : 58, 2);
-    uiTextCentered("5S TO REMOVE", resetAll ? 69 : 76);
+    uiTextCentered("HOLD PRG", (resetAll || clearBleBonds) ? 50 : 58, 2);
+    uiTextCentered(clearBleBonds ? "5S TO CLEAR" : "5S TO REMOVE",
+                   (resetAll || clearBleBonds) ? 71 : 76);
   }
   uiTextCentered("TAP CANCEL", 95);
   uiTextCentered("EXPIRES " +
@@ -4766,6 +4934,25 @@ void renderControllerResult() {
       uiTextCentered("REBOOT KITSU", 64, 2);
       uiTextCentered("BEFORE PAIR", 88);
       break;
+    case ControllerRecoveryResult::BleBondsCleared:
+      uiTextCentered("BLE BONDS", 24, 2);
+      uiTextCentered("CLEARED", 46, 2);
+      uiTextCentered("CONTROLLERS", 72);
+      uiTextCentered("KEPT", 86);
+      break;
+    case ControllerRecoveryResult::BleBondStoreError:
+      uiTextCentered("BLE BONDS", 20, 2);
+      uiTextCentered("NOT CLEARED", 43, 2);
+      uiTextCentered("CONTROLLERS", 68);
+      uiTextCentered("KEPT", 81);
+      uiTextCentered("REBOOT RETRY", 94);
+      break;
+    case ControllerRecoveryResult::ControllerAuthorityChanged:
+      uiTextCentered("SAFETY CHECK", 20, 2);
+      uiTextCentered("FAILED", 43, 2);
+      uiTextCentered("NO CLAIM", 69);
+      uiTextCentered("REBOOT KITSU", 89);
+      break;
     case ControllerRecoveryResult::Unchanged:
       uiTextCentered("NOT REMOVED", 29, 2);
       uiTextCentered("STORAGE ERROR", 57);
@@ -4777,9 +4964,7 @@ void renderControllerResult() {
       break;
   }
   uiTextCentered(
-      controllerRecoveryResult == ControllerRecoveryResult::StorageNeedsReboot
-          ? "REBOOT NOW"
-          : "TAP CONTINUE",
+      controllerRecoveryRequiresReboot() ? "REBOOT NOW" : "TAP CONTINUE",
       108);
 }
 
@@ -5268,8 +5453,7 @@ void handleShortPress(uint32_t actionAt) {
       Serial.println("KITSU_CONTROLLER_RECOVERY confirmation=cancelled");
       break;
     case Screen::ControllerResult:
-      if (controllerRecoveryResult !=
-          ControllerRecoveryResult::StorageNeedsReboot) {
+      if (!controllerRecoveryRequiresReboot()) {
         showControllerManager(millis(), false);
       }
       break;
@@ -5341,8 +5525,7 @@ void handleLongPress() {
       // service below may dispatch the destructive operation; tap cancels.
       break;
     case Screen::ControllerResult:
-      if (controllerRecoveryResult !=
-          ControllerRecoveryResult::StorageNeedsReboot) {
+      if (!controllerRecoveryRequiresReboot()) {
         showControllerManager(millis(), false);
       }
       break;
@@ -6341,6 +6524,8 @@ void printSelfTest() {
   sampleBattery(false);
   const kitsu868::LifetimeCounters& life = companionBrain.lifetime();
   const kitsu868::CompanionMood mood = companionBrain.mood(companionVitals());
+  const int bleBondCount = companionBle.bleBondCount();
+  const uint8_t controllerCount = deviceSecurity.status().controllerCount;
   const String escapedCompanion = jsonEscaped(companionName());
   const char* gameName = activeGame == ActiveGame::SignalCatch
                              ? "signal"
@@ -6422,7 +6607,7 @@ void printSelfTest() {
       "\"mesh_adverts\":%lu,\"chat_protocol\":1,"
       "\"chat_storage\":%s,\"chat_contacts\":%u,"
       "\"chat_channels\":%u,\"chat_messages\":%u,"
-      "\"chat_unread\":%u}\n",
+      "\"chat_unread\":%u,\"ble_bonds\":%d,\"controllers\":%u}\n",
       lastPeerUid,
       lastEncounterTrait == 0xff ? -1 : static_cast<int>(lastEncounterTrait),
       lastEncounterGift == 0xff ? -1 : static_cast<int>(lastEncounterGift),
@@ -6436,7 +6621,8 @@ void printSelfTest() {
       meshTransport.messagingStorageReady() ? "true" : "false",
       static_cast<unsigned>(meshTransport.contactCount()),
       static_cast<unsigned>(configuredChannelCount()), chatJournalCount,
-      unreadChatMessages);
+      unreadChatMessages, bleBondCount,
+      static_cast<unsigned>(controllerCount));
 }
 
 void printSync() {
@@ -8004,10 +8190,35 @@ void setup() {
   analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_2_5db);
 
   initDisplay();
+  // Inspect the web flasher's transaction sectors before mandatory legacy
+  // retirement. A canonical PREPARED record makes retirement preserve those
+  // two fixed sectors while still erasing and verifying the rest of
+  // kitsu_conn. No companion state has been loaded or mutated yet.
+  kitsu868::CompanionReplacementTransaction replacementTransaction{};
+  kitsu868::CompanionReplacementTransactionStorage replacementTransactionStorage;
+  const bool replacementTransactionReadable =
+      replacementTransactionStorage.beginAndRead(replacementTransaction);
+  const bool replacementPreparedValid = replacementTransactionReadable &&
+      replacementTransactionStorage.preparedSectorCanonical() &&
+      kitsu868::companionReplacementIntentValid(
+          replacementTransaction.prepared);
+  const bool replacementCommittedValid = replacementPreparedValid &&
+      replacementTransactionStorage.committedSectorCanonical() &&
+      kitsu868::companionReplacementTransactionValid(replacementTransaction);
+  const kitsu868::connectivity::LegacyConnectivityPreservation
+      replacementPreservation = replacementCommittedValid
+          ? kitsu868::connectivity::
+              LegacyConnectivityPreservation::Transaction
+          : replacementPreparedValid
+              ? kitsu868::connectivity::
+                  LegacyConnectivityPreservation::Prepared
+              : kitsu868::connectivity::
+                  LegacyConnectivityPreservation::None;
   const kitsu868::connectivity::LegacyConnectivityRetirementResult
       legacyRetirement =
           kitsu868::connectivity::KitsuLegacyConnectivityRetirement::run(
-              legacyConnectivityRetirementPlatform);
+              legacyConnectivityRetirementPlatform,
+              replacementPreservation);
   legacyConnectivityRetirementReady =
       kitsu868::connectivity::legacyConnectivityRetirementSucceeded(
           legacyRetirement);
@@ -8027,12 +8238,27 @@ void setup() {
                     otaBootStatus.state),
                 otaBootStatus.error ? otaBootStatus.error : "none");
   companionPack.begin();
+  bool replacementAttemptedThisBoot = false;
   if (companionPack.valid() && collectiblePackId != companionPack.id()) {
-    const bool replacingCompanion = collectiblePackId != 0;
-    if (replacingCompanion) {
-      // The device intentionally keeps one companion state. A real pack
-      // replacement starts fresh; assigning the first v0.7 pack ID during
-      // migration preserves the v0.6 Fox stats already on this board.
+    const uint32_t installedPackId = companionPack.id();
+    const bool firstPackAssignment = collectiblePackId == 0U;
+    const bool replacementTransactionMatches = !firstPackAssignment &&
+        legacyConnectivityRetirementReady &&
+        replacementCommittedValid &&
+        kitsu868::companionReplacementTransactionAuthorizes(
+            replacementTransaction, collectiblePackId, installedPackId,
+            companionPack.revision(), companionPack.bytes(),
+            companionPack.payloadCrc32(), companionPack.headerCrc32());
+    // A valid PREPARED record made the retirement pass preserve both fixed
+    // transaction sectors. COMMITTED is separate and exact, so the source ID
+    // survives every retry window while only the readback-complete target can
+    // authorize destructive state changes.
+    const bool replacementAuthorized = replacementTransactionMatches;
+    if (replacementAuthorized) {
+      replacementAttemptedThisBoot = true;
+      // A different species is destructive only when the flasher's one-shot
+      // transaction record binds the stored ID to this exact validated pack.
+      // Interrupted writes and arbitrary pack mismatches never enter here.
       wisp.energy = 72;
       wisp.curiosity = 14;
       wisp.affection = 5;
@@ -8041,16 +8267,58 @@ void setup() {
       if (!kitsu868::CompanionBrain::clearStoredState()) {
         Serial.println("KITSU_WARN brain_reset=false");
       }
+      collectiblePackId = installedPackId;
+      unlockedTraits = 0;
+      collectedGifts = 0;
+      lastEncounterTrait = 0xff;
+      lastEncounterGift = 0xff;
+      const bool packIdentityStateSaved = saveState();
+      if (packIdentityStateSaved && !replacementTransactionStorage.consume()) {
+        // The saved target identity makes a leftover record harmless.  The
+        // next mandatory retirement pass will consume it before normal boot.
+        Serial.println("KITSU_WARN pack_replacement_intent_consumed=false");
+      } else if (!packIdentityStateSaved) {
+        // The marker remains durable, so a reboot retries instead of exposing
+        // the newly written pack as an unauthorized intermediate starter.
+        Serial.println("KITSU_WARN pack_replacement_pending=true");
+      }
+      Serial.printf(
+          "KITSU_PACK_REPLACED source=%08lX target=%08lX authorized=true\n",
+          static_cast<unsigned long>(
+              replacementTransaction.prepared.sourcePackId),
+          static_cast<unsigned long>(installedPackId));
+    } else if (firstPackAssignment) {
+      // Assigning the first pack ID preserves the legacy care vitals, but it
+      // establishes a new pack-scoped brain identity and clears pack-specific
+      // traits/gifts. It is not an authorized replacement of a stored species.
+      collectiblePackId = installedPackId;
+      unlockedTraits = 0;
+      collectedGifts = 0;
+      lastEncounterTrait = 0xff;
+      lastEncounterGift = 0xff;
+      saveState();
+    } else {
+      Serial.printf(
+          "KITSU_PACK_BLOCKED stored=%08lX installed=%08lX "
+          "reason=replacement-not-authorized\n",
+          static_cast<unsigned long>(collectiblePackId),
+          static_cast<unsigned long>(installedPackId));
+      companionPack.quarantineUnapprovedReplacement();
     }
-    collectiblePackId = companionPack.id();
-    unlockedTraits = 0;
-    collectedGifts = 0;
-    lastEncounterTrait = 0xff;
-    lastEncounterGift = 0xff;
-    saveState();
   }
-  companionBrain.begin(wisp.uid.c_str(),
-                       companionPack.valid() ? companionPack.id() : 0);
+  if (!replacementAttemptedThisBoot && legacyConnectivityRetirementReady &&
+      replacementPreparedValid &&
+      replacementTransaction.prepared.sourcePackId != collectiblePackId &&
+      !replacementTransactionStorage.consume()) {
+    // A completed or stale transaction is no longer a retry source. The
+    // authorized path already consumes only after its core-ID readback; on a
+    // subsequent boot this branch cleans up a marker left across reset.
+    Serial.println("KITSU_WARN pack_replacement_intent_consumed=false");
+  }
+  const uint32_t brainPackId = collectiblePackId != 0U
+      ? collectiblePackId
+      : (companionPack.valid() ? companionPack.id() : 0U);
+  companionBrain.begin(wisp.uid.c_str(), brainPackId);
   companionBrain.syncSleeping(wisp.sleeping);
   initMesh();
   printChatStorageStatus();
@@ -8060,9 +8328,12 @@ void setup() {
   if (chatSession == 0U) chatSession = 1U;
   const bool bleReady = legacyConnectivityRetirementReady &&
       companionBle.begin();
-  Serial.printf("KITSU_BLE_COMPANION ready=%s service=%s\n",
+  Serial.printf("KITSU_BLE_COMPANION ready=%s service=%s bonds=%d "
+                "controllers=%u\n",
                 bleReady ? "true" : "false",
-                kitsu868::connectivity::kKitsuGattServiceUuid);
+                kitsu868::connectivity::kKitsuGattServiceUuid,
+                companionBle.bleBondCount(),
+                static_cast<unsigned>(deviceSecurity.status().controllerCount));
   sampleBattery(true);
   showHatchSequence();
 
