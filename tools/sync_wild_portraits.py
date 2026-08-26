@@ -19,12 +19,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v2"
+MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v3"
 EXPECTED_CREATURES = 21
 PORTRAIT_WIDTH = 16
 PORTRAIT_HEIGHT = 18
 PORTRAIT_BYTES = 36
 PORTRAIT_STORAGE = "XBM least-significant-bit first, two bytes per row"
+EXPECTED_RASTER_CONTRACT = {
+    "transform": "full-cell-nearest-neighbour-resize-then-translation",
+    "auto_crop": False,
+    "auto_shrink": False,
+    "source_cleanup": False,
+    "source_snapshots": True,
+    "portrait_resampling": "full-frame-nearest-neighbour-1-bit",
+}
 
 FIRMWARE_RELATIVE_PATH = Path("src/wild_creature_catalog.cpp")
 ANDROID_RELATIVE_PATH = Path(
@@ -85,6 +93,42 @@ def require_list(value: object, label: str) -> list[object]:
     return value
 
 
+def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
+    if manifest.get("schema") != MANIFEST_SCHEMA:
+        raise ValueError(f"manifest schema must be {MANIFEST_SCHEMA}")
+    if manifest.get("complete_roster") is not True:
+        raise ValueError("manifest must declare complete_roster=true")
+    if manifest.get("non_destructive_build") is not True:
+        raise ValueError("manifest must declare non_destructive_build=true")
+    raster_contract = require_mapping(
+        manifest.get("raster_contract"), "raster_contract"
+    )
+    if raster_contract != EXPECTED_RASTER_CONTRACT:
+        raise ValueError("manifest raster_contract is not the fail-closed v3 contract")
+
+
+def require_pack_raster_provenance(
+    pack: dict[str, object], identity_key: str
+) -> None:
+    if (
+        pack.get("raster_transform")
+        != "full-cell-nearest-neighbour-resize-then-translation"
+        or pack.get("auto_crop") is not False
+        or pack.get("auto_shrink") is not False
+        or pack.get("source_cleanup") is not False
+    ):
+        raise ValueError(f"{identity_key} was not built by the fail-closed raster path")
+    source_snapshot = require_mapping(
+        pack.get("source_snapshot"), f"{identity_key}.source_snapshot"
+    )
+    snapshot_hashes = require_mapping(
+        source_snapshot.get("byte_exact_sha256"),
+        f"{identity_key}.source_snapshot.byte_exact_sha256",
+    )
+    if snapshot_hashes != pack.get("source_sha256"):
+        raise ValueError(f"{identity_key} source snapshot hashes do not match inputs")
+
+
 def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
     try:
         manifest = require_mapping(
@@ -93,10 +137,7 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read private manifest: {error}") from error
 
-    if manifest.get("schema") != MANIFEST_SCHEMA:
-        raise ValueError(f"manifest schema must be {MANIFEST_SCHEMA}")
-    if manifest.get("complete_roster") is not True:
-        raise ValueError("manifest must declare complete_roster=true")
+    require_fail_closed_manifest(manifest)
 
     identity_keys = require_list(manifest.get("identity_keys"), "identity_keys")
     packs = require_list(manifest.get("packs"), "packs")
@@ -135,6 +176,7 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
             raise ValueError(f"{identity_key} is not an ordinary K868PK1 pack")
         if pack.get("stored_frames") != 48 or pack.get("clips") != 12:
             raise ValueError(f"{identity_key} does not contain the complete 48/12 pack")
+        require_pack_raster_provenance(pack, identity_key)
 
         portrait = require_mapping(pack.get("portrait"), f"{identity_key}.portrait")
         if (
@@ -142,8 +184,13 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
             or portrait.get("height") != PORTRAIT_HEIGHT
             or portrait.get("bytes") != PORTRAIT_BYTES
             or portrait.get("storage") != PORTRAIT_STORAGE
+            or portrait.get("source") != "approved-identity-master-64x64"
+            or portrait.get("resampling")
+            != "full-frame-nearest-neighbour-1-bit"
         ):
-            raise ValueError(f"{identity_key} portrait contract is not 16x18 XBM")
+            raise ValueError(
+                f"{identity_key} portrait contract is not identity-locked 16x18 XBM"
+            )
         bitmap_hex = portrait.get("bitmap_hex")
         bitmap_base64 = portrait.get("bitmap_base64")
         if not isinstance(bitmap_hex, str) or not re.fullmatch(
