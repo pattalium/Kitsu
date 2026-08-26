@@ -131,7 +131,7 @@ test("destructive replacement intent is one sector and binds old ID to exact new
   assert.equal(view.getUint32(0x18, true), definition.bytes);
   assert.equal(view.getUint32(0x1c, true), definition.payloadCrc32);
   assert.equal(view.getUint32(0x20, true), definition.headerCrc32);
-  assert.equal(view.getUint32(0x24, true), 0xd4ec85ff);
+  assert.equal(view.getUint32(0x24, true), 0x6098fe41);
   assert.equal(intent.subarray(40).every((value) => value === 0xff), true);
   assert.throws(
     () => buildReplacementIntent(definition.packId, pack),

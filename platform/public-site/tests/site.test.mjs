@@ -396,14 +396,14 @@ test("publishes only the explicitly approved Fox demo companion bundle", async (
     .filter((file) => file.toLowerCase().endsWith(".k868"))
     .map((file) => `demo/${file.replaceAll("\\", "/")}`);
   assert.deepEqual(bundles, [
-    "demo/assets/fox.e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d.k868",
+    "demo/assets/fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
   ]);
   const publicFox = path.join(root, bundles[0]);
   const canonicalFox = path.join(projectRoot, "assets", "packs", "fox.k868");
   assert.equal((await stat(publicFox)).size, 24976);
   assert.equal(
     await sha256(publicFox),
-    "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d",
+    "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
   );
   assert.equal(await sha256(publicFox), await sha256(canonicalFox));
   assert.equal(bundles.some((file) => /(?:cat|dog)/i.test(file)), false);
@@ -467,7 +467,7 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
   assert.match(script, /const OLED_TONE_STORAGE_KEY = "kitsu-demo-oled-tone-v1"/);
   assert.match(script, /export const FIRMWARE_ABI_VERSION = 2/);
   assert.match(script, /cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73/);
-  assert.match(script, /e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d/);
+  assert.match(script, /c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38/);
   assert.match(script, /WebAssembly\.Module\.imports/);
   assert.match(script, /WebAssembly\.compile\(wasmBytes\)/);
   assert.match(script, /crypto\.getRandomValues|cryptoProvider\.subtle/);
@@ -496,7 +496,7 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
 
   const canonicalFox = path.join(projectRoot, "assets", "pack-evidence", "fox-48-frame-contact.png");
   const publicFox = path.join(root, "demo", "assets", "fox-48-frame-contact.png");
-  assert.equal((await stat(publicFox)).size, 16471);
+  assert.equal((await stat(publicFox)).size, 17580);
   assert.equal(await sha256(publicFox), await sha256(canonicalFox));
 
   const wasmPath = path.join(
@@ -566,7 +566,7 @@ test("full firmware demo helpers and raw PRG path fail closed", async () => {
     root,
     "demo",
     "assets",
-    "fox.e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d.k868",
+    "fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
   );
   const [wasmBytes, foxBytes] = await Promise.all([
     readFile(wasmPath),
@@ -796,7 +796,7 @@ test("ships every referenced local release asset", async () => {
     "demo/demo.js",
     "demo/kitsu-firmware-full.cdf1830000232c2e1f4492bd70fdb40b06f6a406ce4a63e1aa79c419ccdcaf73.wasm",
     "demo/assets/fox-48-frame-contact.png",
-    "demo/assets/fox.e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d.k868",
+    "demo/assets/fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
     "config.json",
     "assets/kitsu-app-icon.png",
     "assets/kitsu-k32-social-card-v1.png",

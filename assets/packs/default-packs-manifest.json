@@ -44,7 +44,7 @@
       "body_axis_target_x": 32,
       "clips": 12,
       "contact_sheet": "cat-48-frame-contact.png",
-      "contact_sheet_sha256": "07ad10c85f5cfe9547a468f8daf89417cc9bb5064707cb4dc20080cc09b418ff",
+      "contact_sheet_sha256": "523381b94d03f99a0a32df5c447680604f36d6a7de8a7da25d16bfbcfb2115c2",
       "display_name": "CAT",
       "floor_target_y": 61,
       "format": "K868PK1",
@@ -474,50 +474,50 @@
           "bounds": [
             10,
             4,
-            52,
+            57,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 496,
+          "ink_pixels": 503,
           "phase": 0,
           "role": "feed"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            13,
-            4,
-            55,
+            9,
+            8,
+            56,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 501,
+          "ink_pixels": 474,
           "phase": 1,
           "role": "feed"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            12,
-            4,
-            54,
+            8,
+            5,
+            56,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 456,
+          "ink_pixels": 462,
           "phase": 2,
           "role": "feed"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            11,
+            10,
             4,
-            53,
+            56,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 437,
+          "ink_pixels": 476,
           "phase": 3,
           "role": "feed"
         },
@@ -576,104 +576,104 @@
         {
           "body_axis_x": 32.0,
           "bounds": [
-            13,
-            4,
-            57,
-            61
-          ],
-          "floor_y": 61,
-          "ink_pixels": 508,
-          "phase": 0,
-          "role": "meet"
-        },
-        {
-          "body_axis_x": 32.0,
-          "bounds": [
-            11,
-            4,
+            10,
+            10,
             60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 490,
-          "phase": 1,
+          "ink_pixels": 495,
+          "phase": 0,
           "role": "meet"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
             7,
-            22,
-            58,
+            19,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 457,
+          "ink_pixels": 467,
+          "phase": 1,
+          "role": "meet"
+        },
+        {
+          "body_axis_x": 32.0,
+          "bounds": [
+            3,
+            18,
+            57,
+            61
+          ],
+          "floor_y": 61,
+          "ink_pixels": 393,
           "phase": 2,
           "role": "meet"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            11,
-            8,
-            58,
+            10,
+            10,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 470,
+          "ink_pixels": 485,
           "phase": 3,
           "role": "meet"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            14,
-            26,
-            51,
+            10,
+            6,
+            57,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 280,
+          "ink_pixels": 473,
           "phase": 0,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            11,
-            16,
-            57,
+            10,
+            5,
+            56,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 379,
+          "ink_pixels": 472,
           "phase": 1,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            10,
-            10,
-            56,
+            7,
+            4,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 387,
+          "ink_pixels": 512,
           "phase": 2,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            8,
-            4,
-            60,
+            10,
+            6,
+            57,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 471,
+          "ink_pixels": 453,
           "phase": 3,
           "role": "evolve"
         }
@@ -681,15 +681,15 @@
       "pack_bytes": 24976,
       "pack_file": "cat.k868",
       "pack_id": "FDC79D6F",
-      "pack_sha256": "49b0758ab2fdba77bff543ac3235110190896d5ce7b3456770bb44f59c09f985",
+      "pack_sha256": "8d19d6b8bc584d9aaee5a6867504fd23c1862c907bbeb1affd9611e35bf2a6d7",
       "revision": 2,
       "role_source_scales": {
         "blink": 0.2715654205607476,
-        "evolve": 0.24414529914529914,
-        "feed": 0.27939903846153846,
+        "evolve": 0.2715654205607476,
+        "feed": 0.2715654205607476,
         "idle": 0.2715654205607476,
         "listen": 0.2715654205607476,
-        "meet": 0.2876980198019802,
+        "meet": 0.28564999999999996,
         "pet": 0.2715654205607476,
         "play": 0.2662162162162162,
         "sleep": 0.252787610619469,
@@ -851,7 +851,7 @@
           "unique_frames": 4
         },
         {
-          "changed_pixels": 1125,
+          "changed_pixels": 1069,
           "durations_ms": [
             300,
             250,
@@ -859,10 +859,10 @@
             500
           ],
           "frame_sha256": [
-            "be418debef6e50604ee88a63c2361f8a5f6607248c88034daa48bf38551d27ce",
-            "162d215a7055b9ebcee4d69f92b1aec4bd115e5f4662f7b90de3e548d8a8ac75",
-            "5127e0c3f9029b91732d086175cfa07d797dab59c23cae834a2ce9ad56b97b19",
-            "01f0091ea6b544b6985b1407b9c4dac1521eb9f505149f8e83ed145d6a9c3668"
+            "fca77870f8d804893bd8f1d3dfb1bdbfc3ef9024a588b039cec3dc716c2e7204",
+            "713906a1bd2f146973ff41cafbcdffd9a596807ed551a927bfdf3bbab631a6d1",
+            "0b683ed35a63eb0050e2e528b6f086ee9d2e821bdb883ea41d0dee21758d560c",
+            "15108bb4da12be71ae8fdc3f059f18e4f29df9423e9a5e8f20da59030843bff2"
           ],
           "mode": "once",
           "role": "feed",
@@ -889,7 +889,7 @@
           "unique_frames": 4
         },
         {
-          "changed_pixels": 1423,
+          "changed_pixels": 1143,
           "durations_ms": [
             300,
             350,
@@ -897,10 +897,10 @@
             500
           ],
           "frame_sha256": [
-            "7864c2daad2bf3ae590d1d64fbe7eb870c1e99efc170d9d70a3a0d9e184497d7",
-            "18f705282c8d125054758ff9172ca3b8e5590a7a3d5876cca46a0ac34979d74b",
-            "ee0b108675b5af478d92a61c5407264dc216761dd0ac3a96f6f2246e64917b11",
-            "e0f1cf88b81843a5941cc8ea638d8412f68bccd2a4a87528b8556fd93ab01f7d"
+            "e39627440d5072d7e07a2a6813e41a9536b146023eb3d6e082afee2d83415b5b",
+            "3273a6002da525aecc769e8250808f482cd89ba95fce44c9f6c0cc69b6998a22",
+            "ebea7749b053ace22ec8a3db46f51eb91a301c7e11268df95b7ae92532b26cf9",
+            "6f1602503a2172948a56405ed41ced7f0944e3150ffa3130d282e170e50fdb66"
           ],
           "mode": "once",
           "role": "meet",
@@ -908,7 +908,7 @@
           "unique_frames": 4
         },
         {
-          "changed_pixels": 1137,
+          "changed_pixels": 1058,
           "durations_ms": [
             350,
             450,
@@ -916,10 +916,10 @@
             700
           ],
           "frame_sha256": [
-            "fe5281200f2a6d32c7a60403c02a3a990e9cbd05f2fa603ed9019bba1c60f269",
-            "e849ceb356b97359cdfac6f55dc4e454554810678b4a9027c646e2b2eb14d203",
-            "d3053c665e77a4f57c34becc37b8ca2223d08a64bda347e022a355bd68255cde",
-            "2d84c0e82fb9f51fc8e61283a66935f73be08ccce50ff538bc2e23798c75d84b"
+            "d3e0fa16cd5b936cff68d9564656d37eed9b85378443bd634ac20180423018f1",
+            "d3c4ede5f8efd5cba0b974b58e367130c44554d787567dc4d2e19ecddab801db",
+            "69aa068e82390ce7dda490add53774f9a0df3907d2361d906301fd884b065dd8",
+            "299897336a2b603e64f7c48637d197561aaf34671f057fdf59a8561ad03fdc00"
           ],
           "mode": "once",
           "role": "evolve",
@@ -929,8 +929,8 @@
       ],
       "source_sha256": {
         "cat-core.png": "d2d004fe65666d12bed13909cefcf5a45da9f1380856dc3f446f98e2310a260f",
-        "cat-life.png": "1788d05a9bd3705d57bba76ee6bcf4a08986493386f101625d65889ea21731da",
-        "cat-social.png": "3ecf3e9159b0f4c69077bc8fc01b342857bd08568a46eb00b9be5cd161d04454"
+        "cat-life.png": "d17b6305d1b12c69bda3bce02d6b1f373547e30d7ca730251d7315003d5f933e",
+        "cat-social.png": "ca17b30f0ba48f3304b32e429505387368543b475edf7bedf064cb360d614593"
       },
       "species": "cat",
       "steps": 48,
@@ -940,7 +940,7 @@
       "body_axis_target_x": 32,
       "clips": 12,
       "contact_sheet": "fox-48-frame-contact.png",
-      "contact_sheet_sha256": "f3747ec72de48c011340f252e8c60a78de753baa77c5ddff700d460970646766",
+      "contact_sheet_sha256": "eb867e8d3c7173c219fb3944f8d0b92e0c5387bc1e341b8dd68befcf0ee52b75",
       "display_name": "FOX",
       "floor_target_y": 61,
       "format": "K868PK1",
@@ -1056,52 +1056,52 @@
         {
           "body_axis_x": 32.0,
           "bounds": [
-            6,
-            13,
-            58,
+            10,
+            15,
+            57,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 542,
+          "ink_pixels": 418,
           "phase": 0,
           "role": "pet"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            6,
-            14,
-            59,
+            11,
+            18,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 557,
+          "ink_pixels": 352,
           "phase": 1,
           "role": "pet"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            7,
-            29,
+            11,
+            17,
             59,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 478,
+          "ink_pixels": 414,
           "phase": 2,
           "role": "pet"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            7,
+            11,
             15,
-            60,
+            57,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 524,
+          "ink_pixels": 419,
           "phase": 3,
           "role": "pet"
         },
@@ -1210,54 +1210,54 @@
           "role": "listen"
         },
         {
-          "body_axis_x": 32.0,
+          "body_axis_x": 32.5,
           "bounds": [
-            13,
-            27,
-            51,
+            10,
+            10,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 216,
+          "ink_pixels": 506,
           "phase": 0,
           "role": "surprise"
         },
         {
-          "body_axis_x": 32.0,
+          "body_axis_x": 31.5,
           "bounds": [
-            12,
+            10,
             7,
             61,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 500,
+          "ink_pixels": 526,
           "phase": 1,
           "role": "surprise"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            11,
-            12,
-            58,
+            9,
+            7,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 460,
+          "ink_pixels": 549,
           "phase": 2,
           "role": "surprise"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            7,
-            21,
-            54,
+            10,
+            10,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 292,
+          "ink_pixels": 492,
           "phase": 3,
           "role": "surprise"
         },
@@ -1524,52 +1524,52 @@
         {
           "body_axis_x": 32.0,
           "bounds": [
-            9,
-            42,
-            50,
+            10,
+            11,
+            59,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 194,
+          "ink_pixels": 480,
           "phase": 0,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            13,
-            22,
-            59,
+            9,
+            8,
+            60,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 315,
+          "ink_pixels": 484,
           "phase": 1,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            13,
-            20,
+            9,
+            4,
             59,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 364,
+          "ink_pixels": 507,
           "phase": 2,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
+            10,
             11,
-            13,
-            61,
+            59,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 423,
+          "ink_pixels": 477,
           "phase": 3,
           "role": "evolve"
         }
@@ -1577,19 +1577,19 @@
       "pack_bytes": 24976,
       "pack_file": "fox.k868",
       "pack_id": "6C393E21",
-      "pack_sha256": "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d",
+      "pack_sha256": "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
       "revision": 2,
       "role_source_scales": {
         "blink": 0.29147959183673466,
-        "evolve": 0.24004201680672269,
+        "evolve": 0.27466346153846155,
         "feed": 0.27466346153846155,
         "idle": 0.28564999999999996,
         "listen": 0.29147959183673466,
         "meet": 0.24625,
-        "pet": 0.38086666666666663,
+        "pet": 0.2573423423423423,
         "play": 0.28564999999999996,
         "sleep": 0.2694811320754717,
-        "surprise": 0.27466346153846155,
+        "surprise": 0.2773300970873786,
         "tired": 0.27466346153846155,
         "wake": 0.20850364963503648
       },
@@ -1633,7 +1633,7 @@
           "unique_frames": 4
         },
         {
-          "changed_pixels": 449,
+          "changed_pixels": 793,
           "durations_ms": [
             280,
             320,
@@ -1641,10 +1641,10 @@
             500
           ],
           "frame_sha256": [
-            "12e535225a6dc69d0e59fadfe2c4ea39f1c8b0f79473892ffc912336bbe8da73",
-            "886dfbf63c541d69d19368198e98deae013112a7dae269b30a7dc5603a50211d",
-            "22cac02ab11647a0f40bf7d64c55031c1342793106cdfcb04ccf9e8859a29f45",
-            "7419e02f68aac513805d47ee0d1dd763ed13a8f8ff3ce43707cf7d5802cffb5b"
+            "0213046f809208b9ff30619845f1cfd1f15c1ead38fabb8564e9dfd3561bb165",
+            "8c46eceaea6cc8e71f31fa8231e890db2ef473943029ce8a1f599095e54aeb1b",
+            "fa6b3850a8b05af155143321b0986653b7698613b3ea27c8a08e9d819bb2d1d6",
+            "c27d83dbb7472958e0cd625d57f24ac48f514a1a0437755e767b85195bbae9e6"
           ],
           "mode": "once",
           "role": "pet",
@@ -1690,7 +1690,7 @@
           "unique_frames": 4
         },
         {
-          "changed_pixels": 1088,
+          "changed_pixels": 888,
           "durations_ms": [
             250,
             220,
@@ -1698,10 +1698,10 @@
             450
           ],
           "frame_sha256": [
-            "6ea2a2a9471d9663b7ba505b2cfed66768dd6b9fd6c9e3fd669893df6abd948c",
-            "9bfe13c90e883f47747b389e700cb39ffcc9f09a0f42322c228120bb63485006",
-            "58898f609809c5d6dedc2829752496145e78a979377d9b8f6854b69ab7753bdc",
-            "d789a6573c53b616a6186004f7abbbb4149a331cfb466ac2cf2b2e9be3582e76"
+            "36cff1b584c3d46eb18701aba133015b90e2b211ab48e678bb154c087703472c",
+            "c95d2bafa9ee80cf585fac499e4d54322993154c902ef90e123c1e524521413a",
+            "92873e18da0e82bf656f09e247f701d7ec944f3e09491b5c5d93dcf4fadc9207",
+            "cecafe359e46f163a01f039b7ede5187552e9bacf9d8931a54950bf37ae5f8c8"
           ],
           "mode": "once",
           "role": "surprise",
@@ -1804,7 +1804,7 @@
           "unique_frames": 4
         },
         {
-          "changed_pixels": 877,
+          "changed_pixels": 979,
           "durations_ms": [
             350,
             450,
@@ -1812,10 +1812,10 @@
             700
           ],
           "frame_sha256": [
-            "74ce2e3071dd729a52197213e6a2a42d5a91a6abfbdb385b6bfac9699ccad2d1",
-            "525936c9496e76e4aac12768619db00e5843033266df60bf27a6bacff6cf27ea",
-            "d61048c13f11558115e12b80b5f3df248a2c37893d18b2459288c963ed08cc39",
-            "44a723f268a3e8f24ffae6886662aad8bf04db2fae4290da4c77da835ebc0b69"
+            "b75b854b364dc388c8910ba894f8b352ccc229002692e14cd6962b5c7e754c1c",
+            "d48030c15863a274c56a896e33caef7609ecf091b2d1813e783cf0e81a52a15d",
+            "7c22d8b149992e90b2246716dbc44f4a8520d70687ff2b9a2ccd3530734fc63d",
+            "190203a58c4cec9172da9acd43a150f642faab71dc0812cca15a4e505b98b605"
           ],
           "mode": "once",
           "role": "evolve",
@@ -1824,9 +1824,9 @@
         }
       ],
       "source_sha256": {
-        "fox-core.png": "18d050234f807261badd20b4c95b41c90a7e2f64273652e2146e57fa77076410",
+        "fox-core.png": "ed14568122da9ed26c45ed408c184c330b950f497d5a9db3097941f109135d5d",
         "fox-life.png": "981850802b3d03d5278ad898b208c81f0878d04d7d192aad6e8f6485a3982af7",
-        "fox-social.png": "7f25e8e68fed5c4b492e5ea6367002512d89f0b0be91c3b40711c724d75e33e6"
+        "fox-social.png": "502bafd4437d53c1c2b605c7c5efbffce373a38d79dba3c6e66638bf27e62625"
       },
       "species": "fox",
       "steps": 48,
@@ -1836,7 +1836,7 @@
       "body_axis_target_x": 32,
       "clips": 12,
       "contact_sheet": "dog-48-frame-contact.png",
-      "contact_sheet_sha256": "9b040dbb6dd1d9d75ed3e84e5a5d37bc5d699d08f6cf7e57f00e1962f83a3abc",
+      "contact_sheet_sha256": "1570960d5e24ab440c41b05290d5608541911ce5065df1a4e6a51662ddf212f1",
       "display_name": "DOG",
       "floor_target_y": 61,
       "format": "K868PK1",
@@ -2420,39 +2420,39 @@
         {
           "body_axis_x": 32.0,
           "bounds": [
-            7,
-            26,
-            49,
+            3,
+            9,
+            54,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 541,
+          "ink_pixels": 950,
           "phase": 0,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            6,
-            18,
-            51,
+            4,
+            8,
+            53,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 678,
+          "ink_pixels": 955,
           "phase": 1,
           "role": "evolve"
         },
         {
           "body_axis_x": 32.0,
           "bounds": [
-            4,
-            16,
-            53,
+            3,
+            9,
+            54,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 797,
+          "ink_pixels": 933,
           "phase": 2,
           "role": "evolve"
         },
@@ -2460,12 +2460,12 @@
           "body_axis_x": 32.0,
           "bounds": [
             3,
-            12,
-            56,
+            9,
+            55,
             61
           ],
           "floor_y": 61,
-          "ink_pixels": 916,
+          "ink_pixels": 933,
           "phase": 3,
           "role": "evolve"
         }
@@ -2473,11 +2473,11 @@
       "pack_bytes": 24976,
       "pack_file": "dog.k868",
       "pack_id": "E2B5E7BA",
-      "pack_sha256": "47876efaa0f7fe4831906c94e9a3b2d5a74a267f1a6f981593525bff5476c051",
+      "pack_sha256": "8652aad28816d52fca334766ebefb5c38aec1b09dcc72783414998d17a46e261",
       "revision": 2,
       "role_source_scales": {
         "blink": 0.2955,
-        "evolve": 0.2711009174311927,
+        "evolve": 0.27877358490566034,
         "feed": 0.27877358490566034,
         "idle": 0.2955,
         "listen": 0.27361111111111114,
@@ -2700,7 +2700,7 @@
           "unique_frames": 4
         },
         {
-          "changed_pixels": 1420,
+          "changed_pixels": 618,
           "durations_ms": [
             350,
             450,
@@ -2708,10 +2708,10 @@
             700
           ],
           "frame_sha256": [
-            "ae22170628c0fd656c4efd36b9f07812ef4fbf900308e20dc49ad1216554be5b",
-            "19ba0505e2dfa074a428bc1d2c531efd625ec7718b7a97a2c2a20f9026f69ed9",
-            "915f15f30fba685b2bfb9f593751a70387bc93260fdae6f427fa835fa9676eae",
-            "0d1133efe5851d07177026464cb2a2faca829f2748f997c4b74d8082dec5ff63"
+            "f5d7f4018586ec5d4b068d290523b6eeb64ed5cc1dd832fa7241d7fa490e6e78",
+            "36069d977a680f94344823c56be71ebffab18fc69f58a58596e676854da149a2",
+            "12da981375b87339e02cd5c2f8c7697ad74538042422e8474686077e7e79f957",
+            "6ad8b6abd86d4ec08fd1ce03caaaadccb775de46d856cff9d6f716f4cfbc7bd8"
           ],
           "mode": "once",
           "role": "evolve",
@@ -2722,7 +2722,7 @@
       "source_sha256": {
         "dog-core.png": "c36f2506f9a59a4fae09fbeec6bdf8ec91dba7a5db11bd5b9eb444892bbbdfb1",
         "dog-life.png": "eba7bc212a2482c671b88cbd4393611dc000380d9025ff0884b51c03ba432763",
-        "dog-social.png": "ee5bda1bcdddb7750d764c2801ea4b29f11f76c3f22a782e6ade31f1520ce459"
+        "dog-social.png": "f7918179bfd555c859ecaad01a274406bfecd99efb4c89cb80a67e7a9871d1da"
       },
       "species": "dog",
       "steps": 48,

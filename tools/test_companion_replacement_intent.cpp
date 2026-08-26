@@ -24,8 +24,8 @@ kitsu868::CompanionReplacementIntent foxGirlToFox() {
   intent.targetPackId = 0x6c393e21U;
   intent.targetRevision = 2U;
   intent.targetBytes = 24976U;
-  intent.targetPayloadCrc32 = 0x20a1555aU;
-  intent.targetHeaderCrc32 = 0xe7e5a0feU;
+  intent.targetPayloadCrc32 = 0x2301202eU;
+  intent.targetHeaderCrc32 = 0xac7b0040U;
   intent.recordCrc32 = kitsu868::companionReplacementIntentCrc32(intent);
   return intent;
 }
@@ -34,15 +34,15 @@ kitsu868::CompanionReplacementIntent foxGirlToFox() {
 
 int main() {
   const kitsu868::CompanionReplacementIntent intent = foxGirlToFox();
-  check(intent.recordCrc32 == 0xd4ec85ffU,
+  check(intent.recordCrc32 == 0x6098fe41U,
         "C++ intent CRC matches the web flasher golden vector");
   check(kitsu868::companionReplacementIntentAuthorizes(
             intent, 0x492e6628U, 0x6c393e21U, 2U, 24976U,
-            0x20a1555aU, 0xe7e5a0feU),
+            0x2301202eU, 0xac7b0040U),
         "exact old ID and exact target metadata authorize replacement");
   check(!kitsu868::companionReplacementIntentAuthorizes(
             intent, 0x11111111U, 0x6c393e21U, 2U, 24976U,
-            0x20a1555aU, 0xe7e5a0feU),
+            0x2301202eU, 0xac7b0040U),
         "different stored companion ID fails closed");
   kitsu868::CompanionReplacementIntent zeroSource = intent;
   zeroSource.sourcePackId = 0U;
@@ -52,18 +52,18 @@ int main() {
         "source ID zero is invalid in both firmware and web contracts");
   check(!kitsu868::companionReplacementIntentAuthorizes(
             intent, 0x492e6628U, 0x6c393e21U, 3U, 24976U,
-            0x20a1555aU, 0xe7e5a0feU),
+            0x2301202eU, 0xac7b0040U),
         "different target revision fails closed");
   check(!kitsu868::companionReplacementIntentAuthorizes(
             intent, 0x492e6628U, 0x6c393e21U, 2U, 24976U,
-            0x20a1555bU, 0xe7e5a0feU),
+            0x2301202fU, 0xac7b0040U),
         "different target payload fails closed");
 
   kitsu868::CompanionReplacementTransaction preparedOnly{};
   preparedOnly.prepared = intent;
   check(!kitsu868::companionReplacementTransactionAuthorizes(
             preparedOnly, 0x492e6628U, 0x6c393e21U, 2U, 24976U,
-            0x20a1555aU, 0xe7e5a0feU),
+            0x2301202eU, 0xac7b0040U),
         "PREPARED without a separate COMMITTED record never authorizes reset");
 
   kitsu868::CompanionReplacementTransaction committed{};
@@ -71,7 +71,7 @@ int main() {
   committed.committed = intent;
   check(kitsu868::companionReplacementTransactionAuthorizes(
             committed, 0x492e6628U, 0x6c393e21U, 2U, 24976U,
-            0x20a1555aU, 0xe7e5a0feU),
+            0x2301202eU, 0xac7b0040U),
         "matching PREPARED and COMMITTED records authorize exact replacement");
 
   kitsu868::CompanionReplacementTransaction splitTarget = committed;
@@ -85,7 +85,7 @@ int main() {
   tampered.targetHeaderCrc32 ^= 1U;
   check(!kitsu868::companionReplacementIntentAuthorizes(
             tampered, 0x492e6628U, 0x6c393e21U, 2U, 24976U,
-            0x20a1555aU, 0xe7e5a0feU),
+            0x2301202eU, 0xac7b0040U),
         "record mutation without a new CRC fails closed");
 
   kitsu868::CompanionReplacementIntent sameSpecies = intent;

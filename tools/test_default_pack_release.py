@@ -20,20 +20,33 @@ APPROVED_PACKS = {
     "cat": {
         "name": "CAT",
         "id": 0xFDC79D6F,
-        "sha256": "49b0758ab2fdba77bff543ac3235110190896d5ce7b3456770bb44f59c09f985",
+        "sha256": "8d19d6b8bc584d9aaee5a6867504fd23c1862c907bbeb1affd9611e35bf2a6d7",
     },
     "fox": {
         "name": "FOX",
         "id": 0x6C393E21,
-        "sha256": "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d",
+        "sha256": "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
     },
     "dog": {
         "name": "DOG",
         "id": 0xE2B5E7BA,
-        "sha256": "47876efaa0f7fe4831906c94e9a3b2d5a74a267f1a6f981593525bff5476c051",
+        "sha256": "8652aad28816d52fca334766ebefb5c38aec1b09dcc72783414998d17a46e261",
     },
 }
+# This is the complete binary starter-art baseline from the last approved
+# release before the destructive art integration (commit a54a358). It covers
+# all nine source sheets, all 39 rendered evidence assets, and all three K868
+# packs. Updating a pack hash alone is therefore insufficient to bypass the
+# lock. The known undersized Fox Wake frames remain byte-exact here pending
+# separate, explicit owner approval for that one correction.
+APPROVED_STARTER_ASSET_TREE_SHA256 = (
+    "e696815a843ff6e2805eb9e9eaed9f9e99efb24e7559cc0516d8114f258c2ab9"
+)
 EXPECTED_ROLES = tuple(range(12))
+ROLE_NAMES = (
+    "idle", "blink", "pet", "sleep", "listen", "surprise",
+    "play", "tired", "feed", "wake", "meet", "evolve",
+)
 FRAME_WIDTH = 64
 FRAME_HEIGHT = 64
 FRAME_BYTES = 512
@@ -45,6 +58,35 @@ def require(condition: bool, message: str) -> None:
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def starter_asset_paths() -> tuple[Path, ...]:
+    paths = [
+        SOURCE_DIR / f"{species}-{sheet}.png"
+        for species in APPROVED_PACKS
+        for sheet in ("core", "life", "social")
+    ]
+    paths.extend(
+        EVIDENCE_DIR / f"{species}-{role}.gif"
+        for species in APPROVED_PACKS
+        for role in ROLE_NAMES
+    )
+    paths.extend(
+        EVIDENCE_DIR / f"{species}-48-frame-contact.png"
+        for species in APPROVED_PACKS
+    )
+    paths.extend(PACK_DIR / f"{species}.k868" for species in APPROVED_PACKS)
+    return tuple(sorted(paths, key=lambda path: path.relative_to(ROOT).as_posix()))
+
+
+def starter_asset_tree_sha256(paths: tuple[Path, ...]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        relative = path.relative_to(ROOT).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def decoded_frame(frame: bytes) -> set[tuple[int, int]]:
@@ -165,11 +207,22 @@ def test_release_boundary() -> None:
         for sheet in ("core", "life", "social"):
             require((SOURCE_DIR / f"{species}-{sheet}.png").is_file(), "missing sheet")
         require((EVIDENCE_DIR / f"{species}-48-frame-contact.png").is_file(), "missing contact")
-        for role in (
-            "idle", "blink", "pet", "sleep", "listen", "surprise",
-            "play", "tired", "feed", "wake", "meet", "evolve",
-        ):
+        for role in ROLE_NAMES:
             require((EVIDENCE_DIR / f"{species}-{role}.gif").is_file(), "missing GIF")
+    paths = starter_asset_paths()
+    require(len(paths) == 51, "starter asset inventory is not exactly 51 files")
+    require(all(path.is_file() for path in paths), "starter asset tree is incomplete")
+    expected_paths = set(paths)
+    actual_paths = (
+        set(SOURCE_DIR.glob("*.png"))
+        | set(EVIDENCE_DIR.glob("*"))
+        | set(PACK_DIR.glob("*.k868"))
+    )
+    require(actual_paths == expected_paths, "starter asset inventory contains an unapproved file")
+    require(
+        starter_asset_tree_sha256(paths) == APPROVED_STARTER_ASSET_TREE_SHA256,
+        "immutable Cat/Fox/Dog starter asset baseline was modified",
+    )
 
 
 def test_manifest(results: list[dict[str, object]]) -> None:

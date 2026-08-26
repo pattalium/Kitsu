@@ -3,7 +3,7 @@ export const FIRMWARE_WASM_SHA256 =
 export const FIRMWARE_WASM_URL =
   "/demo/kitsu-firmware-full." + FIRMWARE_WASM_SHA256 + ".wasm";
 export const FOX_PACK_SHA256 =
-  "e67892d8515b3c6830c598fce74aa6a64074075679912d58df05df003623c38d";
+  "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38";
 export const FOX_PACK_URL =
   "/demo/assets/fox." + FOX_PACK_SHA256 + ".k868";
 export const FIRMWARE_ABI_VERSION = 2;
