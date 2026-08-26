@@ -28,6 +28,14 @@ import sync_wild_portraits as portrait_sync  # noqa: E402
 CANVAS = 512
 CELL = CANVAS // 2
 IDLE = base.ROLE_SPECS[0]
+BLINK = base.ROLE_SPECS[1]
+TEST_ACTION_OUTPUT_OFFSET = (-1, 30)
+
+
+def imagegen_import_transform() -> contract.ImageGenImportTransform:
+    return contract.recommended_imagegen_import_transform(
+        action_output_offset=TEST_ACTION_OUTPUT_OFFSET
+    )
 
 
 def draw_local_frame(
@@ -161,6 +169,23 @@ def imagegen_logical_outline(variant: int | None = None) -> set[tuple[int, int]]
     return mask
 
 
+def imagegen_action_logical_outline(
+    variant: int | None = None,
+) -> set[tuple[int, int]]:
+    """Same final identity placement through the action cell's own offset."""
+
+    mask = {
+        (x, y)
+        for y in range(26, 48)
+        for x in range(10, 54)
+        if x in (10, 53) or y in (26, 47)
+    }
+    if variant is not None:
+        x = 20 + variant * 5
+        mask.update({(x, 27), (x + 1, 27), (x, 28), (x + 1, 28)})
+    return mask
+
+
 def write_imagegen_raw(
     path: Path,
     transform: contract.ImageGenImportTransform,
@@ -187,7 +212,7 @@ def write_imagegen_raw(
 def write_valid_imagegen_sources(
     root: Path, species: str
 ) -> contract.ImageGenImportLock:
-    transform = contract.recommended_imagegen_import_transform()
+    transform = imagegen_import_transform()
     species_dir = root / species
     species_dir.mkdir(parents=True)
     identity_path = species_dir / "identity.png"
@@ -254,7 +279,7 @@ def write_imagegen_action_sheet(
 def write_valid_imagegen_action_sheet_sources(
     root: Path, species: str
 ) -> contract.ImageGenImportLock:
-    transform = contract.recommended_imagegen_import_transform()
+    transform = imagegen_import_transform()
     species_dir = root / species
     species_dir.mkdir(parents=True)
     identity_path = species_dir / "identity.png"
@@ -269,7 +294,7 @@ def write_valid_imagegen_action_sheet_sources(
     portrait.save(species_dir / "portrait.png")
     write_imagegen_action_sheet(
         species_dir / "idle.png",
-        [imagegen_logical_outline(phase) for phase in range(4)],
+        [imagegen_action_logical_outline(phase) for phase in range(4)],
     )
 
     identity = contract.load_imagegen_import_frame(
@@ -655,7 +680,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
     def test_imagegen_box_area_import_preserves_one_logical_pixel_contour(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            transform = contract.recommended_imagegen_import_transform()
+            transform = imagegen_import_transform()
             path = Path(temporary) / "ferret" / "identity.png"
             logical = imagegen_logical_outline()
             write_imagegen_raw(path, transform, logical)
@@ -670,7 +695,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
     def test_imagegen_source_canvas_one_pixel_drift_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            transform = contract.recommended_imagegen_import_transform()
+            transform = imagegen_import_transform()
             path = Path(temporary) / "ferret" / "idle" / "00.png"
             image = Image.new(
                 "RGB",
@@ -689,7 +714,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
     def test_imagegen_locked_offset_cannot_auto_fit_a_shifted_action(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            transform = contract.recommended_imagegen_import_transform()
+            transform = imagegen_import_transform()
             path = Path(temporary) / "rabbit" / "play" / "00.png"
             shifted = {(x - 10, y) for x, y in imagegen_logical_outline()}
             write_imagegen_raw(path, transform, shifted)
@@ -704,7 +729,7 @@ class CompanionRasterContractTests(unittest.TestCase):
     def test_imagegen_one_pixel_transform_drift_breaks_lock_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "imagegen-lock.json"
-            transform = contract.recommended_imagegen_import_transform()
+            transform = imagegen_import_transform()
             record = contract.imagegen_import_transform_record(transform)
             record["output_offset"] = [
                 transform.output_offset[0] + 1,
@@ -734,7 +759,81 @@ class CompanionRasterContractTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"transform SHA-256 mismatch.*one-pixel crop or scale change",
+                r"transform SHA-256 mismatch.*one-pixel crop, scale, or offset change",
+            ):
+                contract.load_imagegen_import_locks(path, ["ferret"])
+
+    def test_imagegen_lock_missing_action_output_offset_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "imagegen-lock.json"
+            transform = imagegen_import_transform()
+            record = contract.imagegen_import_transform_record(transform)
+            del record["action_output_offset"]
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                        "identities": [
+                            {
+                                "approved": True,
+                                "identity_frame_sha256": "a" * 64,
+                                "identity_key": "ferret",
+                                "identity_source_sha256": "b" * 64,
+                                "transform": record,
+                                "transform_sha256": (
+                                    contract.imagegen_import_transform_sha256(
+                                        transform
+                                    )
+                                ),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"requires the explicit action_output_offset.*"
+                r"missing=\['action_output_offset'\]",
+            ):
+                contract.load_imagegen_import_locks(path, ["ferret"])
+
+    def test_imagegen_action_output_offset_drift_breaks_lock_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "imagegen-lock.json"
+            transform = imagegen_import_transform()
+            record = contract.imagegen_import_transform_record(transform)
+            record["action_output_offset"] = [
+                transform.action_output_offset[0],
+                transform.action_output_offset[1] + 1,
+            ]
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                        "identities": [
+                            {
+                                "approved": True,
+                                "identity_frame_sha256": "a" * 64,
+                                "identity_key": "ferret",
+                                "identity_source_sha256": "b" * 64,
+                                "transform": record,
+                                "transform_sha256": (
+                                    contract.imagegen_import_transform_sha256(
+                                        transform
+                                    )
+                                ),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"transform SHA-256 mismatch.*offset change",
             ):
                 contract.load_imagegen_import_locks(path, ["ferret"])
 
@@ -872,6 +971,38 @@ class CompanionRasterContractTests(unittest.TestCase):
             )
         )
 
+    def test_imagegen_fixed_action_offset_is_shared_by_all_cells_and_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
+            write_imagegen_action_sheet(
+                source / "ferret" / "blink.png",
+                [imagegen_action_logical_outline(phase) for phase in range(4)],
+            )
+            raster = contract.load_high_res_generated_action_sheet_species(
+                source, "ferret", lock, roles=(IDLE, BLINK)
+            )
+
+        identity_dx, identity_dy = lock.transform.output_offset
+        self.assertEqual(
+            set(raster.identity.mask),
+            {
+                (x + identity_dx, y + identity_dy)
+                for x, y in imagegen_logical_outline()
+            },
+        )
+        action_dx, action_dy = lock.transform.action_output_offset
+        for role_index in range(2):
+            for phase in range(4):
+                frame = raster.frames[role_index * 4 + phase]
+                self.assertEqual(
+                    set(frame.mask),
+                    {
+                        (x + action_dx, y + action_dy)
+                        for x, y in imagegen_action_logical_outline(phase)
+                    },
+                )
+
     def test_imagegen_action_sheet_gutter_ink_rejects_the_complete_action(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
@@ -896,7 +1027,7 @@ class CompanionRasterContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             lock = write_valid_imagegen_action_sheet_sources(source, "rabbit")
-            masks = [imagegen_logical_outline(phase) for phase in range(4)]
+            masks = [imagegen_action_logical_outline(phase) for phase in range(4)]
             masks[2] = {(x - 10, y) for x, y in masks[2]}
             write_imagegen_action_sheet(source / "rabbit" / "idle.png", masks)
             before = byte_exact_tree_snapshot(source)
@@ -916,7 +1047,7 @@ class CompanionRasterContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             lock = write_valid_imagegen_action_sheet_sources(source, "raccoon")
-            masks = [imagegen_logical_outline(phase) for phase in range(4)]
+            masks = [imagegen_action_logical_outline(phase) for phase in range(4)]
             masks[1] = {
                 (x, y)
                 for y in range(15, 51)
@@ -929,7 +1060,9 @@ class CompanionRasterContractTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 contract.RasterContractError,
                 r"raccoon/idle/1: subject touches source-cell edge|"
-                r"raccoon/idle/1: bounds .* violate format-v2 safe stage",
+                r"raccoon/idle/1: bounds .* violate format-v2 safe stage|"
+                r"raccoon/idle/1: the identity-locked action output offset "
+                r".* clips this phase",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "raccoon", lock, roles=(IDLE,)
@@ -943,7 +1076,7 @@ class CompanionRasterContractTests(unittest.TestCase):
             lock = write_valid_imagegen_action_sheet_sources(source, "capybara")
             write_imagegen_action_sheet(
                 source / "capybara" / "idle.png",
-                [imagegen_logical_outline() for _phase in range(4)],
+                [imagegen_action_logical_outline() for _phase in range(4)],
             )
             with self.assertRaisesRegex(
                 contract.RasterContractError,
@@ -958,7 +1091,7 @@ class CompanionRasterContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             lock = write_valid_imagegen_action_sheet_sources(source, "otter")
-            masks = [imagegen_logical_outline(phase) for phase in range(4)]
+            masks = [imagegen_action_logical_outline(phase) for phase in range(4)]
             masks[3] = {
                 (x, y)
                 for left, right in ((8, 29), (36, 57))
@@ -977,7 +1110,7 @@ class CompanionRasterContractTests(unittest.TestCase):
                 )
 
     def test_imagegen_transform_may_remove_only_centered_two_pixel_border(self) -> None:
-        transform = contract.recommended_imagegen_import_transform()
+        transform = imagegen_import_transform()
         subject_crop = replace(
             transform,
             crop_rect=(11, 1, 1111, 1376),

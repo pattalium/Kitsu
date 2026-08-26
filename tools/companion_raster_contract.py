@@ -27,7 +27,7 @@ import build_default_packs as base
 
 IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v1"
 HIGH_RES_IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
-IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v1"
+IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v2"
 PROTECTED_STARTERS = frozenset({"cat", "dog", "fox"})
 SOURCE_THRESHOLD = 170
 SOURCE_EDGE_GUARD = 1
@@ -74,7 +74,7 @@ IMAGEGEN_ALPHA_BACKGROUND = (255, 255, 255)
 IMAGEGEN_RECOMMENDED_SOURCE_CANVAS = (1122, 1402)
 IMAGEGEN_RECOMMENDED_CROP_RECT = (1, 1, 1121, 1401)
 IMAGEGEN_RECOMMENDED_OUTPUT_OFFSET = (-1, 27)
-IMAGEGEN_RECOMMENDED_BLACK_COVERAGE_PER_MILLE = 180
+IMAGEGEN_RECOMMENDED_BLACK_COVERAGE_PER_MILLE = 120
 IMAGEGEN_COVERAGE_STABILITY_PER_MILLE = 20
 IMAGEGEN_MAX_AMBIGUOUS_SOURCE_FRACTION = 0.55
 IMAGEGEN_MAX_THRESHOLD_SENSITIVE_FRACTION = 0.05
@@ -279,6 +279,7 @@ class ImageGenImportTransform:
     black_coverage_threshold_per_mille: int
     alpha_background: tuple[int, int, int]
     output_offset: tuple[int, int]
+    action_output_offset: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -882,8 +883,15 @@ def load_high_res_identity_locks(
     return locks
 
 
-def recommended_imagegen_import_transform() -> ImageGenImportTransform:
-    """Return the identity-pinned full-canvas transform for selected Ferret E."""
+def recommended_imagegen_import_transform(
+    *, action_output_offset: tuple[int, int]
+) -> ImageGenImportTransform:
+    """Build the Ferret-E identity transform with an explicit action lock.
+
+    There is intentionally no default action offset.  It can be approved only
+    after complete action-sheet validation and must never be inherited from
+    the differently scaled identity viewport.
+    """
 
     return ImageGenImportTransform(
         source_canvas=IMAGEGEN_RECOMMENDED_SOURCE_CANVAS,
@@ -896,6 +904,7 @@ def recommended_imagegen_import_transform() -> ImageGenImportTransform:
         ),
         alpha_background=IMAGEGEN_ALPHA_BACKGROUND,
         output_offset=IMAGEGEN_RECOMMENDED_OUTPUT_OFFSET,
+        action_output_offset=action_output_offset,
     )
 
 
@@ -903,6 +912,7 @@ def imagegen_import_transform_record(
     transform: ImageGenImportTransform,
 ) -> dict[str, object]:
     return {
+        "action_output_offset": list(transform.action_output_offset),
         "alpha_background": list(transform.alpha_background),
         "black_coverage_threshold_per_mille": (
             transform.black_coverage_threshold_per_mille
@@ -1019,19 +1029,26 @@ def validate_imagegen_import_transform(
             f"{label}: ImageGen import may remove at most a two-pixel white "
             "source border; subject-box crops are forbidden"
         )
-    if (
-        not isinstance(transform.output_offset[0], int)
-        or not isinstance(transform.output_offset[1], int)
-        or abs(transform.output_offset[0]) >= HIGH_RES_FRAME_WIDTH
-        or abs(transform.output_offset[1]) >= HIGH_RES_FRAME_HEIGHT
+    for offset_name, offset in (
+        ("identity output_offset", transform.output_offset),
+        ("action_output_offset", transform.action_output_offset),
     ):
-        raise RasterContractError(f"{label}: invalid pinned output offset")
+        if (
+            not isinstance(offset, tuple)
+            or len(offset) != 2
+            or not isinstance(offset[0], int)
+            or not isinstance(offset[1], int)
+            or abs(offset[0]) >= HIGH_RES_FRAME_WIDTH
+            or abs(offset[1]) >= HIGH_RES_FRAME_HEIGHT
+        ):
+            raise RasterContractError(f"{label}: invalid pinned {offset_name}")
 
 
 def _parse_imagegen_import_transform(
     raw: object, label: str
 ) -> ImageGenImportTransform:
-    if not isinstance(raw, dict) or set(raw) != {
+    expected_fields = {
+        "action_output_offset",
         "alpha_background",
         "black_coverage_threshold_per_mille",
         "crop_rect",
@@ -1040,14 +1057,22 @@ def _parse_imagegen_import_transform(
         "output_offset",
         "resample_mode",
         "source_canvas",
-    }:
+    }
+    if not isinstance(raw, dict):
         raise RasterContractError(
-            f"{label}: ImageGen transform has unexpected fields"
+            f"{label}: ImageGen transform must be an object"
+        )
+    if set(raw) != expected_fields:
+        raise RasterContractError(
+            f"{label}: corrected ImageGen transform requires the explicit "
+            f"action_output_offset; missing={sorted(expected_fields - set(raw))} "
+            f"unexpected={sorted(set(raw) - expected_fields)}"
         )
     source = raw["source_canvas"]
     crop = raw["crop_rect"]
     output = raw["output_canvas"]
     offset = raw["output_offset"]
+    action_offset = raw["action_output_offset"]
     background = raw["alpha_background"]
     coverage = raw["black_coverage_threshold_per_mille"]
     if (
@@ -1066,6 +1091,9 @@ def _parse_imagegen_import_transform(
         or not isinstance(offset, list)
         or len(offset) != 2
         or any(not isinstance(value, int) for value in offset)
+        or not isinstance(action_offset, list)
+        or len(action_offset) != 2
+        or any(not isinstance(value, int) for value in action_offset)
         or not isinstance(coverage, int)
         or not isinstance(raw["resample_mode"], str)
         or not isinstance(raw["luminance_mode"], str)
@@ -1080,6 +1108,7 @@ def _parse_imagegen_import_transform(
         black_coverage_threshold_per_mille=coverage,
         alpha_background=(background[0], background[1], background[2]),
         output_offset=(offset[0], offset[1]),
+        action_output_offset=(action_offset[0], action_offset[1]),
     )
     validate_imagegen_import_transform(transform, label)
     return transform
@@ -1146,7 +1175,7 @@ def load_imagegen_import_locks(
         if actual_transform_hash != raw["transform_sha256"]:
             raise RasterContractError(
                 f"{identity_key}: ImageGen transform SHA-256 mismatch; even a "
-                "one-pixel crop or scale change requires a new approval"
+                "one-pixel crop, scale, or offset change requires a new approval"
             )
         if raw["approved"] is not True:
             raise RasterContractError(
@@ -1424,7 +1453,10 @@ def _load_imagegen_action_cell(
         for index, value in enumerate(reduced_values)
         if _coverage_is_ink(value, threshold)
     }
-    offset_x, offset_y = transform.output_offset
+    # Action cells are half the identity viewport in each dimension and have
+    # their own identity-stage placement.  This second offset is lock data,
+    # never a value derived from a phase or role.
+    offset_x, offset_y = transform.action_output_offset
     mask = {(x + offset_x, y + offset_y) for x, y in unshifted_mask}
     if any(
         x < 0
@@ -1434,8 +1466,8 @@ def _load_imagegen_action_cell(
         for x, y in mask
     ):
         raise RasterContractError(
-            f"{label}: the identity-locked output offset "
-            f"{transform.output_offset} clips this phase; the complete action "
+            f"{label}: the identity-locked action output offset "
+            f"{transform.action_output_offset} clips this phase; the complete action "
             "is rejected and per-cell fitting is forbidden"
         )
 

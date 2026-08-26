@@ -122,10 +122,11 @@ Ink there means a divider, label, cross-cell drawing, or clipped subject and
 rejects the complete action. Each fixed viewport is extracted by coordinate;
 the importer never locates the subject, adjusts a viewport, or uses a bounding
 box. The resulting cell is composited over white, BOX area sampled to 64x80,
-tested at the identity's single coverage threshold, and moved by the identity's
-single output offset. These exact operations are repeated for all four cells.
-There is no per-cell crop, fit, resize policy, translation, threshold tuning,
-cleanup, morphology, or component deletion.
+tested at the identity's single coverage threshold, and moved by the separately
+locked `action_output_offset`. That action offset is repeated unchanged for
+every action and all four cells. It is never inherited from the identity's
+differently scaled viewport. There is no per-cell crop, fit, resize policy,
+translation, threshold tuning, cleanup, morphology, or component deletion.
 
 The canonical layout record and its SHA-256 are release provenance. The record
 pins the source canvas, phase order, four viewports, both gutters, two-pixel
@@ -158,17 +159,23 @@ the identity and reused byte-for-byte for all forty-eight frames:
    white source border—never a subject bounding-box crop;
 4. downsample black coverage with Pillow `BOX` area sampling to 64x80;
 5. apply one identity-stage black-coverage threshold, recorded per mille;
-6. apply one integer output offset derived from the identity only, to place its
-   body near `x=32` and its floor at `y=77`;
-7. validate the exact resulting mask without morphology, cleanup, component
+6. apply one integer identity `output_offset` to the identity and independent-
+   frame viewport, placing the identity near `x=32` with floor `y=77`;
+7. require a separate integer `action_output_offset`, approved against the
+   fixed 560x700 action-cell geometry, and apply it byte-for-byte to every role
+   and phase; no constructor, loader, or builder may supply a default;
+8. validate the exact resulting mask without morphology, cleanup, component
    deletion, sharpening, per-frame translation, or per-frame threshold tuning.
 
-The source crop, output offset, and coverage threshold may be compared only at
-the identity-approval stage. Once selected, their canonical JSON SHA-256 is an
-immutable input to every action. If that fixed transform clips or mis-scales an
-action, reject the action; the importer has no auto-fit fallback. BOX coverage
-is used instead of source-threshold plus nearest-neighbor reduction so a clean
-one-logical-pixel contour survives without nearest-sample phase loss.
+The source crop, identity offset, action offset, and coverage threshold may be
+compared only during lock approval. Once selected, all four are included in the
+canonical transform JSON SHA-256. The action offset must pass complete four-
+phase floor, scale, identity, stability, and continuity validation before it is
+locked, then it cannot vary by role or phase. If the fixed transform clips or
+mis-scales another action, reject that action; the importer has no auto-fit
+fallback. BOX coverage is used instead of source-threshold plus nearest-
+neighbor reduction so a clean one-logical-pixel contour survives without
+nearest-sample phase loss.
 
 Generation and review rules:
 
@@ -215,23 +222,25 @@ approval and requires a new visual review.
 
 ## ImageGen import lock
 
-Generated RGB/RGBA source uses a distinct lock. This is the exact transform
-used for the selected Ferret E identity; other identities may use their own
-identity-approved near-full-canvas centered 4:5 viewport, but all their actions
-must reuse it exactly.
+Generated RGB/RGBA source uses a distinct lock. Version 2 makes the action-cell
+offset mandatory; version 1 is invalid because it cannot distinguish the
+1120x1400 identity viewport from a 560x700 action cell. This is the selected
+Ferret E candidate transform. Its mechanical approval is not acceptance of the
+artwork, action GIFs, pack, publication, or device installation.
 
 ```json
 {
-  "schema": "kitsu-wild-imagegen-import-lock-v1",
+  "schema": "kitsu-wild-imagegen-import-lock-v2",
   "identities": [
     {
       "approved": true,
       "identity_key": "ferret",
       "identity_source_sha256": "d3ddf4e7651c8f1e8310feb6b5047e47cb3a550de3264ab567799b8682f88261",
-      "identity_frame_sha256": "7dfe950a53a8560ceafa9888328dd34271fe70f64fb4b8a805840122074a4e64",
+      "identity_frame_sha256": "70cde51efa3500a8d94e6fb6e4379e001e5b8c2a0771e43169dbe1ffde79feeb",
       "transform": {
+        "action_output_offset": [-1, 30],
         "alpha_background": [255, 255, 255],
-        "black_coverage_threshold_per_mille": 180,
+        "black_coverage_threshold_per_mille": 120,
         "crop_rect": [1, 1, 1121, 1401],
         "luminance_mode": "pillow-rgb-luma-over-white",
         "output_canvas": [64, 80],
@@ -239,7 +248,7 @@ must reuse it exactly.
         "resample_mode": "box-area",
         "source_canvas": [1122, 1402]
       },
-      "transform_sha256": "22ab825dffc03758d28d96b9536f29ab276b8f015617325a0fbf7d37d95b5893"
+      "transform_sha256": "9337e020aea0a56d8a6a321a2a72c72b1766d9070cce0b7432546caa2e59bbca"
     }
   ]
 }
@@ -254,7 +263,8 @@ imports record `identity_raster_scale=64/1120` and
 viewports and does not authorize an identity or subject auto-fit. The exact
 64x80 masks remain the scale/identity acceptance evidence.
 
-One-action-sheet provenance also records source kind, layout record and hash,
+One-action-sheet provenance also repeats the exact `action_output_offset`,
+records source kind, layout record and hash,
 the whole action-source SHA-256, four fixed composited-region SHA-256 values,
 four final-mask hashes, and four packed-frame hashes. All four region hashes
 and all four packed hashes must be distinct. A one-pixel source-canvas, crop,
@@ -292,10 +302,11 @@ The format-v2 validator rejects the complete build when any of these occur:
 - any subject pixel leaves `[2, 2, 61, 77]` or enters rows 78..79;
 - the subject does not land on floor `y=77` or leaves the centered stage;
 - Cat, Dog, or Fox enters the new-art pipeline;
-- a v1 identity lock, changed identity hash, changed import-transform hash, or
-  unapproved identity is used;
+- a legacy identity lock, ImageGen import lock v1, missing or changed action
+  offset, changed identity hash, changed import-transform hash, or unapproved
+  identity is used;
 - a generated source contains ink in the removed border, the BOX/coverage
-  result is threshold-unstable, or the fixed output offset clips an action;
+  result is threshold-unstable, or either fixed output offset clips its input;
 - one action-sheet cell is shifted, oversized, clipped, duplicated, collapsed,
   scale-popping, identity-incoherent, or discontinuous; one bad cell rejects
   all four phases and leaves no partial output;
