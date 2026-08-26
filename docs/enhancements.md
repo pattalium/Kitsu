@@ -1,11 +1,12 @@
 # Kitsu enhancements
 
 This document records the approved product direction and the constraints that
-future encounter work must preserve. Firmware 0.17.0 and Android 2.2.0 deliver
-the first production slice: MeshCore-triggered wild encounters, direct nearby
-Kitsu presence and Pet actions, the device code journal, the encrypted Android
-code wallet, the local website unlock flow, and the downloadable Frog pack.
-Unpublished creatures and broader nearby actions remain planned work.
+future encounter work must preserve. Firmware 0.17.1 and Android 2.2.1 deliver
+the first complete production slice: MeshCore-triggered wild encounters, direct
+nearby Kitsu presence and Pet actions, a 21-creature catalog across seven rarity
+tiers, the device code journal, the encrypted Android code wallet, the website
+unlock flow, and privately delivered downloadable creature packs. Broader
+nearby actions remain planned work.
 
 ## Signal encounters and nearby Kitsu
 
@@ -22,7 +23,7 @@ Kitsu has two distinct radio-facing systems. They must remain separate:
 The two systems may both influence companion progression, but they do not
 share an over-the-air packet format or transport path.
 
-Firmware 0.17.0 keeps these paths separate in the live implementation: Listen
+Firmware 0.17.1 keeps these paths separate in the live implementation: Listen
 uses bounded direct Kitsu presence frames, while successful logical MeshCore
 operations feed only the wild-encounter coordinator.
 
@@ -130,6 +131,34 @@ color or recoloring.
 - Meeting another owned Kitsu shows that pet's real static portrait and public
   presentation state, not a generic MeshCore icon or fabricated variant.
 
+Every downloadable companion pack must also preserve one coherent visual
+identity from source art through the installed animation:
+
+- Start with one approved canonical identity image for the creature. Its
+  species, silhouette, face, proportions, markings, and body structure are the
+  reference for every later action.
+- Generate each of the twelve actions as its own separate four-frame source
+  asset: Idle, Blink, Pet, Sleep, Listen, Surprise, Play, Tired, Feed, Wake,
+  Meet, and Evolve. Do not generate a complete contact sheet as one artwork and
+  then treat unrelated cells as an animation pack.
+- All four frames of an action must show the same creature and coherent motion.
+  Actions may change pose, compression, or orientation, but must not change the
+  creature's anatomy, style, markings, or identity.
+- Meet animations for animal companions use species-appropriate behavior such
+  as approaching, sniffing, attentive posture, ear or tail movement, a crouch,
+  or a small body bounce. Animal companions do not wave like humans and do not
+  grow human hands for an animation.
+- Source actions must contain only the single companion: no second creature,
+  text, scenery, detached decorative marks, gradients, anti-aliasing, or mixed
+  visual styles.
+- The build step mechanically rasterizes every frame to the exact 64-by-64,
+  one-bit OLED contract and enforces safe bounds, a stable floor, coherent body
+  axis, meaningful frame differences, and the existing role timing contract.
+- Canonical source art, action sources, contact sheets, serialized frames, and
+  full pack bytes remain private release inputs. The public catalog may expose
+  only the approved static 16-by-18 portrait and non-sensitive metadata before
+  redemption.
+
 Initial encounter copy should remain short and literal:
 
 ```text
@@ -164,9 +193,10 @@ Encountering a creature and receiving its unlock code are separate outcomes:
 4. A successful code inherits the creature's rarity and is stored before the
    reveal, so reset or power loss cannot reroll it.
 
-Codes are one-time unlock claims associated with the Kitsu hardware that
-earned them. The firmware must retain pending codes until Android has
-confirmed that it saved them.
+Codes create a permanent unlock associated with the Kitsu hardware that earned
+them. The same hardware may download the unlocked pack again; the code may not
+be rebound to another device or pack. The firmware must retain pending codes
+until Android has confirmed that it saved them.
 
 ### Android code wallet
 
@@ -189,11 +219,12 @@ The website owns the unlock catalogue and downloadable pet packs:
 
 1. The owner enters a saved code or arrives from Android with the code filled
    in.
-2. The site validates the code and the hardware identity to which it was
-   issued.
-3. A valid, unused code permanently unlocks the corresponding pack for that
-   hardware record.
-4. The site offers the ordinary downloadable `.k868` file.
+2. The page validates the code with the connected Kitsu, then sends the bounded
+   code/device proof to the K32 redemption API.
+3. On first redemption, a valid code permanently binds the corresponding pack
+   to that hardware record; the same hardware may download it again later.
+4. The API returns the ordinary downloadable `.k868` file as a private,
+   no-store response. There is no stable public pack URL.
 5. The Web Serial flasher can install an unlocked pack by itself or alongside
    the core firmware in one session.
 

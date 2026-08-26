@@ -18,7 +18,7 @@ class EncounterWireCodecTest {
                 "items":[{
                     "device_id":"KT12AF",
                     "code_id":"event:7",
-                    "code":"KITSU-ABC-123",
+                    "code":"K8-ABCDE-FGHJK-MNPQR",
                     "pack_id":4294967295,
                     "rarity":"mythical",
                     "source":"mesh_repeater",
@@ -43,7 +43,7 @@ class EncounterWireCodecTest {
     fun codePageRejectsUnknownRarityAndDuplicateOpaqueIds() {
         val unknown = runCatching {
             EncounterWireCodec.codePage(
-                """{"schema":"kitsu.encounter-codes.v1","items":[{"device_id":"KT12AF","code_id":"a","code":"KITSU-ABC","pack_id":1,"rarity":"ultra","acquired_at_epoch":1}]}"""
+                """{"schema":"kitsu.encounter-codes.v1","items":[{"device_id":"KT12AF","code_id":"a","code":"K8-ABCDE-FGHJK-MNPQR","pack_id":1,"rarity":"ultra","acquired_at_epoch":1}]}"""
                     .toByteArray(),
             )
         }.exceptionOrNull() as TransportException
@@ -52,8 +52,8 @@ class EncounterWireCodecTest {
         val duplicate = runCatching {
             EncounterWireCodec.codePage(
                 """{"schema":"kitsu.encounter-codes.v1","items":[
-                    {"device_id":"KT12AF","code_id":"a","code":"KITSU-ABC","pack_id":1,"rarity":"rare","acquired_at_epoch":1},
-                    {"device_id":"KT12AF","code_id":"a","code":"KITSU-XYZ","pack_id":2,"rarity":"epic","acquired_at_epoch":2}
+                    {"device_id":"KT12AF","code_id":"a","code":"K8-ABCDE-FGHJK-MNPQR","pack_id":1,"rarity":"rare","acquired_at_epoch":1},
+                    {"device_id":"KT12AF","code_id":"a","code":"K8-STVWZ-23456-789AB","pack_id":2,"rarity":"epic","acquired_at_epoch":2}
                 ]}""".trimIndent().toByteArray(),
             )
         }.exceptionOrNull() as TransportException

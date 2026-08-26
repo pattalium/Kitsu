@@ -13,13 +13,31 @@ namespace wild {
 // does not claim that a downloadable .k868 has been published yet.
 enum class Portrait : uint8_t {
   Frog = 0,
+  Hamster,
+  Turtle,
   Rabbit,
+  Hedgehog,
+  Ferret,
   Otter,
+  Axolotl,
+  Chinchilla,
   Raccoon,
+  Capybara,
+  SugarGlider,
   RedPanda,
+  Pangolin,
+  TasmanianDevil,
   SnowLeopard,
+  Okapi,
+  Shoebill,
   CatGirl,
+  RabbitGirl,
+  DeerGirl,
 };
+
+constexpr size_t kCreaturesPerRarity = 3U;
+constexpr size_t kCatalogCreatureCount =
+    signal::kRarityCount * kCreaturesPerRarity;
 
 // Compact XBM-style 1-bit portraits. Bits are least-significant-bit first in
 // each byte and rows are tightly packed. The OLED renderer scales these 2x to

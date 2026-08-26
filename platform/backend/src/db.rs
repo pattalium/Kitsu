@@ -385,6 +385,13 @@ impl Database {
                     )),
                     false,
                 ),
+                sqlx::migrate::Migration::new(
+                    11,
+                    Cow::Borrowed("pet pack unlocks"),
+                    sqlx::migrate::MigrationType::Simple,
+                    Cow::Borrowed(include_str!("../migrations/0011_pet_pack_unlocks.sql")),
+                    false,
+                ),
             ]),
             ..sqlx::migrate::Migrator::DEFAULT
         };
@@ -627,6 +634,63 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// Permanently binds a one-time encounter code to the hardware and pack
+    /// asserted by the connected Kitsu. Reusing the same code for that exact
+    /// binding permits a later re-download; any attempted rebinding fails.
+    pub async fn bind_pet_pack_unlock(
+        &self,
+        code_digest: &[u8; 32],
+        code_id: u32,
+        hardware_uid: &str,
+        pack_id: u32,
+        rarity: &str,
+    ) -> Result<(), ApiError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO pet_pack_unlocks
+                (code_digest,code_id,hardware_uid,pack_id,rarity)
+            VALUES ($1,$2,$3,$4,$5)
+            ON CONFLICT (code_digest) DO NOTHING
+            "#,
+        )
+        .bind(code_digest.as_slice())
+        .bind(i64::from(code_id))
+        .bind(hardware_uid)
+        .bind(i64::from(pack_id))
+        .bind(rarity)
+        .execute(&mut *tx)
+        .await?;
+
+        let binding = sqlx::query(
+            r#"
+            SELECT code_id,hardware_uid,pack_id,rarity
+            FROM pet_pack_unlocks
+            WHERE code_digest=$1
+            FOR UPDATE
+            "#,
+        )
+        .bind(code_digest.as_slice())
+        .fetch_one(&mut *tx)
+        .await?;
+        if binding.get::<i64, _>("code_id") != i64::from(code_id)
+            || binding.get::<String, _>("hardware_uid") != hardware_uid
+            || binding.get::<i64, _>("pack_id") != i64::from(pack_id)
+            || binding.get::<String, _>("rarity") != rarity
+        {
+            return Err(ApiError::Forbidden);
+        }
+
+        sqlx::query(
+            "UPDATE pet_pack_unlocks SET last_downloaded_at=clock_timestamp() WHERE code_digest=$1",
+        )
+        .bind(code_digest.as_slice())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn list_public_contacts(

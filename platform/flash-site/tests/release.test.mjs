@@ -12,7 +12,7 @@ import {
 } from "../src/release.js";
 
 const acceptedSha = "1".repeat(64);
-const appSha = "642844c72f199a6bab4aa3da3b98510384b5a78211b3a461e02ed4744e71cb5f";
+const appSha = FLASH_PLAN.applicationSha256;
 
 function releaseFixture() {
   const releaseId = "kitsu-0.16.5-reflashable-1";
@@ -59,7 +59,7 @@ function releaseFixture() {
         role: "application_app0",
         path: `firmware/${releaseId}/kitsu868-app.bin`,
         offset: 65536,
-        bytes: 916224,
+        bytes: FLASH_PLAN.applicationBytes,
         sha256: appSha,
         encrypted: false,
         secure_boot_signed: false,
@@ -77,7 +77,7 @@ function releaseFixture() {
         role: "application_app1",
         path: `firmware/${releaseId}/kitsu868-app.bin`,
         offset: 3407872,
-        bytes: 916224,
+        bytes: FLASH_PLAN.applicationBytes,
         sha256: appSha,
         encrypted: false,
         secure_boot_signed: false,

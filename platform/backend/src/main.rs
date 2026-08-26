@@ -13,6 +13,7 @@ use kitsu_platform_backend::{
     kms::DynKms,
     oidc::OidcClient,
     persistence::postgres::PgListener,
+    pet_packs::PetPackStore,
     routes,
     state::{AppState, ConnectionHubs},
 };
@@ -35,6 +36,9 @@ async fn main() -> anyhow::Result<()> {
     let oidc = OidcClient::discover(&config)
         .await
         .context("discover OIDC issuer")?;
+    let pet_packs = Arc::new(
+        PetPackStore::load(&config.pet_pack_dir).context("load private pet-pack catalogue")?,
+    );
 
     let kms = build_kms(&config).await?;
     let certificate_issuer = build_certificate_issuer(&config).await?;
@@ -55,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         instance_id: Uuid::new_v4(),
         hubs: Arc::new(ConnectionHubs::new()),
         metrics,
+        pet_packs,
     };
 
     refresh_crl(&state)

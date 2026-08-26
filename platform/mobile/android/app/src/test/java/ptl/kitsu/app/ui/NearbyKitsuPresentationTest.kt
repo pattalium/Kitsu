@@ -6,16 +6,46 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NearbyKitsuPresentationTest {
-    @Test fun knownStarterAndWildPacksResolveToTheirOwnMonochromePortraits() {
+    @Test fun knownStarterAndEveryPublicWildPackResolveToTheirOwnMonochromePortraits() {
         val cat = nearbyCreaturePresentation(0xFDC79D6FL)
-        val frog = nearbyCreaturePresentation(0x5CAC86A3L)
 
         assertEquals("Cat", cat.name)
         assertEquals(512, cat.bitmap.size)
         assertTrue(cat.known)
-        assertEquals("Frog", frog.name)
-        assertEquals(36, frog.bitmap.size)
-        assertTrue(frog.known)
+
+        val expected = linkedMapOf(
+            0x5CAC86A3L to "Frog",
+            0x13793DC7L to "Hamster",
+            0x7495DBFBL to "Turtle",
+            0x68D9554EL to "Rabbit",
+            0x5DF6BE74L to "Hedgehog",
+            0xE59408E0L to "Ferret",
+            0x29B4B2F7L to "Otter",
+            0x69276D0CL to "Axolotl",
+            0x2DFB0797L to "Chinchilla",
+            0xC163EFEDL to "Raccoon",
+            0x374D2540L to "Capybara",
+            0x39FC5B1AL to "Sugar Glider",
+            0x91A2DE7BL to "Red Panda",
+            0xE04EC405L to "Pangolin",
+            0x8E0E1B03L to "Tasmanian Devil",
+            0x533B9B30L to "Snow Leopard",
+            0x86F3BB5DL to "Okapi",
+            0x2D1D89AFL to "Shoebill",
+            0xA52160C5L to "Cat Girl",
+            0xF0F750BDL to "Rabbit Girl",
+            0x52A1C03AL to "Deer Girl",
+        )
+        val portraitKeys = expected.map { (packId, name) ->
+            val creature = nearbyCreaturePresentation(packId)
+            assertEquals(name, creature.name)
+            assertEquals(36, creature.bitmap.size)
+            assertTrue(creature.known)
+            creature.bitmap.toList()
+        }
+
+        assertEquals(21, portraitKeys.distinct().size)
+        assertTrue(expected.values.none { it.equals("Fox Girl", ignoreCase = true) })
     }
 
     @Test fun unknownPackUsesExplicitUnknownPortraitWithoutGuessingAnIdentity() {

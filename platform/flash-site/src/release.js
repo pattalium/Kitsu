@@ -31,8 +31,8 @@ export const FLASH_PLAN = Object.freeze({
   legacyConnectivityOffset: 0x7b0000,
   legacyConnectivityBytes: 0x040000,
   legacyConnectivitySha256: "3b874d3ba46c638fc3094f8e92fb744ca974893873f8885f54e23760f9b6311b",
-  applicationBytes: 916224,
-  applicationSha256: "642844c72f199a6bab4aa3da3b98510384b5a78211b3a461e02ed4744e71cb5f",
+  applicationBytes: 938048,
+  applicationSha256: "928b7084e02754dad054b970358937542580fa7a1e65a664d1cfc6c8c12ac0fd",
 });
 
 const TOP_LEVEL_KEYS = [

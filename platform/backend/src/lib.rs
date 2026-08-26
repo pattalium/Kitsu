@@ -9,6 +9,7 @@ pub mod kms;
 pub mod mtls;
 pub mod oidc;
 pub mod persistence;
+pub mod pet_packs;
 pub mod pki;
 pub mod routes;
 pub mod state;

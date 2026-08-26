@@ -6,12 +6,23 @@
 namespace kitsu868 {
 namespace unlocks {
 
-constexpr size_t kCodeCapacity = 12U;
+constexpr size_t kLegacyCodeCapacity = 12U;
+constexpr size_t kCodeCapacity = 32U;
 constexpr size_t kCodeCharacters = 15U;
 constexpr size_t kFormattedCodeBytes = 21U;  // K8-XXXXX-XXXXX-XXXXX + NUL
 constexpr size_t kCreatureNameBytes = 24U;
 constexpr size_t kSourceNameBytes = 16U;
-constexpr uint16_t kStoreSchema = 1U;
+constexpr uint16_t kLegacyStoreSchema = 1U;
+constexpr uint16_t kStoreSchema = 2U;
+
+// The persisted layout is deliberately fixed-width so older 12-record ledgers
+// can be recognized and migrated without guessing at an ABI-dependent size.
+constexpr size_t kPersistedRecordBytes = 78U;
+constexpr size_t kPersistedEnvelopeBytes = 20U;
+constexpr size_t kLegacyStoreSerializedBytes =
+    kPersistedEnvelopeBytes + kPersistedRecordBytes * kLegacyCodeCapacity;
+constexpr size_t kStoreSerializedBytes =
+    kPersistedEnvelopeBytes + kPersistedRecordBytes * kCodeCapacity;
 
 enum class Rarity : uint8_t {
   Common = 0,
@@ -58,6 +69,7 @@ class CodeStore {
   bool at(size_t index, CodeRecord& output) const;
   bool find(const char* code, CodeRecord& output) const;
   bool findById(uint32_t codeId, CodeRecord& output) const;
+  bool findByPackId(uint32_t packId, CodeRecord& output) const;
   AddResult add(const CodeRecord& record);
   bool setRedeemed(uint32_t codeId, bool redeemed);
   bool setInstalled(uint32_t codeId, bool installed);
@@ -74,6 +86,7 @@ class CodeStore {
   // Versioned, CRC-protected persistence. This is integrity for local flash,
   // not a signature and not protection for a downloaded .k868 file.
   size_t serializedBytes() const;
+  bool migrationRequired() const;
   bool serialize(uint8_t* output, size_t capacity, size_t& outputBytes) const;
   bool load(const uint8_t* input, size_t inputBytes);
 
@@ -81,6 +94,7 @@ class CodeStore {
   CodeRecord records_[kCodeCapacity]{};
   uint8_t count_ = 0U;
   uint32_t generation_ = 0U;
+  bool migrationRequired_ = false;
 };
 
 }  // namespace unlocks

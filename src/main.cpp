@@ -34,7 +34,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.17.0";
+constexpr char FIRMWARE_VERSION[] = "0.17.1";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 constexpr uint32_t SIGNAL_STATE_MAGIC = 0x4b534731;  // "KSG1"
@@ -94,16 +94,19 @@ kitsu868::unlocks::CodeStore encounterCodes;
 kitsu868::signal::Configuration makeSignalEncounterConfiguration() {
   kitsu868::signal::Configuration configuration{};
   // Repeater discovery is guaranteed by the coordinator. Other values are
-  // the chance per successful, deduplicated logical MeshCore operation.
+  // the chance per successful, deduplicated logical operation. The appended
+  // nearby-Kitsu trigger is deliberately lower than every ordinary MeshCore
+  // activity and never travels through MeshCore.
   const uint16_t encounterChances[] = {
-      0U, 1500U, 1200U, 1500U, 800U, 500U, 500U};
+      0U, 1500U, 1200U, 1500U, 800U, 500U, 500U, 300U};
   // Common through Mythical. Mythical is 0.5%, below the 1% product cap.
   const uint16_t rarityWeights[] = {
       5500U, 2500U, 1200U, 500U, 200U, 50U, 50U};
-  // Only Common currently has a published installable pack. Reserved
-  // rarities still encounter normally but cannot mint dead-end codes until
-  // their real .k868 pack is released.
-  const uint16_t codeChances[] = {1000U, 0U, 0U, 0U, 0U, 0U, 0U};
+  // Every catalog tier has a real publishable .k868 pack. Code resolution is
+  // still independent of the encounter roll, with rarer creatures more
+  // likely to resolve their install code after they are actually encountered.
+  const uint16_t codeChances[] = {
+      1000U, 1200U, 1500U, 2000U, 3000U, 5000U, 10000U};
   for (size_t index = 0U; index < kitsu868::signal::kMeshOperationKindCount;
        ++index) {
     configuration.encounterChanceBasisPoints[index] = encounterChances[index];
@@ -306,8 +309,12 @@ struct PendingNearbyAction {
 PendingNearbyAction pendingNearbyAction{};
 uint32_t lastSignaledFloodAdvert = 0U;
 uint32_t lastSignaledNearbyAdvert = 0U;
-alignas(4) uint8_t encounterCodeScratch[1024]{};
-alignas(4) uint8_t encounterCodeRollback[1024]{};
+constexpr char UNLOCK_CODES_STORAGE_KEY[] = "unlock_v2";
+constexpr char LEGACY_UNLOCK_CODES_STORAGE_KEY[] = "unlock_v1";
+alignas(4) uint8_t encounterCodeScratch[
+    kitsu868::unlocks::kStoreSerializedBytes]{};
+alignas(4) uint8_t encounterCodeRollback[
+    kitsu868::unlocks::kStoreSerializedBytes]{};
 bool encounterCodesReady = false;
 bool signalEncounterStateReady = false;
 
@@ -447,6 +454,8 @@ bool playKitsu();
 bool startListening(uint32_t durationMs = LISTEN_TIME_MS);
 bool sendNearbyPresence();
 void processNearbyRadio();
+void recordSuccessfulEncounterTrigger(
+    kitsu868::signal::MeshOperationKind kind);
 kitsu868::mesh::TransportStatus queueNearbyPetAction(
     uint16_t targetUid, uint32_t targetSessionNonce, uint16_t sequence);
 kitsu868::CompanionVitals companionVitals();
@@ -3607,7 +3616,8 @@ bool persistEncounterCodes() {
   const bool encoded = encounterCodes.serialize(
       encounterCodeScratch, sizeof(encounterCodeScratch), bytes);
   const bool stored = encoded && bytes != 0U &&
-      preferences.putBytes("unlock_v1", encounterCodeScratch, bytes) == bytes;
+      preferences.putBytes(UNLOCK_CODES_STORAGE_KEY, encounterCodeScratch,
+                           bytes) == bytes;
   memset(encounterCodeScratch, 0, sizeof(encounterCodeScratch));
   return stored;
 }
@@ -3617,16 +3627,33 @@ void loadEncounterCodes() {
   encounterCodesReady = storageReady &&
       encounterCodes.serializedBytes() <= sizeof(encounterCodeScratch);
   if (!encounterCodesReady) return;
-  const size_t bytes = preferences.getBytesLength("unlock_v1");
+  const char* storageKey = UNLOCK_CODES_STORAGE_KEY;
+  size_t bytes = preferences.getBytesLength(storageKey);
+  bool loadedLegacyKey = false;
+  if (bytes == 0U) {
+    storageKey = LEGACY_UNLOCK_CODES_STORAGE_KEY;
+    bytes = preferences.getBytesLength(storageKey);
+    loadedLegacyKey = bytes != 0U;
+  }
   if (bytes == 0U) return;
-  if (bytes != encounterCodes.serializedBytes() ||
-      preferences.getBytes("unlock_v1", encounterCodeScratch,
+  if (bytes > sizeof(encounterCodeScratch) ||
+      preferences.getBytes(storageKey, encounterCodeScratch,
                            sizeof(encounterCodeScratch)) != bytes ||
       !encounterCodes.load(encounterCodeScratch, bytes)) {
     encounterCodesReady = false;
     Serial.println("KITSU_WARN unlock_codes=invalid");
   }
   memset(encounterCodeScratch, 0, sizeof(encounterCodeScratch));
+  if (encounterCodesReady &&
+      (loadedLegacyKey || encounterCodes.migrationRequired())) {
+    if (persistEncounterCodes()) {
+      Serial.println("KITSU_INFO unlock_codes=schema_2");
+    } else {
+      // The validated v1 ledger remains usable in RAM and untouched under its
+      // old key; migration can be retried safely on the next boot.
+      Serial.println("KITSU_WARN unlock_codes=migration_pending");
+    }
+  }
 }
 
 bool validCoreState(const CoreStateV2& state) {
@@ -5537,6 +5564,10 @@ void processNearbyPresence(const kitsu868::nearby::Packet& packet,
   startReaction(result.newEncounter ? CompanionRole::Meet
                                     : CompanionRole::Surprise,
                 result);
+  if (result.newEncounter) {
+    recordSuccessfulEncounterTrigger(
+        kitsu868::signal::MeshOperationKind::NearbyKitsuMet);
+  }
   radioProgressDirty = true;
   Serial.printf(
       "KITSU_NEARBY_PRESENCE uid=%04X pack=%08lX new=%s rssi=%.1f snr=%.1f\n",
@@ -5700,6 +5731,7 @@ const char* signalOperationName(kitsu868::signal::MeshOperationKind kind) {
     case MeshOperationKind::AdvertSent: return "mesh_advert_tx";
     case MeshOperationKind::AdvertReceived: return "mesh_advert_rx";
     case MeshOperationKind::OtherCompleted: return "mesh_other";
+    case MeshOperationKind::NearbyKitsuMet: return "kitsu_neighbor";
     case MeshOperationKind::Count: break;
   }
   return "mesh_other";
@@ -5729,9 +5761,14 @@ kitsu868::unlocks::Rarity unlockRarity(kitsu868::signal::Rarity rarity) {
 
 bool addEncounterCode(const kitsu868::wild::Creature& creature,
                       kitsu868::signal::MeshOperationKind source) {
-  if (!encounterCodesReady ||
+  if (!creature.packPublished || !encounterCodesReady ||
       encounterCodes.serializedBytes() > sizeof(encounterCodeRollback)) {
     return false;
+  }
+  kitsu868::unlocks::CodeRecord existing{};
+  if (encounterCodes.findByPackId(creature.packId, existing)) {
+    existing = kitsu868::unlocks::CodeRecord{};
+    return true;
   }
   size_t rollbackBytes = 0U;
   memset(encounterCodeRollback, 0, sizeof(encounterCodeRollback));
@@ -5798,7 +5835,7 @@ void presentPendingWildEncounter() {
   enterScreen(Screen::WildEncounter);
 }
 
-void recordSuccessfulMeshOperation(
+void recordSuccessfulEncounterTrigger(
     kitsu868::signal::MeshOperationKind kind) {
   if (!signalEncounterStateReady ||
       !kitsu868::signal::validOperationKind(kind)) {
@@ -5937,7 +5974,7 @@ void processMeshAdvert() {
               ? kitsu868::signal::MeshOperationKind::RepeaterDiscovered
               : kitsu868::signal::MeshOperationKind::PeerDiscovered
         : kitsu868::signal::MeshOperationKind::AdvertReceived;
-    recordSuccessfulMeshOperation(operation);
+    recordSuccessfulEncounterTrigger(operation);
   }
 }
 
@@ -5950,7 +5987,7 @@ void processFloodAdvertStatus() {
         status.state == kitsu868::mesh::AdvertTransmitState::Sent &&
         status.emittedAt != lastSignaledFloodAdvert) {
       lastSignaledFloodAdvert = status.emittedAt;
-      recordSuccessfulMeshOperation(
+      recordSuccessfulEncounterTrigger(
           kitsu868::signal::MeshOperationKind::AdvertSent);
     }
   }
@@ -5960,7 +5997,7 @@ void processFloodAdvertStatus() {
         status.state == kitsu868::mesh::AdvertTransmitState::Sent &&
         status.emittedAt != lastSignaledNearbyAdvert) {
       lastSignaledNearbyAdvert = status.emittedAt;
-      recordSuccessfulMeshOperation(
+      recordSuccessfulEncounterTrigger(
           kitsu868::signal::MeshOperationKind::AdvertSent);
     }
   }
@@ -6101,7 +6138,7 @@ void processMeshMessages() {
                      ? "A private message reached your companion."
                      : "A channel message crossed the mesh.";
     emitChatEvent("message", entry);
-    recordSuccessfulMeshOperation(
+    recordSuccessfulEncounterTrigger(
         kitsu868::signal::MeshOperationKind::MessageReceived);
   }
 
@@ -6133,7 +6170,7 @@ void processMeshMessages() {
         touchChatJournal(*entry);
         emitChatEvent("tx", *entry, "sent");
         if (transitionedToSent) {
-          recordSuccessfulMeshOperation(
+          recordSuccessfulEncounterTrigger(
               kitsu868::signal::MeshOperationKind::MessageSent);
         }
         break;
@@ -6167,7 +6204,7 @@ void processMeshMessages() {
         emitChatEvent("repeat", *entry,
                       delivery.repeatObservationOpen ? "observed" : "closed");
         if (recoveredSentTransition) {
-          recordSuccessfulMeshOperation(
+          recordSuccessfulEncounterTrigger(
               kitsu868::signal::MeshOperationKind::MessageSent);
         }
         break;

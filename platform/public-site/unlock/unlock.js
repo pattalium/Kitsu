@@ -1,15 +1,43 @@
 "use strict";
 
 import {
+  isPublishedPackEntry,
   publishedPackFor,
   rarityLabel,
-} from "./catalog.js?sha256=3cfb9d21941d59b5730c0808b24170a1c4e93c39ac0a8b1c1bcc2777a7f3c8c5";
+} from "./catalog.js?sha256=abb8defe1b355da9dc3e62d55636d5d7397e39e887e830d38c50b5fe80032881";
 
 export const VERIFY_MARKER = "KITSU_CODE_VERIFY_V1 ";
 export const VERIFY_SCHEMA = "kitsu.code-verification.v1";
 export const MAX_SERIAL_LINE_CHARS = 2_048;
 export const MAX_SERIAL_RESPONSE_BYTES = 65_536;
 export const DEFAULT_VERIFY_TIMEOUT_MS = 8_000;
+export const REDEMPTION_SCHEMA = "kitsu.pet-pack-redemption.v1";
+export const REDEMPTION_ENDPOINT = "https://api.k32.run/v1/pet-packs/redeem";
+export const MAX_PACK_RESPONSE_BYTES = 2_097_152;
+
+const K868_MAGIC = Object.freeze([0x4b, 0x38, 0x36, 0x38, 0x50, 0x4b, 0x31, 0x00]);
+const K868 = Object.freeze({
+  version: 1,
+  headerBytes: 64,
+  clipBytes: 12,
+  stepBytes: 4,
+  frameBytes: 512,
+  width: 64,
+  height: 64,
+  frames: 48,
+  clips: 12,
+  steps: 48,
+});
+
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = (crc & 1) === 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return crc >>> 0;
+});
+
+const unlockCodeAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 const validRarities = new Set([
   "common",
@@ -51,6 +79,325 @@ function protocolError(code, message) {
   return new UnlockProtocolError(code, message);
 }
 
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function hexadecimal32(value) {
+  return value.toString(16).padStart(8, "0").toUpperCase();
+}
+
+function isPrivateNoStore(value) {
+  if (typeof value !== "string") return false;
+  const directives = new Set(value.toLowerCase().split(",").map((part) => part.trim()));
+  return directives.has("private") && directives.has("no-store");
+}
+
+async function sha256Hex(bytes, cryptoProvider = globalThis.crypto) {
+  if (!cryptoProvider?.subtle || typeof cryptoProvider.subtle.digest !== "function") {
+    throw protocolError("integrity_unavailable", "This browser cannot verify the downloaded pack.");
+  }
+  const digest = await cryptoProvider.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function boundedResponseBytes(response, expectedBytes) {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) {
+      throw protocolError("invalid_download", "The pack response declared an invalid size.");
+    }
+    const parsedLength = Number(declaredLength);
+    if (
+      !Number.isSafeInteger(parsedLength)
+      || parsedLength > MAX_PACK_RESPONSE_BYTES
+      || parsedLength !== expectedBytes
+    ) {
+      throw protocolError("invalid_download", "The pack response size does not match its catalog record.");
+    }
+  }
+
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array)) {
+          throw protocolError("invalid_download", "The pack response contained invalid bytes.");
+        }
+        total += value.byteLength;
+        if (total > MAX_PACK_RESPONSE_BYTES || total > expectedBytes) {
+          await Promise.resolve(reader.cancel()).catch(() => {});
+          throw protocolError("invalid_download", "The pack response exceeded its allowed size.");
+        }
+        chunks.push(value.slice());
+      }
+    } finally {
+      if (typeof reader.releaseLock === "function") reader.releaseLock();
+    }
+    if (total !== expectedBytes) {
+      throw protocolError("invalid_download", "The pack response size does not match its catalog record.");
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  }
+
+  const buffer = await response.arrayBuffer();
+  if (!(buffer instanceof ArrayBuffer)) {
+    throw protocolError("invalid_download", "The pack response could not be read safely.");
+  }
+  if (buffer.byteLength > MAX_PACK_RESPONSE_BYTES || buffer.byteLength !== expectedBytes) {
+    throw protocolError("invalid_download", "The pack response size does not match its catalog record.");
+  }
+  return new Uint8Array(buffer).slice();
+}
+
+export function validateK868Pack(bytes, expectedPackId = null) {
+  if (!(bytes instanceof Uint8Array)) {
+    throw protocolError("invalid_download", "The downloaded pack is not a byte array.");
+  }
+  if (bytes.byteLength < K868.headerBytes || bytes.byteLength > MAX_PACK_RESPONSE_BYTES) {
+    throw protocolError("invalid_download", "The downloaded pack has an invalid size.");
+  }
+  if (K868_MAGIC.some((value, index) => bytes[index] !== value)) {
+    throw protocolError("invalid_download", "The downloaded file is not a K868PK1 pack.");
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint16(0x08, true);
+  const headerBytes = view.getUint16(0x0a, true);
+  const totalBytes = view.getUint32(0x0c, true);
+  const payloadCrc = view.getUint32(0x10, true);
+  const headerCrc = view.getUint32(0x14, true);
+  const packId = hexadecimal32(view.getUint32(0x18, true));
+  const revision = view.getUint32(0x1c, true);
+  const width = view.getUint16(0x20, true);
+  const height = view.getUint16(0x22, true);
+  const frameCount = view.getUint16(0x24, true);
+  const clipCount = view.getUint16(0x26, true);
+  const stepCount = view.getUint32(0x28, true);
+  const flags = view.getUint32(0x2c, true);
+
+  if (
+    version !== K868.version
+    || headerBytes !== K868.headerBytes
+    || totalBytes !== bytes.byteLength
+    || packId === "00000000"
+    || revision === 0
+    || width !== K868.width
+    || height !== K868.height
+    || frameCount !== K868.frames
+    || clipCount !== K868.clips
+    || stepCount !== K868.steps
+    || flags !== 0
+  ) {
+    throw protocolError("invalid_download", "The downloaded pack has an unsupported K868PK1 layout.");
+  }
+  const normalizedExpectedId = expectedPackId === null ? null : normalizedPackId(expectedPackId);
+  if (normalizedExpectedId === null && expectedPackId !== null) {
+    throw protocolError("invalid_download", "The expected pack identity is invalid.");
+  }
+  if (normalizedExpectedId !== null && packId !== normalizedExpectedId) {
+    throw protocolError("invalid_download", "The downloaded pack identity does not match the verified code.");
+  }
+  const expectedTotal = K868.headerBytes
+    + clipCount * K868.clipBytes
+    + stepCount * K868.stepBytes
+    + frameCount * K868.frameBytes;
+  if (expectedTotal !== bytes.byteLength || crc32(bytes.subarray(K868.headerBytes)) !== payloadCrc) {
+    throw protocolError("invalid_download", "The downloaded pack failed its payload CRC check.");
+  }
+  const headerForCrc = bytes.slice(0x08, K868.headerBytes);
+  headerForCrc.fill(0, 0x14 - 0x08, 0x18 - 0x08);
+  if (crc32(headerForCrc) !== headerCrc) {
+    throw protocolError("invalid_download", "The downloaded pack failed its header CRC check.");
+  }
+
+  const displayName = bytes.subarray(0x30, K868.headerBytes);
+  const terminator = displayName.indexOf(0);
+  const nameBytes = terminator < 0 ? displayName : displayName.subarray(0, terminator);
+  if (
+    nameBytes.byteLength === 0
+    || nameBytes.some((value) => value < 0x20 || value > 0x7e)
+    || (terminator >= 0 && displayName.subarray(terminator).some((value) => value !== 0))
+  ) {
+    throw protocolError("invalid_download", "The downloaded pack has an invalid display name.");
+  }
+
+  const clipsOffset = K868.headerBytes;
+  const stepsOffset = clipsOffset + clipCount * K868.clipBytes;
+  let hasBaseIdle = false;
+  for (let index = 0; index < clipCount; index += 1) {
+    const offset = clipsOffset + index * K868.clipBytes;
+    const role = view.getUint8(offset);
+    const variant = view.getUint8(offset + 1);
+    const mode = view.getUint8(offset + 2);
+    const weight = view.getUint8(offset + 3);
+    const firstStep = view.getUint32(offset + 4, true);
+    const count = view.getUint16(offset + 8, true);
+    const reserved = view.getUint16(offset + 10, true);
+    if (
+      role > 11
+      || mode > 3
+      || weight === 0
+      || count === 0
+      || count > 256
+      || firstStep + count > stepCount
+      || (mode === 0 && count !== 1)
+      || reserved !== 0
+    ) {
+      throw protocolError("invalid_download", "The downloaded pack has an invalid animation clip.");
+    }
+    hasBaseIdle ||= role === 0 && variant === 0;
+  }
+  if (!hasBaseIdle) {
+    throw protocolError("invalid_download", "The downloaded pack has no base Idle animation.");
+  }
+
+  for (let index = 0; index < stepCount; index += 1) {
+    const offset = stepsOffset + index * K868.stepBytes;
+    const frameIndex = view.getUint16(offset, true);
+    const durationMs = view.getUint16(offset + 2, true);
+    if (frameIndex >= frameCount || durationMs < 100 || durationMs > 60_000) {
+      throw protocolError("invalid_download", "The downloaded pack has an invalid animation step.");
+    }
+  }
+  return Object.freeze({ bytes: totalBytes, packId, revision });
+}
+
+export function buildRedemptionRequest(code, verification) {
+  const normalizedCode = normalizeUnlockCode(code);
+  if (!normalizedCode || verification?.status !== "valid") {
+    throw protocolError("invalid_redemption", "A valid code verification is required before download.");
+  }
+  const requestId = verification.requestId;
+  if (
+    !validRequestId(requestId)
+    || !normalizedHardwareId(verification.deviceId)
+    || verification.boundDeviceId !== verification.deviceId
+    || !normalizedCodeId(verification.codeId)
+    || !normalizedPackId(verification.packId)
+    || !validRarities.has(verification.rarity)
+  ) {
+    throw protocolError("invalid_redemption", "The code verification record is incomplete.");
+  }
+  return Object.freeze({
+    schema: REDEMPTION_SCHEMA,
+    code: normalizedCode,
+    verification: Object.freeze({
+      schema: VERIFY_SCHEMA,
+      boundDeviceId: verification.boundDeviceId,
+      codeId: verification.codeId,
+      deviceId: verification.deviceId,
+      packId: verification.packId,
+      rarity: verification.rarity,
+      requestId,
+      status: "valid",
+    }),
+  });
+}
+
+function redemptionFailure(status) {
+  if (status === 403) {
+    return protocolError("redemption_denied", "The K32 service did not accept this code and device proof.");
+  }
+  if (status === 404) {
+    return protocolError("pack_unpublished", "This valid pack has not been published yet.");
+  }
+  if (status === 429) {
+    return protocolError("redemption_rate_limited", "Too many attempts were made. Wait a moment and try again.");
+  }
+  if (status >= 500) {
+    return protocolError("redemption_unavailable", "Pack delivery is temporarily unavailable. Try again later.");
+  }
+  return protocolError("redemption_failed", "The pack could not be delivered.");
+}
+
+export async function redeemPublishedPack(
+  fetchImpl,
+  code,
+  verification,
+  publishedPack,
+  cryptoProvider = globalThis.crypto,
+) {
+  if (typeof fetchImpl !== "function" || !isPublishedPackEntry(publishedPack)) {
+    throw protocolError("invalid_redemption", "The requested pack is not in the published catalog.");
+  }
+  if (verification?.packId !== publishedPack.packId || verification?.rarity !== publishedPack.rarity) {
+    throw protocolError("invalid_redemption", "The verified result does not match the published pack.");
+  }
+  const body = buildRedemptionRequest(code, verification);
+  let response;
+  try {
+    response = await fetchImpl(REDEMPTION_ENDPOINT, {
+      method: "POST",
+      headers: Object.freeze({
+        Accept: "application/octet-stream",
+        "Content-Type": "application/json",
+      }),
+      body: JSON.stringify(body),
+      cache: "no-store",
+      credentials: "omit",
+      mode: "cors",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+    });
+  } catch {
+    throw protocolError("redemption_unavailable", "The K32 pack service could not be reached.");
+  }
+  if (!response || typeof response.status !== "number" || !response.ok) {
+    throw redemptionFailure(response?.status ?? 503);
+  }
+  if (!response.headers || typeof response.headers.get !== "function") {
+    throw protocolError("invalid_download", "The pack response did not include verifiable headers.");
+  }
+
+  const contentType = response.headers.get("content-type")?.toLowerCase().trim();
+  const disposition = response.headers.get("content-disposition");
+  const responsePackId = response.headers.get("x-kitsu-pack-id")?.toUpperCase();
+  const responseSha256 = response.headers.get("x-kitsu-pack-sha256")?.toLowerCase();
+  if (
+    contentType !== "application/octet-stream"
+    || disposition !== `attachment; filename="kitsu-${publishedPack.slug}.k868"`
+    || responsePackId !== publishedPack.packId
+    || responseSha256 !== publishedPack.sha256
+    || !isPrivateNoStore(response.headers.get("cache-control"))
+  ) {
+    throw protocolError("invalid_download", "The pack response failed its delivery-policy checks.");
+  }
+
+  let bytes;
+  try {
+    bytes = await boundedResponseBytes(response, publishedPack.bytes);
+    validateK868Pack(bytes, publishedPack.packId);
+    if (await sha256Hex(bytes, cryptoProvider) !== publishedPack.sha256) {
+      throw protocolError("invalid_download", "The downloaded pack failed its SHA-256 check.");
+    }
+  } catch (error) {
+    if (error instanceof UnlockProtocolError) throw error;
+    throw protocolError("invalid_download", "The pack response could not be verified safely.");
+  }
+  return Object.freeze({
+    bytes,
+    filename: `kitsu-${publishedPack.slug}.k868`,
+    mimeType: "application/octet-stream",
+  });
+}
+
 function hasExactKeys(value, expected) {
   const actual = Object.keys(value).sort();
   return actual.length === expected.length
@@ -63,9 +410,7 @@ function validRequestId(value) {
 
 function normalizedHardwareId(value) {
   if (typeof value !== "string") return null;
-  if (/^KT[A-F0-9]{4}$/.test(value)) return value;
-  if (/^[A-F0-9]{32}$/.test(value)) return value;
-  return null;
+  return /^KT[A-F0-9]{4}$/.test(value) ? value : null;
 }
 
 function normalizedPackId(value) {
@@ -75,7 +420,7 @@ function normalizedPackId(value) {
 }
 
 function normalizedCodeId(value) {
-  return typeof value === "string" && /^[A-Z0-9]{8,64}$/.test(value)
+  return typeof value === "string" && /^[A-F0-9]{8}$/.test(value)
     ? value
     : null;
 }
@@ -85,8 +430,11 @@ export function normalizeUnlockCode(value) {
   const candidate = value.normalize("NFKC").trim();
   if (!candidate || /[^\x20-\x7e]/.test(candidate)) return null;
   if (/[^A-Za-z0-9 -]/.test(candidate)) return null;
-  const normalized = candidate.replace(/[ -]+/g, "").toUpperCase();
-  return /^[A-Z0-9]{8,64}$/.test(normalized) ? normalized : null;
+  const compact = candidate.replace(/[ -]+/g, "").toUpperCase();
+  const characters = compact.startsWith("K8") ? compact.slice(2) : compact;
+  if (characters.length !== 15) return null;
+  if (![...characters].every((character) => unlockCodeAlphabet.includes(character))) return null;
+  return `K8-${characters.slice(0, 5)}-${characters.slice(5, 10)}-${characters.slice(10)}`;
 }
 
 export function unlockCodeFromFragment(hash) {
@@ -309,22 +657,37 @@ function initializeUnlockPage(windowObject, documentObject) {
   const packResult = byId("pack-result");
   const packTitle = byId("pack-title");
   const packDetail = byId("pack-detail");
+  const packPortrait = byId("pack-portrait");
   const packDownload = byId("pack-download");
+  const packInstall = byId("pack-install");
   const packIntegrity = byId("pack-integrity");
 
   let currentPort = null;
   let connected = false;
   let busy = false;
+  let currentDownloadUrl = null;
+
+  function revokeDownloadUrl() {
+    if (currentDownloadUrl !== null) {
+      windowObject.URL.revokeObjectURL(currentDownloadUrl);
+      currentDownloadUrl = null;
+    }
+  }
 
   function resetPackResult() {
+    revokeDownloadUrl();
     packResult.hidden = true;
     packTitle.textContent = "";
     packDetail.textContent = "";
     packIntegrity.textContent = "";
+    packPortrait.hidden = true;
+    packPortrait.removeAttribute("src");
+    packPortrait.alt = "";
     packDownload.hidden = true;
     packDownload.removeAttribute("href");
     packDownload.removeAttribute("download");
     packDownload.setAttribute("aria-disabled", "true");
+    packInstall.hidden = true;
   }
 
   function setResult(state, message, moveFocus = false) {
@@ -425,7 +788,7 @@ function initializeUnlockPage(windowObject, documentObject) {
 
     const normalizedCode = normalizeUnlockCode(input.value);
     if (!normalizedCode) {
-      setFieldError("Use 8 to 64 letters or numbers. Spaces and hyphens are optional.");
+      setFieldError("Use K8 followed by three groups of five letters or numbers.");
       input.focus();
       return;
     }
@@ -469,13 +832,33 @@ function initializeUnlockPage(windowObject, documentObject) {
         return;
       }
 
+      packPortrait.src = publishedPack.portraitUrl;
+      packPortrait.alt = `${publishedPack.displayName} portrait`;
+      packPortrait.hidden = false;
       packTitle.textContent = publishedPack.displayName;
-      packDetail.textContent = `${rarityLabel(publishedPack.rarity)} pet pack. The downloaded file is an ordinary .k868 package.`;
+      packDetail.textContent = `${rarityLabel(publishedPack.rarity)} pet pack. Requesting the ordinary .k868 package from the gated K32 service…`;
+      setResult("loading", "Code accepted. Checking the gated pack delivery now…");
+
+      const redeemed = await redeemPublishedPack(
+        windowObject.fetch.bind(windowObject),
+        normalizedCode,
+        verification,
+        publishedPack,
+        windowObject.crypto,
+      );
+      try {
+        const blob = new Blob([redeemed.bytes], { type: redeemed.mimeType });
+        currentDownloadUrl = windowObject.URL.createObjectURL(blob);
+      } catch {
+        throw protocolError("download_unavailable", "This browser could not prepare the verified pack download.");
+      }
+      packDetail.textContent = `${rarityLabel(publishedPack.rarity)} pet pack. This is an ordinary .k868 package for the web flasher.`;
       packIntegrity.textContent = `SHA-256 ${publishedPack.sha256.toUpperCase()}`;
-      packDownload.href = publishedPack.downloadUrl;
-      packDownload.download = publishedPack.downloadUrl.split("/").at(-1);
+      packDownload.href = currentDownloadUrl;
+      packDownload.download = redeemed.filename;
       packDownload.hidden = false;
       packDownload.removeAttribute("aria-disabled");
+      packInstall.hidden = false;
       setResult("available", "Code accepted. The matching pet pack is ready to download.", true);
     } catch (error) {
       if (error?.code === "device_mismatch") {
@@ -494,6 +877,25 @@ function initializeUnlockPage(windowObject, documentObject) {
           "The connected Kitsu did not answer. Check its cable, restart it, and try again.",
           true,
         );
+      } else if (error?.code === "pack_unpublished") {
+        packResult.hidden = false;
+        packTitle.textContent = "Pack Not Published";
+        packDetail.textContent = "The code and hardware proof were accepted, but the matching pack is not available yet.";
+        setResult(
+          "unpublished",
+          "Code accepted for this Kitsu. Keep the code saved and check again after the pack is published.",
+          true,
+        );
+      } else if (typeof error?.code === "string" && (
+        error.code.startsWith("redemption_")
+        || error.code === "invalid_download"
+        || error.code === "integrity_unavailable"
+        || error.code === "invalid_redemption"
+        || error.code === "download_unavailable"
+      )) {
+        resetPackResult();
+        const state = error.code === "redemption_denied" ? "invalid" : "service";
+        setResult(state, error.message, true);
       } else {
         await closeCurrentPort();
         showDisconnected("The serial verification session ended before a valid response arrived.");
@@ -549,6 +951,7 @@ function initializeUnlockPage(windowObject, documentObject) {
   }
 
   windowObject.addEventListener("pagehide", () => {
+    revokeDownloadUrl();
     void closeCurrentPort();
   }, { once: true });
 

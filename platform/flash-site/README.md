@@ -41,18 +41,22 @@ It remains an ordinary, replaceable ESP32-S3 bootloader and does not enable
 Secure Boot, Flash Encryption, anti-rollback eFuses, or a debug lock.
 
 After those seven core regions pass readback, the owner may use the same open
-Web Serial/ROM-loader session to install one canonical public Cat, Fox, or Dog
-bundle into the single companion slot at `0x670000`. The selected 24,976-byte
-bundle is pinned by exact SHA-256, written in a separate bounded phase, and
-read back before the one final hard reset. “Keep current pet” is the default
-and performs no companion-slot write. Changing to a different species starts
-that companion's care and bond progression fresh.
+Web Serial/ROM-loader session to install one companion bundle into the single
+slot at `0x670000`. Cat, Fox, and Dog remain the only built-in starter choices
+and are pinned by exact size and SHA-256. An owner can instead choose a local
+unlocked `.k868` file. The browser does not upload that file: it validates the
+K868PK1 version, header and fixed layout, canvas and count bounds, clip and step
+references, display name, slot boundary, payload CRC32, and header CRC32 before
+computing its readback SHA-256. The selected bundle is written in a separate
+bounded phase and read back before the one final hard reset. "Keep current
+pet" is the default and performs no companion-slot write. Changing to a
+different species starts that companion's care and bond progression fresh.
 
 There is no full-chip erase command and no OTA-data, companion-state,
 controller-store, MeshCore-state, coredump, or eFuse write path. The companion
-slot changes only after an explicit Cat, Fox, or Dog selection. Flash writes
-necessarily erase only the target flash sectors before programming them;
-`eraseAll` remains false.
+slot changes only after an explicit Cat, Fox, Dog, or locally validated unlocked
+file selection. Flash writes necessarily erase only the target flash sectors
+before programming them; `eraseAll` remains false.
 
 Run `npm ci` followed by `npm run check`. Deploy only `dist/`, never this source
 tree or `node_modules/`. Physical browser acceptance still requires a Heltec

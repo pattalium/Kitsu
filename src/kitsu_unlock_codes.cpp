@@ -22,17 +22,21 @@ struct PersistedRecord {
   uint8_t installed;
 };
 
-struct PersistedStore {
+struct PersistedHeader {
   uint32_t magic;
   uint16_t schema;
   uint16_t bytes;
   uint32_t generation;
   uint8_t count;
   uint8_t reserved[3];
-  PersistedRecord records[kCodeCapacity];
-  uint32_t crc32;
 };
 #pragma pack(pop)
+
+static_assert(sizeof(PersistedRecord) == kPersistedRecordBytes,
+              "unlock record wire size changed");
+static_assert(sizeof(PersistedHeader) + sizeof(uint32_t) ==
+                  kPersistedEnvelopeBytes,
+              "unlock envelope wire size changed");
 
 uint32_t crc32(const uint8_t* input, size_t bytes) {
   uint32_t value = 0xffffffffUL;
@@ -71,6 +75,8 @@ bool validToken(const char* value, size_t capacity, bool allowSpace) {
 bool validRecord(const CodeRecord& record) {
   char normalized[kFormattedCodeBytes]{};
   return record.codeId != 0U && record.packId != 0U &&
+      boundedLength(record.code, kFormattedCodeBytes - 1U) ==
+          kFormattedCodeBytes - 1U &&
       CodeStore::normalizeCode(record.code, normalized) &&
       strcmp(normalized, record.code) == 0 &&
       CodeStore::codeId(normalized) == record.codeId &&
@@ -141,6 +147,7 @@ void CodeStore::reset() {
   memset(records_, 0, sizeof(records_));
   count_ = 0U;
   generation_ = 0U;
+  migrationRequired_ = false;
 }
 
 size_t CodeStore::count() const { return count_; }
@@ -175,6 +182,17 @@ bool CodeStore::find(const char* code, CodeRecord& output) const {
 bool CodeStore::findById(uint32_t value, CodeRecord& output) const {
   for (size_t index = 0U; index < count_; ++index) {
     if (records_[index].codeId == value) {
+      output = records_[index];
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CodeStore::findByPackId(uint32_t value, CodeRecord& output) const {
+  if (value == 0U) return false;
+  for (size_t index = 0U; index < count_; ++index) {
+    if (records_[index].packId == value) {
       output = records_[index];
       return true;
     }
@@ -298,60 +316,100 @@ uint32_t CodeStore::codeId(const char* normalizedCode) {
   return value == 0U ? 1U : value;
 }
 
-size_t CodeStore::serializedBytes() const { return sizeof(PersistedStore); }
+size_t CodeStore::serializedBytes() const { return kStoreSerializedBytes; }
+
+bool CodeStore::migrationRequired() const { return migrationRequired_; }
 
 bool CodeStore::serialize(uint8_t* output, size_t capacity,
                           size_t& outputBytes) const {
   outputBytes = 0U;
-  if (!output || capacity < sizeof(PersistedStore)) return false;
-  PersistedStore store{};
-  store.magic = kStoreMagic;
-  store.schema = kStoreSchema;
-  store.bytes = sizeof(PersistedStore);
-  store.generation = generation_;
-  store.count = count_;
+  if (!output || capacity < kStoreSerializedBytes) return false;
+  memset(output, 0, kStoreSerializedBytes);
+  PersistedHeader header{};
+  header.magic = kStoreMagic;
+  header.schema = kStoreSchema;
+  header.bytes = static_cast<uint16_t>(kStoreSerializedBytes);
+  header.generation = generation_;
+  header.count = count_;
+  memcpy(output, &header, sizeof(header));
   for (size_t index = 0U; index < count_; ++index) {
-    copyToPersisted(records_[index], store.records[index]);
+    PersistedRecord record{};
+    copyToPersisted(records_[index], record);
+    memcpy(output + sizeof(PersistedHeader) +
+               index * sizeof(PersistedRecord),
+           &record, sizeof(record));
   }
-  store.crc32 = crc32(reinterpret_cast<const uint8_t*>(&store),
-                      offsetof(PersistedStore, crc32));
-  memcpy(output, &store, sizeof(store));
-  outputBytes = sizeof(store);
+  const uint32_t checksum =
+      crc32(output, kStoreSerializedBytes - sizeof(uint32_t));
+  memcpy(output + kStoreSerializedBytes - sizeof(checksum), &checksum,
+         sizeof(checksum));
+  outputBytes = kStoreSerializedBytes;
   return true;
 }
 
 bool CodeStore::load(const uint8_t* input, size_t inputBytes) {
-  if (!input || inputBytes != sizeof(PersistedStore)) return false;
-  PersistedStore store{};
-  memcpy(&store, input, sizeof(store));
-  if (store.magic != kStoreMagic || store.schema != kStoreSchema ||
-      store.bytes != sizeof(PersistedStore) || store.count > kCodeCapacity ||
-      store.reserved[0] != 0U || store.reserved[1] != 0U ||
-      store.reserved[2] != 0U ||
-      store.crc32 != crc32(reinterpret_cast<const uint8_t*>(&store),
-                           offsetof(PersistedStore, crc32))) {
+  if (!input) return false;
+
+  const bool legacy = inputBytes == kLegacyStoreSerializedBytes;
+  if (!legacy && inputBytes != kStoreSerializedBytes) {
     return false;
   }
-  CodeStore candidate;
-  candidate.generation_ = store.generation;
-  candidate.count_ = store.count;
-  for (size_t index = 0U; index < store.count; ++index) {
-    copyFromPersisted(store.records[index], candidate.records_[index]);
-    if (store.records[index].redeemed > 1U ||
-        store.records[index].installed > 1U ||
-        !validRecord(candidate.records_[index])) {
+  PersistedHeader header{};
+  memcpy(&header, input, sizeof(header));
+  uint32_t persistedChecksum = 0U;
+  memcpy(&persistedChecksum, input + inputBytes - sizeof(persistedChecksum),
+         sizeof(persistedChecksum));
+  const uint16_t expectedSchema =
+      legacy ? kLegacyStoreSchema : kStoreSchema;
+  const size_t expectedCapacity =
+      legacy ? kLegacyCodeCapacity : kCodeCapacity;
+  if (header.magic != kStoreMagic || header.schema != expectedSchema ||
+      header.bytes != inputBytes || header.count > expectedCapacity ||
+      header.reserved[0] != 0U || header.reserved[1] != 0U ||
+      header.reserved[2] != 0U ||
+      persistedChecksum != crc32(input, inputBytes - sizeof(uint32_t))) {
+    return false;
+  }
+
+  // Fully validate before mutating this store. This preserves an in-memory
+  // ledger if either a legacy or current blob is corrupt.
+  for (size_t index = 0U; index < header.count; ++index) {
+    PersistedRecord persisted{};
+    memcpy(&persisted,
+           input + sizeof(PersistedHeader) +
+               index * sizeof(PersistedRecord),
+           sizeof(persisted));
+    CodeRecord candidate{};
+    copyFromPersisted(persisted, candidate);
+    if (persisted.redeemed > 1U || persisted.installed > 1U ||
+        !validRecord(candidate)) {
       return false;
     }
     for (size_t prior = 0U; prior < index; ++prior) {
-      if (candidate.records_[prior].codeId ==
-              candidate.records_[index].codeId ||
-          strcmp(candidate.records_[prior].code,
-                 candidate.records_[index].code) == 0) {
+      PersistedRecord previous{};
+      memcpy(&previous,
+             input + sizeof(PersistedHeader) +
+                 prior * sizeof(PersistedRecord),
+             sizeof(previous));
+      if (previous.codeId == candidate.codeId ||
+          strcmp(previous.code, candidate.code) == 0) {
         return false;
       }
     }
   }
-  *this = candidate;
+
+  reset();
+  generation_ = header.generation;
+  count_ = header.count;
+  migrationRequired_ = legacy;
+  for (size_t index = 0U; index < header.count; ++index) {
+    PersistedRecord persisted{};
+    memcpy(&persisted,
+           input + sizeof(PersistedHeader) +
+               index * sizeof(PersistedRecord),
+           sizeof(persisted));
+    copyFromPersisted(persisted, records_[index]);
+  }
   return true;
 }
 

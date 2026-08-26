@@ -328,10 +328,12 @@ def parse_platformio_profile(project_root: Path) -> dict[str, Any]:
 def validate_build_sdkconfig(build_root: Path, sdkconfig: Path) -> dict[str, Any]:
     """Bind the reviewed rollback settings to the exact PlatformIO build."""
 
+    requested = sdkconfig.expanduser().absolute()
     resolved = require_file(sdkconfig, "build SDK configuration")
     normalized = resolved.as_posix().lower()
+    requested_normalized = requested.as_posix().lower()
     expected_suffix = "/tools/sdk/esp32s3/qio_qspi/include/sdkconfig.h"
-    if not normalized.endswith(expected_suffix):
+    if not requested_normalized.endswith(expected_suffix):
         raise SystemExit(
             "build SDK configuration must be the ESP32-S3 qio_qspi generated sdkconfig.h"
         )
@@ -341,7 +343,12 @@ def validate_build_sdkconfig(build_root: Path, sdkconfig: Path) -> dict[str, Any
         raise SystemExit("exactly one PlatformIO build signature is required")
     signature = signatures[0]
     signature_bytes = signature.read_bytes().replace(b"\\", b"/").lower()
-    if normalized.encode("utf-8") not in signature_bytes:
+    # PlatformIO records the path used during compilation. On Windows that may
+    # be a short junction alias even though Path.resolve() identifies the same
+    # package file by its longer physical path. The content signature below
+    # still binds the exact bytes, so accept either spelling of that one file.
+    recorded_paths = {normalized, requested_normalized}
+    if not any(path.encode("utf-8") in signature_bytes for path in recorded_paths):
         raise SystemExit(
             "build signature does not bind the supplied SDK configuration to this build"
         )
@@ -968,7 +975,7 @@ def main() -> None:
 
     profile = parse_platformio_profile(project_root)
     sdkconfig = require_file(args.sdkconfig, "build SDK configuration")
-    rollback_configuration = validate_build_sdkconfig(build_root, sdkconfig)
+    rollback_configuration = validate_build_sdkconfig(build_root, args.sdkconfig)
     reject_sensitive_build_inputs(build_root)
     layout = require_file(project_root / PARTITION_LAYOUT, "partition layout")
     candidates = {

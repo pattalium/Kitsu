@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config, db::Database, issuer::DynCertificateIssuer, kms::DynKms, oidc::OidcClient,
-    wire::RemoteAction,
+    pet_packs::PetPackStore, wire::RemoteAction,
 };
 
 #[derive(Clone)]
@@ -21,6 +21,7 @@ pub struct AppState {
     pub instance_id: Uuid,
     pub hubs: Arc<ConnectionHubs>,
     pub metrics: PrometheusHandle,
+    pub pet_packs: Arc<PetPackStore>,
 }
 
 pub struct ConnectionHubs {

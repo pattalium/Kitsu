@@ -310,7 +310,7 @@ const litPixels = frame.reduce((sum, value) => sum + (value ? 1 : 0), 0);
 assert.ok(litPixels > 0, "firmware must render at least one OLED pixel");
 const bootFrameCount = verifyBootFrameHistory(target);
 const bootSerial = serialText(target);
-assert.match(bootSerial, /KITSU_BOOT firmware=Kitsu868 version=0\.17\.0/);
+assert.match(bootSerial, /KITSU_BOOT firmware=Kitsu868 version=0\.17\.1/);
 assert.match(bootSerial, /KITSU_READY uid=/);
 
 // The host replaces only NimBLE transport. Exercise the same encrypted,

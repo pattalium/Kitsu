@@ -5,6 +5,7 @@ pub mod gateway;
 pub mod mobile_relay;
 pub mod ops;
 pub mod owner;
+pub mod pet_packs;
 pub mod public;
 
 use axum::{
@@ -91,7 +92,7 @@ pub fn public_router(state: AppState) -> Router {
             auth::require_owner,
         ));
 
-    let allowed_origins = state
+    let authenticated_origins = state
         .config
         .browser_allowed_origins
         .iter()
@@ -100,8 +101,14 @@ pub fn public_router(state: AppState) -> Router {
                 .expect("validated browser origin")
         })
         .collect::<Vec<_>>();
+    // The public unlock page may call only the account-free redemption route.
+    // Do not add it to `browser_allowed_origins`: doing that would grant the
+    // public site credentialed CORS access to authenticated owner routes.
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_origin(AllowOrigin::predicate(move |origin, request| {
+            authenticated_origins.contains(origin)
+                || (origin == "https://k32.run" && request.uri.path() == "/v1/pet-packs/redeem")
+        }))
         .allow_credentials(true)
         .allow_methods([
             Method::GET,
@@ -119,7 +126,12 @@ pub fn public_router(state: AppState) -> Router {
             HeaderName::from_static("x-csrf-token"),
             HeaderName::from_static("idempotency-key"),
         ])
-        .expose_headers([header::ETAG]);
+        .expose_headers([
+            header::ETAG,
+            header::CONTENT_DISPOSITION,
+            HeaderName::from_static("x-kitsu-pack-id"),
+            HeaderName::from_static("x-kitsu-pack-sha256"),
+        ]);
     let sensitive = vec![
         header::AUTHORIZATION,
         header::COOKIE,
@@ -133,6 +145,7 @@ pub fn public_router(state: AppState) -> Router {
         .route("/health/live", get(public::live))
         .route("/v1/auth/config", get(public::auth_config))
         .route("/v1/contact", post(public::contact))
+        .route("/v1/pet-packs/redeem", post(pet_packs::redeem))
         .route("/v1/browser/auth/start", get(browser::auth_start))
         .route("/v1/browser/auth/callback", get(browser::auth_callback))
         .route("/v1/browser/ws", get(browser::websocket))

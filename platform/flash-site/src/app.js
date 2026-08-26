@@ -5,13 +5,20 @@ import {
   reverifyArtifacts,
   sha256Hex,
 } from "./release.js";
-import { fetchOfficialPack, packDefinition, reverifyPack } from "./packs.js";
+import {
+  fetchOfficialPack,
+  loadUnlockedPack,
+  reverifyPack,
+  UNLOCKED_PACK_ID,
+} from "./packs.js";
 import "./styles.css";
 
 const connectButton = document.querySelector("#connect");
 const disconnectButton = document.querySelector("#disconnect");
 const installButton = document.querySelector("#install");
 const packSelect = document.querySelector("#pack-select");
+const unlockedPackField = document.querySelector("#unlocked-pack-field");
+const unlockedPackInput = document.querySelector("#unlocked-pack-file");
 const packDetail = document.querySelector("#pack-detail");
 const refreshButton = document.querySelector("#refresh");
 const browserDetail = document.querySelector("#browser-detail");
@@ -39,6 +46,21 @@ function append(message) {
   log.scrollTop = log.scrollHeight;
 }
 
+function packMatchesSelection(packId, pack = verifiedPack) {
+  if (packId === "preserve") return true;
+  if (packId === UNLOCKED_PACK_ID) {
+    return pack?.definition.id === UNLOCKED_PACK_ID
+      && pack.definition.source === "unlocked_file";
+  }
+  return pack?.definition.id === packId && pack.definition.source !== "unlocked_file";
+}
+
+function packIntegrityDescription(pack) {
+  return pack.definition.source === "unlocked_file"
+    ? "K868PK1 structure, bounds, CRC32, and SHA-256 verified"
+    : "exact official bundle and SHA-256 verified";
+}
+
 function updateControls() {
   const connected = Boolean(loader)
     && loader.chip?.CHIP_NAME === "ESP32-S3"
@@ -47,14 +69,15 @@ function updateControls() {
   disconnectButton.disabled = busy || !transport;
   refreshButton.disabled = busy;
   packSelect.disabled = busy;
-  const packReady = packSelect.value === "preserve"
-    || verifiedPack?.definition.id === packSelect.value;
+  const unlockedSelected = packSelect.value === UNLOCKED_PACK_ID;
+  unlockedPackField.hidden = !unlockedSelected;
+  unlockedPackInput.disabled = busy || !unlockedSelected;
+  const packReady = packMatchesSelection(packSelect.value);
   installButton.disabled = busy || !connected || !verifiedRelease || !packReady;
   if (busy) installButton.textContent = "Install in progress";
   else if (connected && verifiedRelease && packReady) {
-    const pack = packDefinition(packSelect.value);
-    installButton.textContent = pack
-      ? `Install Kitsu + ${pack.name}`
+    installButton.textContent = verifiedPack
+      ? `Install Kitsu + ${verifiedPack.definition.name}`
       : `Install ${verifiedRelease.manifest.firmware_version}`;
   }
   else installButton.textContent = "Install unavailable";
@@ -136,16 +159,22 @@ async function connect() {
   }
 }
 
-async function loadSelectedPack() {
+async function loadSelectedPack({ allowMissingUnlockedFile = false } = {}) {
   const packId = packSelect.value;
   verifiedPack = undefined;
   if (packId === "preserve") {
     packDetail.textContent = "Keep current pet selected. The companion-pack slot will not be written.";
     return null;
   }
-  const pack = await fetchOfficialPack(packId);
+  if (packId === UNLOCKED_PACK_ID && !unlockedPackInput.files?.[0]) {
+    packDetail.textContent = "Choose the unlocked .k868 file you downloaded. It stays on this device and must pass every local format and integrity check.";
+    if (allowMissingUnlockedFile) return null;
+  }
+  const pack = packId === UNLOCKED_PACK_ID
+    ? await loadUnlockedPack(unlockedPackInput.files?.[0])
+    : await fetchOfficialPack(packId);
   verifiedPack = pack;
-  packDetail.textContent = `${pack.definition.name} is ready: exact official bundle and SHA-256 verified. Installing a different pet resets that pet's care and bond progress.`;
+  packDetail.textContent = `${pack.definition.name} is ready: ${packIntegrityDescription(pack)}. Installing a different pet resets that pet's care and bond progress.`;
   return pack;
 }
 
@@ -153,16 +182,42 @@ async function checkSelectedPack() {
   busy = true;
   updateControls();
   try {
+    unlockedPackInput.removeAttribute("aria-invalid");
     const pack = await loadSelectedPack();
-    if (pack) append(`Pet gate passed: official ${pack.definition.name} bundle verified for the dedicated slot at 0x670000.`);
+    if (pack) append(`Pet gate passed: ${pack.definition.name}; ${packIntegrityDescription(pack)} for the dedicated slot at 0x670000.`);
     else append("Pet choice: preserve the current companion-pack slot.");
   } catch (error) {
-    packDetail.textContent = "The selected pet bundle did not pass its exact size and SHA-256 gates.";
+    if (packSelect.value === UNLOCKED_PACK_ID) unlockedPackInput.setAttribute("aria-invalid", "true");
+    packDetail.textContent = "This file was rejected. Choose the downloaded .k868 file again, or download a fresh unlocked copy and retry.";
     append(`Pet gate closed: ${errorMessage(error)}`);
   } finally {
     busy = false;
     updateControls();
   }
+}
+
+async function checkUnlockedPackFile() {
+  if (packSelect.value !== UNLOCKED_PACK_ID) return;
+  verifiedPack = undefined;
+  if (!unlockedPackInput.files?.[0]) {
+    unlockedPackInput.removeAttribute("aria-invalid");
+    packDetail.textContent = "Choose the unlocked .k868 file you downloaded. It stays on this device and must pass every local format and integrity check.";
+    updateControls();
+    return;
+  }
+  await checkSelectedPack();
+}
+
+async function packForInstall(packId, selectedPack) {
+  if (packId === "preserve") return null;
+  if (packId === UNLOCKED_PACK_ID) {
+    if (!packMatchesSelection(packId, selectedPack)) {
+      throw new Error("selected unlocked companion pack is not loaded");
+    }
+    await reverifyPack(selectedPack);
+    return selectedPack;
+  }
+  return fetchOfficialPack(packId);
 }
 
 async function checkRelease() {
@@ -174,7 +229,7 @@ async function checkRelease() {
   try {
     const [release] = await Promise.all([
       fetchVerifiedRelease(),
-      loadSelectedPack(),
+      loadSelectedPack({ allowMissingUnlockedFile: true }),
     ]);
     verifiedRelease = release;
     const totalBytes = release.artifacts.reduce((total, artifact) => total + artifact.bytes.byteLength, 0);
@@ -215,13 +270,15 @@ async function verifyReadback(artifact, index, artifacts, start = 65, end = 99) 
 async function install() {
   if (busy || !loader || !verifiedRelease) return;
   const selectedPackId = packSelect.value;
-  const selectedDefinition = packDefinition(selectedPackId);
-  if (selectedDefinition && verifiedPack?.definition.id !== selectedPackId) return;
-  const packPlan = selectedDefinition
-    ? `After the seven core regions pass readback, the same USB session writes the official ${selectedDefinition.name} pet to the dedicated companion slot at 0x670000 and reads it back before one final reset. Replacing a different species starts that companion fresh. `
+  const packRequested = selectedPackId !== "preserve";
+  const selectedPack = verifiedPack;
+  if (packRequested && !packMatchesSelection(selectedPackId, selectedPack)) return;
+  const selectedPackName = selectedPack?.definition.name;
+  const packPlan = packRequested
+    ? `After the seven core regions pass readback, the same USB session writes the validated ${selectedPackName} pet to the dedicated companion slot at 0x670000 and reads it back before one final reset. Replacing a different species starts that companion fresh. `
     : "The current companion-pack slot and pet progress stay untouched. ";
   const confirmed = window.confirm(
-    `${selectedDefinition ? `Install Kitsu and ${selectedDefinition.name}` : "Install Kitsu"} now?\n\n`
+    `${packRequested ? `Install Kitsu and ${selectedPackName}` : "Install Kitsu"} now?\n\n`
     + "The installer will check the update service again immediately before writing. "
     + "This writes the reviewed rollback-enabled bootloader, partition table, the same application in app0 and app1, an empty OTA journal at the end of each application slot, and an exact clear image over the retired connectivity partition. Every region is read back. "
     + packPlan
@@ -236,7 +293,7 @@ async function install() {
   updateControls();
   setProgress(0, "Checking the latest signed stable release");
   let coreVerified = false;
-  let packVerified = !selectedDefinition;
+  let packVerified = !packRequested;
   let resetAttempted = false;
   try {
     if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== FLASH_PLAN.flashSize) {
@@ -244,7 +301,7 @@ async function install() {
     }
     const [latestRelease, latestPack] = await Promise.all([
       fetchVerifiedRelease(),
-      fetchOfficialPack(selectedPackId),
+      packForInstall(selectedPackId, selectedPack),
     ]);
     if (latestRelease.manifest.release_id !== verifiedRelease.manifest.release_id) {
       append(
@@ -259,7 +316,7 @@ async function install() {
     if (latestPack) await reverifyPack(latestPack);
     setProgress(4, "Latest release verified; starting seven bounded writes");
     append(`Install authorized for latest release ${verifiedRelease.manifest.release_id}. Starting the exact seven-write signed core phase; erase-all remains disabled.`);
-    if (latestPack) append(`Selected pet phase: official ${latestPack.definition.name}, ${latestPack.record.bytes.toLocaleString()} bytes at 0x670000, exact SHA-256 pinned.`);
+    if (latestPack) append(`Selected pet phase: ${latestPack.definition.name}, ${latestPack.record.bytes.toLocaleString()} bytes at 0x670000; ${packIntegrityDescription(latestPack)}.`);
     else append("Selected pet phase: preserve the current companion-pack slot without writing it.");
 
     const totalWriteBytes = verifiedRelease.artifacts.reduce((total, artifact) => total + artifact.record.bytes, 0);
@@ -324,9 +381,9 @@ async function install() {
     if (resetAttempted && coreVerified && packVerified) {
       setProgress(progress.value, "Installation verified; automatic reset could not be confirmed");
       append(`Every selected region passed SHA-256 readback, but the final automatic reset could not be confirmed: ${errorMessage(error)}. Press RST once on the Heltec. No second automatic reset was attempted.`);
-    } else if (coreVerified && selectedDefinition && !packVerified) {
-      setProgress(progress.value, `${selectedDefinition.name} install stopped after the signed core passed`);
-      append(`Signed core firmware is verified, but the ${selectedDefinition.name} pet phase failed closed: ${errorMessage(error)}. Kitsu may show NO PACK until the pet phase succeeds.`);
+    } else if (coreVerified && packRequested && !packVerified) {
+      setProgress(progress.value, `${selectedPackName} install stopped after the signed core passed`);
+      append(`Signed core firmware is verified, but the ${selectedPackName} pet phase failed closed: ${errorMessage(error)}. Kitsu may show NO PACK until the pet phase succeeds.`);
     } else {
       setProgress(progress.value, "Install stopped; no automatic retry was attempted");
       append(`Install failed closed: ${errorMessage(error)}. Inspect the log and reconnect before retrying.`);
@@ -348,7 +405,19 @@ if (serialSupported) {
 }
 
 refreshButton.addEventListener("click", () => { void checkRelease(); });
-packSelect.addEventListener("change", () => { void checkSelectedPack(); });
+packSelect.addEventListener("change", () => {
+  verifiedPack = undefined;
+  unlockedPackInput.removeAttribute("aria-invalid");
+  if (packSelect.value === UNLOCKED_PACK_ID) {
+    packDetail.textContent = "Choose the unlocked .k868 file you downloaded. It stays on this device and must pass every local format and integrity check.";
+    append("Pet choice: waiting for a local unlocked .k868 file. Nothing has been accepted or written.");
+    updateControls();
+    return;
+  }
+  unlockedPackInput.value = "";
+  void checkSelectedPack();
+});
+unlockedPackInput.addEventListener("change", () => { void checkUnlockedPackFile(); });
 installButton.addEventListener("click", () => { void install(); });
 window.addEventListener("pagehide", () => { void closeTransport({ reset: false, announce: false }); });
 void checkRelease();

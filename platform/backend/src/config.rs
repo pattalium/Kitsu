@@ -102,6 +102,7 @@ pub struct Config {
     pub event_retention_days: i32,
     pub action_retention_days: i32,
     pub audit_retention_days: i32,
+    pub pet_pack_dir: PathBuf,
     pub log_filter: String,
 }
 
@@ -361,6 +362,7 @@ impl Config {
             event_retention_days,
             action_retention_days,
             audit_retention_days,
+            pet_pack_dir: absolute_path("KITSU_PET_PACK_DIR")?,
             log_filter: required("KITSU_LOG_FILTER")?,
         })
     }

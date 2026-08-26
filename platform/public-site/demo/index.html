@@ -5,20 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#f3efe5" />
-  <meta name="description" content="Run the source-built Kitsu 0.17.0 firmware in a local browser runtime with its Fox companion, PRG and RST controls, and injected in-memory radio data." />
+  <meta name="description" content="Run the source-built Kitsu 0.17.1 firmware in a local browser runtime with its Fox companion, PRG and RST controls, and injected in-memory radio data." />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Try Kitsu" />
-  <meta property="og:description" content="Run the source-built Kitsu 0.17.0 firmware with Fox in an interactive browser demo." />
+  <meta property="og:description" content="Run the source-built Kitsu 0.17.1 firmware with Fox in an interactive browser demo." />
   <meta property="og:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Try Kitsu" />
-  <meta name="twitter:description" content="Run the source-built Kitsu 0.17.0 firmware with Fox in an interactive browser demo." />
+  <meta name="twitter:description" content="Run the source-built Kitsu 0.17.1 firmware with Fox in an interactive browser demo." />
   <meta name="twitter:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
   <link rel="icon" href="/assets/kitsu-app-icon.png" />
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/styles.css?sha256=9b2dcafd5e9f0fc8f78234c370f10557c95d512e468c4af84a94e98ad01a4252" />
   <link rel="stylesheet" href="/demo/demo.css?sha256=a115f8a4202986a96da776b023861d3197cedd5307b8ff35b3638361d42ded03" />
-  <script type="module" src="/demo/demo.js?sha256=5a7e5fd3c1b93e42d3f5cc2a3b472dac642591d393edf09537d7a5939ecffda9"></script>
+  <script type="module" src="/demo/demo.js?sha256=960f3cef20b242d9152e612dacb667e6d480f38559f364a942d0c57098744323"></script>
   <title>Try Kitsu - interactive firmware demo</title>
 </head>
 <body>
@@ -46,7 +46,7 @@
     <section class="demo-intro" aria-labelledby="demo-title">
       <p class="eyebrow">Interactive demo · Fox included</p>
       <h1 id="demo-title">Meet Kitsu before you flash.</h1>
-      <p class="lede">Run the source-built Kitsu 0.17.0 firmware with Fox, operate PRG and RST, explore its screens, and inject local MeshCore radio data.</p>
+      <p class="lede">Run the source-built Kitsu 0.17.1 firmware with Fox, operate PRG and RST, explore its screens, and inject local MeshCore radio data.</p>
       <div class="demo-mode-notice">
         <strong>Demo mode</strong>
         <p>Everything presented here is for demonstration only, not a live hardware or radio function. The runtime stays in this browser and does not connect to a Heltec, Bluetooth, USB, or MeshCore network.</p>
@@ -58,7 +58,7 @@
         <div class="oled-display" data-oled-tone="cyan" role="img" aria-label="Kitsu firmware OLED display" aria-describedby="screen-description">
           <canvas class="oled-framebuffer" id="firmware-framebuffer" data-firmware-framebuffer width="64" height="128" aria-hidden="true"></canvas>
         </div>
-        <p class="visually-hidden" id="screen-description" role="status" aria-live="polite" aria-atomic="true">The source-built Kitsu 0.17.0 firmware runtime is ready to be installed in the demo.</p>
+        <p class="visually-hidden" id="screen-description" role="status" aria-live="polite" aria-atomic="true">The source-built Kitsu 0.17.1 firmware runtime is ready to be installed in the demo.</p>
         <fieldset class="oled-tone-picker" aria-describedby="oled-tone-help">
           <legend>OLED appearance</legend>
           <div class="oled-tone-options">
@@ -94,13 +94,13 @@
           <ol class="firmware-procedure" aria-label="Kitsu and Fox installation steps">
             <li data-firmware-step="connect"><strong>Connect USB</strong><span>The demo cable is already connected.</span></li>
             <li data-firmware-step="download"><strong>Enter download mode</strong><span>The flasher tries automatic reset first. If that fails, hold PRG, tap RST, then release PRG.</span></li>
-            <li data-firmware-step="write"><strong>Write Kitsu</strong><span>Load the source-built 0.17.0 browser runtime into emulated application storage.</span></li>
+            <li data-firmware-step="write"><strong>Write Kitsu</strong><span>Load the source-built 0.17.1 browser runtime into emulated application storage.</span></li>
             <li data-firmware-step="fox"><strong>Add Fox</strong><span>Validate the included Fox data and write it to the emulated pet partition.</span></li>
             <li data-firmware-step="verify"><strong>Verify and restart</strong><span>Verify both emulated regions, then boot the firmware and meet Fox.</span></li>
           </ol>
           <div class="flash-summary">
             <span>Heltec WiFi LoRa 32 V3</span>
-            <strong>Kitsu 0.17.0 runtime + Fox</strong>
+            <strong>Kitsu 0.17.1 runtime + Fox</strong>
           </div>
           <div class="pack-preview">
             <div class="pack-fox-preview" aria-hidden="true"></div>
@@ -120,18 +120,18 @@
           <header>
             <p class="eyebrow">Firmware controls</p>
             <h3 id="device-title" tabindex="-1">Operate the firmware itself.</h3>
-            <p>The source-built 0.17.0 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior. The page only supplies the browser hardware layer.</p>
+            <p>The source-built 0.17.1 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior. The page only supplies the browser hardware layer.</p>
           </header>
           <div class="device-guide" aria-label="Current emulated firmware state">
             <div><span>Current screen</span><strong id="device-screen-name">Not flashed</strong></div>
             <div><span>PRG tap</span><strong id="device-short-action">Unavailable</strong></div>
             <div><span>PRG hold</span><strong id="device-long-action">Unavailable</strong></div>
-            <div><span>Firmware runtime</span><strong id="firmware-runtime-status" role="status">Loading source-built 0.17.0 firmware</strong></div>
+            <div><span>Firmware runtime</span><strong id="firmware-runtime-status" role="status">Loading source-built 0.17.1 firmware</strong></div>
           </div>
           <div class="firmware-map">
             <p><strong>Portrait</strong><span>See Fox, act through PRG, and read the firmware-rendered mood and energy.</span></p>
             <p><strong>Menu</strong><span>Connect, Feed, Play, Games, Inbox, Radio, Sleep, Info, Back.</span></p>
-            <p><strong>Games</strong><span>Signal Catch and Pounce run inside the same 0.17.0 firmware loop through the single PRG button.</span></p>
+            <p><strong>Games</strong><span>Signal Catch and Pounce run inside the same 0.17.1 firmware loop through the single PRG button.</span></p>
             <p><strong>Status</strong><span>Bond, vitals, memory, and firmware health pages.</span></p>
           </div>
           <p class="panel-boundary">The firmware screens and state transitions run locally. The browser hardware layer never advertises over Bluetooth, pairs with a device, opens USB, or transmits radio data.</p>
@@ -179,7 +179,7 @@
         </section>
 
         <div class="demo-console-footer">
-          <p class="demo-status" id="demo-status" role="status" aria-live="polite">The emulator is ready to load Kitsu 0.17.0 and Fox.</p>
+          <p class="demo-status" id="demo-status" role="status" aria-live="polite">The emulator is ready to load Kitsu 0.17.1 and Fox.</p>
           <button type="button" id="reset-demo">Reset demo</button>
         </div>
         <noscript><p class="noscript">JavaScript is required for the interactive demo.</p></noscript>
@@ -196,7 +196,7 @@
     </section>
 
     <section class="demo-truth" aria-label="Demo boundaries">
-      <div><h2>What runs</h2><p>The source-built Kitsu 0.17.0 setup and loop drive the framebuffer, PRG timing, menus, Fox behavior, care, games, journal, persistence, and MeshCore packet lifecycle.</p></div>
+      <div><h2>What runs</h2><p>The source-built Kitsu 0.17.1 setup and loop drive the framebuffer, PRG timing, menus, Fox behavior, care, games, journal, persistence, and MeshCore packet lifecycle.</p></div>
       <div><h2>What is replaced</h2><p>A browser hardware layer replaces the Heltec OLED, buttons, clock, flash, NVS, Bluetooth carrier, and SX1262 radio. Radio packets are injected and captured only in memory. This is not Xtensa binary or CPU emulation, and it never reaches live hardware or RF.</p></div>
     </section>
   </main>

@@ -67,9 +67,9 @@ class ReleaseContractInstrumentationTest {
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
         assertEquals(packageInfo.longVersionCode.toInt(), BuildConfig.VERSION_CODE)
         assertEquals(packageInfo.versionName, BuildConfig.VERSION_NAME)
-        assertEquals(21, BuildConfig.VERSION_CODE)
+        assertEquals(22, BuildConfig.VERSION_CODE)
         assertEquals(
-            if (context.packageName.endsWith(".debug")) "2.2.0-debug" else "2.2.0",
+            if (context.packageName.endsWith(".debug")) "2.2.1-debug" else "2.2.1",
             BuildConfig.VERSION_NAME,
         )
         assertTrue(
@@ -123,20 +123,20 @@ class ReleaseContractInstrumentationTest {
         assertEquals("k32.run", unlock.host)
         assertEquals("/unlock/", unlock.path)
 
-        val intent = kitsuUnlockIntent("KITSU-ABC-123")
+        val intent = kitsuUnlockIntent("K8-ABCDE-FGHJK-MNPQR")
         assertEquals(Intent.ACTION_VIEW, intent.action)
         assertEquals("https", intent.data?.scheme)
         assertEquals("k32.run", intent.data?.host)
         assertEquals("/unlock/", intent.data?.path)
         assertEquals(null, intent.data?.query)
-        assertEquals("code=KITSU-ABC-123", intent.data?.fragment)
-        assertEquals("https://k32.run/unlock/#code=KITSU-ABC-123", intent.dataString)
+        assertEquals("code=K8-ABCDE-FGHJK-MNPQR", intent.data?.fragment)
+        assertEquals("https://k32.run/unlock/#code=K8-ABCDE-FGHJK-MNPQR", intent.dataString)
         assertTrue(Intent.CATEGORY_BROWSABLE in intent.categories.orEmpty())
         assertTrue(intent.`package`.isNullOrEmpty())
         assertEquals(null, intent.component)
 
-        val clip = kitsuSensitiveUnlockClip("KITSU-ABC-123")
-        assertEquals("KITSU-ABC-123", clip.getItemAt(0).text.toString())
+        val clip = kitsuSensitiveUnlockClip("K8-ABCDE-FGHJK-MNPQR")
+        assertEquals("K8-ABCDE-FGHJK-MNPQR", clip.getItemAt(0).text.toString())
         assertTrue(clip.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true)
     }
 
@@ -148,7 +148,7 @@ class ReleaseContractInstrumentationTest {
             val first = EncounterUnlockCode(
                 deviceId = "KT12AF",
                 codeId = "event:1",
-                code = "KITSU-SECRET-ONE",
+                code = "K8-ABCDE-FGHJK-MNPQR",
                 packId = 1,
                 rarity = EncounterRarity.RARE,
                 acquiredAtEpoch = 1,
@@ -156,7 +156,7 @@ class ReleaseContractInstrumentationTest {
             val second = first.copy(
                 deviceId = "KTBEEF",
                 codeId = "event:2",
-                code = "KITSU-SECRET-TWO",
+                code = "K8-STVWZ-23456-789AB",
             )
             AndroidKeystoreEncounterCodeVault(context).upsert(listOf(first, second))
 

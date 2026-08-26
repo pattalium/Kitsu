@@ -224,7 +224,8 @@ html[data-theme="dark"] .unlock-mark img {
 .unlock-status[data-state="unsupported"],
 .unlock-status[data-state="permission"],
 .unlock-status[data-state="disconnected"],
-.unlock-status[data-state="invalid"] {
+.unlock-status[data-state="invalid"],
+.unlock-status[data-state="service"] {
   background: var(--unlock-error-soft);
   border-color: color-mix(in srgb, var(--unlock-error) 45%, var(--line));
   border-left-color: var(--unlock-error);
@@ -244,6 +245,22 @@ html[data-theme="dark"] .unlock-mark img {
   font-weight: 500;
   letter-spacing: -0.035em;
   overflow-wrap: anywhere;
+}
+
+.pack-portrait {
+  width: 8rem;
+  height: 9rem;
+  padding: 0.75rem;
+  color: var(--ink);
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  image-rendering: pixelated;
+  object-fit: contain;
+}
+
+html[data-theme="dark"] .pack-portrait {
+  filter: invert(1);
 }
 
 .pack-result p {
@@ -270,6 +287,18 @@ html[data-theme="dark"] .unlock-mark img {
   color: var(--muted) !important;
   font: 0.68rem/1.5 var(--mono);
   overflow-wrap: anywhere;
+}
+
+.pack-install {
+  max-width: 40rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.pack-install a {
+  color: var(--accent-strong);
+  font-weight: 750;
+  text-underline-offset: 0.2em;
 }
 
 .unlock-boundaries {

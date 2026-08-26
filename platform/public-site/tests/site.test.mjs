@@ -27,6 +27,53 @@ function bodyResponse(bytes, ok = true) {
   };
 }
 
+function testCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) === 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function syntheticK868(packId = "A1B2C3D4") {
+  const bytes = new Uint8Array(64 + (12 * 12) + (48 * 4) + (48 * 512));
+  bytes.set([0x4b, 0x38, 0x36, 0x38, 0x50, 0x4b, 0x31, 0x00]);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(0x08, 1, true);
+  view.setUint16(0x0a, 64, true);
+  view.setUint32(0x0c, bytes.byteLength, true);
+  view.setUint32(0x18, Number.parseInt(packId, 16), true);
+  view.setUint32(0x1c, 3, true);
+  view.setUint16(0x20, 64, true);
+  view.setUint16(0x22, 64, true);
+  view.setUint16(0x24, 48, true);
+  view.setUint16(0x26, 12, true);
+  view.setUint32(0x28, 48, true);
+  bytes.set(Buffer.from("TEST PACK", "ascii"), 0x30);
+  for (let role = 0; role < 12; role += 1) {
+    const offset = 64 + role * 12;
+    view.setUint8(offset, role);
+    view.setUint8(offset + 1, 0);
+    view.setUint8(offset + 2, role === 0 ? 2 : 1);
+    view.setUint8(offset + 3, 1);
+    view.setUint32(offset + 4, role * 4, true);
+    view.setUint16(offset + 8, 4, true);
+  }
+  const stepsOffset = 64 + 12 * 12;
+  for (let step = 0; step < 48; step += 1) {
+    view.setUint16(stepsOffset + step * 4, step, true);
+    view.setUint16(stepsOffset + step * 4 + 2, 500, true);
+  }
+  view.setUint32(0x10, testCrc32(bytes.subarray(64)), true);
+  const headerForCrc = bytes.slice(0x08, 64);
+  headerForCrc.fill(0, 0x14 - 0x08, 0x18 - 0x08);
+  view.setUint32(0x14, testCrc32(headerForCrc), true);
+  return bytes;
+}
+
 function encodedPreview(value = canonicalPreview) {
   return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -136,23 +183,23 @@ test("source landing instructions match the local-only device controls", async (
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
 });
 
-test("fails closed outside the exact Android 2.2.0 production contract", async () => {
+test("fails closed outside the exact Android 2.2.1 production contract", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /Kitsu Android 2\.2\.0 · version code 21/i);
+  assert.match(html, /Kitsu Android 2\.2\.1 · version code 22/i);
   assert.match(html, /Changing app tracks is a clean install/i);
   assert.match(html, /Forget authorization/i);
   assert.match(html, /Direct and Play builds cannot update one another/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
   assert.match(script, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
-  assert.match(script, /REQUIRED_VERSION = "2\.2\.0"/);
-  assert.match(script, /REQUIRED_VERSION_CODE = 21/);
-  assert.match(readme, /exact Android 2\.2\.0 \/ version-code 21/i);
+  assert.match(script, /REQUIRED_VERSION = "2\.2\.1"/);
+  assert.match(script, /REQUIRED_VERSION_CODE = 22/);
+  assert.match(readme, /exact Android 2\.2\.1 \/ version-code 22/i);
   assert.match(readme, /do not cross-update/i);
   assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
@@ -402,7 +449,8 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
   for (const meter of ["energy", "curiosity", "affection"]) {
     assert.match(html, new RegExp(`<label id="${meter}-label" for="${meter}-meter">[^<]+<\\/label><meter id="${meter}-meter" aria-labelledby="${meter}-label"`));
   }
-  assert.match(html, /source-built 0\.17\.0 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior/i);
+  assert.match(html, /source-built 0\.17\.1 setup and loop own the display, PRG timing, menus, care, games, persistence, and reset behavior/i);
+  assert.doesNotMatch(`${html}\n${script}`, /0\.17\.0/, "demo copy must not retain the previous firmware version");
   assert.match(html, /Incoming raw packets exist only in memory/i);
   assert.match(html, /This is not Xtensa binary or CPU emulation/i);
   assert.match(styles, /aspect-ratio:\s*1\s*\/\s*2/);
@@ -418,7 +466,7 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(script, /const OLED_TONE_STORAGE_KEY = "kitsu-demo-oled-tone-v1"/);
   assert.match(script, /export const FIRMWARE_ABI_VERSION = 2/);
-  assert.match(script, /5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6/);
+  assert.match(script, /0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993/);
   assert.match(script, /c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38/);
   assert.match(script, /WebAssembly\.Module\.imports/);
   assert.match(script, /WebAssembly\.compile\(wasmBytes\)/);
@@ -454,12 +502,12 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
   const wasmPath = path.join(
     root,
     "demo",
-    "kitsu-firmware-full.5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6.wasm",
+    "kitsu-firmware-full.0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993.wasm",
   );
-  assert.equal((await stat(wasmPath)).size, 350783);
+  assert.equal((await stat(wasmPath)).size, 352308);
   assert.equal(
     await sha256(wasmPath),
-    "5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6",
+    "0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993",
   );
   const wasmModule = await WebAssembly.compile(await readFile(wasmPath));
   assert.deepEqual(
@@ -512,7 +560,7 @@ test("full firmware demo helpers and raw PRG path fail closed", async () => {
   const wasmPath = path.join(
     root,
     "demo",
-    "kitsu-firmware-full.5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6.wasm",
+    "kitsu-firmware-full.0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993.wasm",
   );
   const foxPath = path.join(
     root,
@@ -634,7 +682,7 @@ test("keeps public release binaries outside text conversion", async () => {
   ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
 });
 
-test("publishes the byte-exact signed local-first Android 2.2.0 release", async () => {
+test("publishes the byte-exact signed local-first Android 2.2.1 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -650,14 +698,14 @@ test("publishes the byte-exact signed local-first Android 2.2.0 release", async 
     channel: "stable",
     buildType: "release",
     packageId: "ptl.kitsu.app",
-    version: "2.2.0",
-    versionCode: 21,
+    version: "2.2.1",
+    versionCode: 22,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
-    bytes: 1872079,
-    sha256: "36fe0a87aba10939ea9f6d6ae9b58242c59e9205a248bb4dc23f844d220366df",
+    url: "/downloads/kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
+    bytes: 1872083,
+    sha256: "6e521a5f4ff1db1c21ab6997436ec1a0e68dab364fa571ab061d70f9911c31ae",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-25T17:08:21Z",
+    publishedAt: "2026-08-26T00:20:57Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -685,6 +733,7 @@ test("publishes the byte-exact signed local-first Android 2.2.0 release", async 
     "kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
     "kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
+    "kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
     "kitsu-k32-android-2.0.0.apk",
   ]);
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
@@ -705,6 +754,21 @@ test("archives the previous stable manifest and signature under immutable 2.0.0 
   assert.equal(verify(null, manifestBytes, publicKey, signatureBytes), true);
 });
 
+test("archives the previous stable manifest and signature under immutable 2.2.0 names", async () => {
+  const downloads = path.join(root, "downloads");
+  const archivedManifest = path.join(downloads, "android-stable-2.2.0-20260825t170821z.json");
+  const archivedSignature = path.join(downloads, "android-stable-2.2.0-20260825t170821z.json.sig");
+  const publicKey = createPublicKey(await readFile(path.join(downloads, "update-ed25519-public.pem")));
+  const manifestBytes = await readFile(archivedManifest);
+  const signatureBytes = await readFile(archivedSignature);
+
+  assert.equal(manifestBytes.length, 538);
+  assert.equal(await sha256(archivedManifest), "74a27b896fa5099cf8d094cf23da999b591d067a5b5dcfe031efe23b5bc19e46");
+  assert.equal(signatureBytes.length, 64);
+  assert.equal(await sha256(archivedSignature), "7a4614473ec74cbe3dd19870499db73e4dfdcc93b0ff980d211dd78ae7c98e54");
+  assert.equal(verify(null, manifestBytes, publicKey, signatureBytes), true);
+});
+
 test("ships every referenced local release asset", async () => {
   const files = [
     "styles.css",
@@ -714,7 +778,7 @@ test("ships every referenced local release asset", async () => {
     "demo/index.html",
     "demo/demo.css",
     "demo/demo.js",
-    "demo/kitsu-firmware-full.5fbff5cd63d949d0ba72d6a02e7a2f134697f279a36cf0d7c91471e9b0d337b6.wasm",
+    "demo/kitsu-firmware-full.0ce609d8082c3cb8f2d794174dd79582b63b8395bc01a85225ac633739f93993.wasm",
     "demo/assets/fox-48-frame-contact.png",
     "demo/assets/fox.c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38.k868",
     "config.json",
@@ -726,9 +790,12 @@ test("ships every referenced local release asset", async () => {
     "downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
     "downloads/kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "downloads/kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
+    "downloads/kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
     "downloads/android-stable-2.0.0-20260822t123928z.json",
     "downloads/android-stable-2.0.0-20260822t123928z.json.sig",
+    "downloads/android-stable-2.2.0-20260825t170821z.json",
+    "downloads/android-stable-2.2.0-20260825t170821z.json.sig",
   ];
   await Promise.all(files.map((file) => access(path.join(root, file))));
 });
@@ -784,7 +851,7 @@ test("all local page, asset, and fragment links resolve", async () => {
 
 test("public pages contain no retired runtime-service actions or origins", async () => {
   const text = (await Promise.all([
-    "index.html", "demo/index.html", "unlock/index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html",
+    "index.html", "demo/index.html", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html",
   ].map((relative) => readFile(path.join(root, relative), "utf8")))).join("\n");
   assert.doesNotMatch(text, /https:\/\/(?:app|api|auth|gateway)\.k32\.run/i);
   assert.doesNotMatch(text, /Connect to public gateway|Use Wi-Fi remote access|gateway enrollment|owner sign-in|contact form/i);
@@ -848,8 +915,10 @@ test("keeps the unlock flow discoverable and accepts the Android deep-link shape
   assert.match(activity, /encodedFragment\("code=\$\{Uri\.encode\(code\)\}"\)/);
   assert.doesNotMatch(activity, /appendQueryParameter\("code", code\)/);
   assert.match(activity, /require\(EncounterCodePolicy\.validCode\(code\)\)/);
-  assert.match(models, /private val unlockCode = Regex\("\^\[A-Z0-9-\]\{8,80\}\$"\)/);
-  assert.match(models, /compact\.length in 8\.\.64/);
+  assert.ok(models.includes(
+    'Regex("^K8-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{5}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{5}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{5}$")',
+  ));
+  assert.match(models, /fun validCode\(value: String\): Boolean = unlockCode\.matches\(value\)/);
 });
 
 test("ships a pinned, rollback-capable atomic unlock deployment script", async () => {
@@ -904,9 +973,21 @@ test("publishes an accessible, fail-closed local unlock surface", async () => {
   assert.doesNotMatch(html, /<style\b|\sstyle=/i);
   assert.doesNotMatch(script, /\.innerHTML\b|insertAdjacentHTML|\beval\s*\(|new Function\b/);
   assert.doesNotMatch(`${html}\n${script}\n${catalog}`, /fox girl/i);
-  assert.doesNotMatch(`${html}\n${script}\n${catalog}`, /https?:\/\//i);
+  assert.equal(
+    [...`${html}\n${script}\n${catalog}`.matchAll(/https?:\/\/[^\s"'`;,)]+/gi)]
+      .map((match) => match[0])
+      .filter((url) => url.startsWith("https://api.k32.run"))
+      .every((url) => url === "https://api.k32.run/v1/pet-packs/redeem" || url === "https://api.k32.run"),
+    true,
+  );
+  assert.doesNotMatch(`${script}\n${catalog}`, /\.downloadUrl\b|["']downloadUrl["']\s*:|(?:\.\/|\/unlock\/)assets\/[^\s"']+\.k868/i);
   assert.match(html, /Content-Security-Policy/);
-  assert.match(html, /connect-src 'none'/);
+  assert.match(html, /connect-src https:\/\/api\.k32\.run/);
+  assert.match(html, /No account is required/);
+  assert.match(html, /firmware verification record are sent only to the K32 API/);
+  assert.match(html, /maxlength="20"/);
+  assert.match(html, /placeholder="K8-XXXXX-XXXXX-XXXXX"/);
+  assert.match(html, /href="https:\/\/flash\.k32\.run"/);
 
   const cssDigest = html.match(/href="\/unlock\/unlock\.css\?sha256=([a-f0-9]{64})"/)?.[1];
   const scriptDigest = html.match(/src="\/unlock\/unlock\.js\?sha256=([a-f0-9]{64})"/)?.[1];
@@ -917,26 +998,27 @@ test("publishes an accessible, fail-closed local unlock surface", async () => {
 
   const unlockFiles = await listFiles(unlockRoot);
   const publishedPacks = unlockFiles.filter((file) => file.toLowerCase().endsWith(".k868"));
-  assert.deepEqual(publishedPacks, [path.join(
-    "assets",
-    "frog.06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8.k868",
-  )]);
-  assert.equal(
-    await sha256(path.join(unlockRoot, publishedPacks[0])),
-    "06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8",
-  );
+  assert.deepEqual(publishedPacks, []);
 });
 
 test("normalizes unlock codes without allowing command injection", () => {
   const requestId = "0123456789abcdef0123456789abcdef";
-  assert.equal(unlockModule.normalizeUnlockCode("  k32a-bc12 34  "), "K32ABC1234");
+  assert.equal(
+    unlockModule.normalizeUnlockCode("  k8 abcde-fghjk mnpqr  "),
+    "K8-ABCDE-FGHJK-MNPQR",
+  );
+  assert.equal(
+    unlockModule.normalizeUnlockCode("ABCDE-FGHJK-MNPQR"),
+    "K8-ABCDE-FGHJK-MNPQR",
+  );
   assert.equal(unlockModule.normalizeUnlockCode("ABCD<script>"), null);
   assert.equal(unlockModule.normalizeUnlockCode("ABCD\nEFGH"), null);
-  assert.equal(unlockModule.normalizeUnlockCode("A".repeat(7)), null);
-  assert.equal(unlockModule.normalizeUnlockCode("A".repeat(65)), null);
+  assert.equal(unlockModule.normalizeUnlockCode("ABCDE-FGHJI-MNPQR"), null);
+  assert.equal(unlockModule.normalizeUnlockCode("A".repeat(14)), null);
+  assert.equal(unlockModule.normalizeUnlockCode("A".repeat(16)), null);
   assert.equal(
-    unlockModule.buildVerificationCommand("k32a-bc12 34", requestId),
-    `codes verify K32ABC1234 ${requestId}\n`,
+    unlockModule.buildVerificationCommand("k8 abcde-fghjk mnpqr", requestId),
+    `codes verify K8-ABCDE-FGHJK-MNPQR ${requestId}\n`,
   );
   assert.throws(
     () => unlockModule.buildVerificationCommand("ABCD;reset", requestId),
@@ -960,7 +1042,7 @@ test("parses only bounded, versioned verification records for the active request
     status: "valid",
     deviceId: "KT12AF",
     boundDeviceId: "KT12AF",
-    codeId: "CODE1234",
+    codeId: "C0DE1234",
     packId: "A1B2C3D4",
     rarity: "rare",
   };
@@ -970,7 +1052,7 @@ test("parses only bounded, versioned verification records for the active request
   );
   assert.deepEqual(parsed, {
     boundDeviceId: "KT12AF",
-    codeId: "CODE1234",
+    codeId: "C0DE1234",
     deviceId: "KT12AF",
     packId: "A1B2C3D4",
     rarity: "rare",
@@ -1027,7 +1109,7 @@ test("rejects a valid-code response bound to a different Kitsu", () => {
     status: "valid",
     deviceId: "KT12AF",
     boundDeviceId: "KT98BC",
-    codeId: "CODE1234",
+    codeId: "C0DE1234",
     packId: "A1B2C3D4",
     rarity: "mythical",
   };
@@ -1040,20 +1122,39 @@ test("rejects a valid-code response bound to a different Kitsu", () => {
   );
 });
 
-test("reveals only explicitly published ordinary pack assets", () => {
-  assert.deepEqual(unlockCatalogModule.PUBLISHED_WILD_PACKS, [{
-    bytes: 24_976,
-    displayName: "Frog",
-    downloadUrl: "./assets/frog.06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8.k868",
-    packId: "5CAC86A3",
-    rarity: "common",
-    schema: unlockCatalogModule.PUBLISHED_PACK_SCHEMA,
-    sha256: "06461beb8ad592a120a95bfb238a44458060cacf6494e194d7b2fe0dd8d862c8",
-  }]);
-  assert.equal(
-    unlockCatalogModule.publishedPackFor("5cac86a3"),
-    unlockCatalogModule.PUBLISHED_WILD_PACKS[0],
+test("allows only the synchronized 21-creature portrait metadata for gated wild packs", async () => {
+  const portraitManifest = JSON.parse(
+    await readFile(path.join(projectRoot, "assets", "wild-portraits-manifest.json"), "utf8"),
   );
+  const expectedCatalog = portraitManifest.creatures.map((creature) => ({
+    schema: unlockCatalogModule.PUBLISHED_PACK_SCHEMA,
+    packId: creature.pack_id,
+    displayName: creature.display_name,
+    rarity: creature.rarity,
+    slug: creature.slug,
+    portraitUrl: `./portraits/${creature.portrait_png}`,
+    portraitSha256: creature.portrait_png_sha256,
+    bytes: creature.pack_bytes,
+    sha256: creature.pack_sha256,
+  }));
+
+  assert.equal(portraitManifest.schema, "kitsu-wild-static-portraits-v1");
+  assert.equal(unlockCatalogModule.PUBLISHED_WILD_PACKS.length, 21);
+  assert.deepEqual(unlockCatalogModule.PUBLISHED_WILD_PACKS, expectedCatalog);
+  for (const rarity of unlockCatalogModule.RARITIES) {
+    assert.equal(expectedCatalog.filter((entry) => entry.rarity === rarity).length, 3, rarity);
+  }
+
+  for (const entry of unlockCatalogModule.PUBLISHED_WILD_PACKS) {
+    assert.equal(unlockCatalogModule.isPublishedPackEntry(entry), true);
+    assert.equal(unlockCatalogModule.publishedPackFor(entry.packId), entry);
+    assert.equal("downloadUrl" in entry, false);
+    assert.match(entry.portraitUrl, /^\.\/portraits\//);
+    assert.equal(
+      await sha256(path.join(root, "unlock", entry.portraitUrl.slice(2))),
+      entry.portraitSha256,
+    );
+  }
   const starterPackIds = {
     Cat: "FDC79D6F",
     Fox: "6C393E21",
@@ -1069,7 +1170,9 @@ test("reveals only explicitly published ordinary pack assets", () => {
     packId: "A1B2C3D4",
     displayName: "Published pet pack",
     rarity: "rare",
-    downloadUrl: `./assets/pet-pack.${digest}.k868`,
+    slug: "published-pet-pack",
+    portraitUrl: `./portraits/published-pet-pack.${digest}.png`,
+    portraitSha256: digest,
     bytes: 24_976,
     sha256: digest,
   };
@@ -1083,8 +1186,127 @@ test("reveals only explicitly published ordinary pack assets", () => {
     false,
   );
   assert.equal(
-    unlockCatalogModule.isPublishedPackEntry({ ...entry, downloadUrl: "https://example.test/pet.k868" }),
+    unlockCatalogModule.isPublishedPackEntry({ ...entry, portraitUrl: "https://example.test/pet.png" }),
     false,
+  );
+  assert.equal(
+    unlockCatalogModule.isPublishedPackEntry({ ...entry, downloadUrl: "./assets/unsafe.k868" }),
+    false,
+  );
+  assert.equal(unlockCatalogModule.publishedPackFor("FDC79D6F"), null, "Cat is not a wild unlock");
+  assert.equal(unlockCatalogModule.publishedPackFor("E2B5E7BA"), null, "Dog is not a wild unlock");
+});
+
+test("redeems a verified pack only through the bounded gated API response", async () => {
+  const bytes = syntheticK868();
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const entry = Object.freeze({
+    schema: unlockCatalogModule.PUBLISHED_PACK_SCHEMA,
+    packId: "A1B2C3D4",
+    displayName: "Published pet pack",
+    rarity: "rare",
+    slug: "published-pet-pack",
+    portraitUrl: `./portraits/published-pet-pack.${"b".repeat(64)}.png`,
+    portraitSha256: "b".repeat(64),
+    bytes: bytes.byteLength,
+    sha256: digest,
+  });
+  const verification = Object.freeze({
+    boundDeviceId: "KT12AF",
+    codeId: "C0DE1234",
+    deviceId: "KT12AF",
+    packId: "A1B2C3D4",
+    rarity: "rare",
+    requestId: "0123456789abcdef0123456789abcdef",
+    status: "valid",
+  });
+  let captured;
+  const result = await unlockModule.redeemPublishedPack(
+    async (url, init) => {
+      captured = { url, init };
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          "Cache-Control": "private, no-store",
+          "Content-Disposition": "attachment; filename=\"kitsu-published-pet-pack.k868\"",
+          "Content-Length": String(bytes.byteLength),
+          "Content-Type": "application/octet-stream",
+          "X-Kitsu-Pack-Id": "A1B2C3D4",
+          "X-Kitsu-Pack-Sha256": digest,
+        },
+      });
+    },
+    "k8 abcde-fghjk mnpqr",
+    verification,
+    entry,
+    webcrypto,
+  );
+
+  assert.equal(captured.url, "https://api.k32.run/v1/pet-packs/redeem");
+  assert.equal(captured.init.method, "POST");
+  assert.equal(captured.init.cache, "no-store");
+  assert.equal(captured.init.credentials, "omit");
+  assert.equal(captured.init.referrerPolicy, "no-referrer");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    schema: unlockModule.REDEMPTION_SCHEMA,
+    code: "K8-ABCDE-FGHJK-MNPQR",
+    verification: {
+      schema: unlockModule.VERIFY_SCHEMA,
+      ...verification,
+    },
+  });
+  assert.equal(result.filename, "kitsu-published-pet-pack.k868");
+  assert.equal(result.bytes.byteLength, bytes.byteLength);
+  assert.equal(createHash("sha256").update(result.bytes).digest("hex"), digest);
+
+  await assert.rejects(
+    unlockModule.redeemPublishedPack(
+      async () => new Response(JSON.stringify({ error: { code: "not_published" } }), { status: 404 }),
+      "K8-ABCDE-FGHJK-MNPQR",
+      verification,
+      entry,
+      webcrypto,
+    ),
+    (error) => error.code === "pack_unpublished",
+  );
+  await assert.rejects(
+    unlockModule.redeemPublishedPack(
+      async () => new Response(bytes, {
+        status: 200,
+        headers: {
+          "Cache-Control": "private, no-store",
+          "Content-Disposition": "attachment; filename=\"kitsu-published-pet-pack.k868\"",
+          "Content-Length": String(unlockModule.MAX_PACK_RESPONSE_BYTES + 1),
+          "Content-Type": "application/octet-stream",
+          "X-Kitsu-Pack-Id": "A1B2C3D4",
+          "X-Kitsu-Pack-Sha256": digest,
+        },
+      }),
+      "K8-ABCDE-FGHJK-MNPQR",
+      verification,
+      entry,
+      webcrypto,
+    ),
+    (error) => error.code === "invalid_download",
+  );
+  await assert.rejects(
+    unlockModule.redeemPublishedPack(
+      async () => new Response(bytes, {
+        status: 200,
+        headers: {
+          "Cache-Control": "private, no-store",
+          "Content-Disposition": "attachment; filename=\"kitsu-published-pet-pack.k868\"",
+          "Content-Type": "application/octet-stream",
+          "X-Kitsu-Pack-Id": "DEADBEEF",
+          "X-Kitsu-Pack-Sha256": digest,
+        },
+      }),
+      "K8-ABCDE-FGHJK-MNPQR",
+      verification,
+      entry,
+      webcrypto,
+    ),
+    (error) => error.code === "invalid_download",
   );
 });
 

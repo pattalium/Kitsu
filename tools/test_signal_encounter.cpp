@@ -41,6 +41,8 @@ signal::Configuration validConfiguration() {
       operationIndex(signal::MeshOperationKind::AdvertReceived)] = 2500U;
   configuration.encounterChanceBasisPoints[
       operationIndex(signal::MeshOperationKind::OtherCompleted)] = 1000U;
+  configuration.encounterChanceBasisPoints[
+      operationIndex(signal::MeshOperationKind::NearbyKitsuMet)] = 300U;
 
   configuration.rarityWeightBasisPoints[rarityIndex(signal::Rarity::Common)] =
       4000U;
@@ -96,10 +98,21 @@ void testConfigurationAndRarityBoundaries() {
   check(signal::validateConfiguration(configuration) ==
             signal::ConfigurationStatus::Ok,
         "valid configuration accepted");
+  check(configuration.encounterChanceBasisPoints[
+            operationIndex(signal::MeshOperationKind::NearbyKitsuMet)] > 0U &&
+            configuration.encounterChanceBasisPoints[
+                operationIndex(signal::MeshOperationKind::NearbyKitsuMet)] <
+                configuration.encounterChanceBasisPoints[
+                    operationIndex(signal::MeshOperationKind::MessageReceived)],
+        "new Kitsu meeting has a lower nonzero wild-encounter chance");
   check(configuration.rarityWeightBasisPoints[
             rarityIndex(signal::Rarity::Mythical)] <
             signal::kOnePercentBasisPoints,
         "Mythical weight is below one percent");
+  for (size_t index = 0U; index < signal::kRarityCount; ++index) {
+    check(configuration.codeChanceBasisPoints[index] > 0U,
+          "every encounter tier has usable code resolution");
+  }
 
   struct Boundary {
     uint16_t roll;
@@ -313,6 +326,7 @@ int main() {
     return 1;
   }
   std::cout << "TEST_PASS signal_encounter rarity_tiers=7 mythical_bp=50 "
-               "repeater_guaranteed=1 dedupe=monotonic reset_stable=1\n";
+               "repeater_guaranteed=1 nearby_kitsu_bp=300 "
+               "dedupe=monotonic reset_stable=1\n";
   return 0;
 }

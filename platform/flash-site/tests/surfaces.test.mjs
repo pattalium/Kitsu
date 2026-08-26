@@ -84,7 +84,7 @@ test("flasher keeps its firmware controls while exposing a persistent accessible
     text("flash-site/src/styles.css"),
     text("flash-site/src/app.js"),
   ]);
-  for (const id of ["connect", "disconnect", "refresh", "pack-select", "pack-detail", "install", "progress", "progress-detail", "log"]) {
+  for (const id of ["connect", "disconnect", "refresh", "pack-select", "unlocked-pack-field", "unlocked-pack-file", "pack-detail", "install", "progress", "progress-detail", "log"]) {
     assert.match(html, new RegExp(`id="${id}"`), id);
   }
   assert.match(html, /type="button" data-theme-toggle/u);
@@ -98,9 +98,15 @@ test("flasher keeps its firmware controls while exposing a persistent accessible
   assert.match(styles, /--display: Georgia/u);
   assert.match(html, /<option value="preserve" selected>Keep current pet<\/option>/u);
   for (const pet of ["fox", "cat", "dog"]) assert.match(html, new RegExp(`<option value="${pet}">`, "u"));
-  assert.doesNotMatch(html, /<input[^>]+type="file"/iu);
+  assert.match(html, /<option value="unlocked">Unlocked \.k868 file<\/option>/u);
+  assert.match(html, /<input id="unlocked-pack-file"[^>]+type="file"[^>]+accept="\.k868,application\/octet-stream"[^>]+aria-describedby="pack-detail"/iu);
+  assert.doesNotMatch(html, /<option value="(?:frog|hamster|turtle|rabbit|hedgehog|ferret|otter|axolotl|chinchilla|raccoon|capybara|sugar_glider|red_panda|pangolin|tasmanian_devil|snow_leopard|okapi|shoebill|cat_girl|rabbit_girl|deer_girl)">/iu);
   assert.match(styles, /\.pack-choice select/u);
-  assert.match(app, /let packVerified = !selectedDefinition/u);
+  assert.match(styles, /\.unlocked-pack-field input/u);
+  assert.match(app, /loadUnlockedPack/u);
+  assert.match(app, /packForInstall\(selectedPackId, selectedPack\)/u);
+  assert.match(app, /fileArray: \[\{ data: latestPack\.bytes, address: latestPack\.record\.offset \}\]/u);
+  assert.match(app, /let packVerified = !packRequested/u);
   assert.match(app, /resetAttempted = true;\s+await loader\.after\("hard_reset"\)/u);
   assert.match(app, /Every selected region passed SHA-256 readback[\s\S]*No second automatic reset was attempted/u);
   assert.match(app, /closeTransport\(\{ reset: !resetAttempted, announce: true \}\)/u);

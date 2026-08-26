@@ -3,9 +3,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Portable decision engine for creature encounters caused by successful,
-// logical MeshCore operations. This module has no MeshCore, radio, storage,
-// display, pack-catalogue, or creature-name dependency.
+// Portable decision engine for wild-creature encounters caused by successful,
+// deduplicated radio activity. MeshCore operations and a first meeting with a
+// nearby Kitsu may both trigger this local decision engine, but their over-air
+// transports and packet formats remain completely separate. This module has
+// no MeshCore, radio, storage, display, pack-catalogue, or creature-name
+// dependency.
 namespace kitsu868 {
 namespace signal {
 
@@ -26,6 +29,10 @@ enum class MeshOperationKind : uint8_t {
   AdvertSent,
   AdvertReceived,
   OtherCompleted,
+  // Appended to preserve every persisted 0..6 operation value from schema 1.
+  // This represents a first direct Kitsu-neighbor meeting, never a MeshCore
+  // packet or repeater-forwarded operation.
+  NearbyKitsuMet,
   Count,
 };
 

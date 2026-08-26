@@ -6,12 +6,12 @@
   <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#f3efe5" />
   <meta name="description" content="Verify a Kitsu encounter code against the Heltec that received it and download an explicitly published pet pack." />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://api.k32.run; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <link rel="icon" href="/assets/kitsu-app-icon.png?v=4f850b55" />
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/styles.css?sha256=9b2dcafd5e9f0fc8f78234c370f10557c95d512e468c4af84a94e98ad01a4252" />
-  <link rel="stylesheet" href="/unlock/unlock.css?sha256=1abc47472d4094a51e5b466aba8753778b89e4080242de6d22518ea7d51004bb" />
-  <script type="module" src="/unlock/unlock.js?sha256=cc51ec367500507d8621adff1ddab0cec43ce5b57b502ef4812005c110d4a0c9"></script>
+  <link rel="stylesheet" href="/unlock/unlock.css?sha256=19e29b9dcd295fcc1c59a8caae89acc588d845d66b12c7bab56acf62a24b04df" />
+  <script type="module" src="/unlock/unlock.js?sha256=131da95541cae4518576f5a800025979f1e6d57d563487ec07493f5f93675924"></script>
   <title>Unlock a Pet Pack - K32 Kitsu</title>
 </head>
 <body>
@@ -43,7 +43,7 @@
     <div class="unlock-layout">
       <section class="unlock-flow" aria-labelledby="check-title">
         <h2 id="check-title">Check Your Code</h2>
-        <p>Use a USB data cable. Verification stays between this browser and the connected Kitsu over Web Serial.</p>
+        <p>Use a USB data cable. The connected firmware checks the code binding first, before any pack request is made.</p>
 
         <div class="device-connection">
           <div class="device-copy">
@@ -60,7 +60,7 @@
             name="code"
             type="text"
             inputmode="text"
-            maxlength="80"
+            maxlength="20"
             autocomplete="off"
             autocapitalize="characters"
             enterkeyhint="go"
@@ -68,9 +68,9 @@
             aria-required="true"
             aria-invalid="false"
             aria-describedby="unlock-code-help unlock-code-error"
-            placeholder="Example: K32A-BC12-34…"
+            placeholder="K8-XXXXX-XXXXX-XXXXX"
           />
-          <p class="field-help" id="unlock-code-help">Use 8 to 64 letters or numbers. Spaces and hyphens are optional.</p>
+          <p class="field-help" id="unlock-code-help">Enter <code translate="no">K8</code> followed by three groups of five letters or numbers.</p>
           <p class="field-error" id="unlock-code-error" hidden></p>
           <button class="button unlock-action" id="verify-code" type="submit" disabled>Verify Code</button>
         </form>
@@ -80,12 +80,14 @@
 
       <section class="unlock-result" id="unlock-result" aria-labelledby="result-title" aria-busy="false">
         <h2 id="result-title">Verification Result</h2>
-        <p>No account or upload is used. The connected firmware decides whether the code belongs to this hardware.</p>
+        <p>No account is required. After the local hardware check, the code and firmware verification record are sent only to the K32 API to gate a private, non-cached download.</p>
         <div class="unlock-status" id="unlock-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1" data-state="idle">Checking browser support.</div>
         <div class="pack-result" id="pack-result" hidden>
+          <img class="pack-portrait" id="pack-portrait" alt="" width="16" height="18" hidden />
           <h3 id="pack-title"></h3>
           <p id="pack-detail"></p>
           <a class="download-action" id="pack-download" aria-disabled="true" hidden>Download .k868</a>
+          <p class="pack-install" id="pack-install" hidden>Then open the <a href="https://flash.k32.run">web flasher</a>, choose <strong>Unlocked .k868 file</strong>, and select the downloaded pack in the same flashing session.</p>
           <p class="pack-integrity" id="pack-integrity"></p>
         </div>
       </section>
@@ -103,11 +105,11 @@
         </div>
         <div>
           <dt>Publication</dt>
-          <dd>Only an exact pack ID in the public allowlist can reveal a same-origin download.</dd>
+          <dd>Only an exact pack ID in the public allowlist can be requested from the gated K32 download API.</dd>
         </div>
         <div>
           <dt>Package</dt>
-          <dd>The site does not change the format. A published download is an ordinary <code translate="no">.k868</code> pet package.</dd>
+          <dd>The API response is private and not cached. The downloaded file remains an ordinary CRC-checked <code translate="no">.k868</code> pet package.</dd>
         </div>
       </dl>
     </section>

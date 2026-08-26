@@ -105,7 +105,8 @@ object EncounterCodePolicy {
 
     private val deviceId = Regex("^KT[0-9A-F]{4}$")
     private val opaqueId = Regex("^[\\x21-\\x7E]{1,64}$")
-    private val unlockCode = Regex("^[A-Z0-9-]{8,80}$")
+    private val unlockCode =
+        Regex("^K8-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{5}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{5}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{5}$")
     private val sourceToken = Regex("^[a-z0-9][a-z0-9_.:-]{0,63}$")
 
     fun validationError(value: EncounterUnlockCode): String? = when {
@@ -122,11 +123,7 @@ object EncounterCodePolicy {
 
     fun validDeviceId(value: String): Boolean = deviceId.matches(value)
     fun validOpaqueCursor(value: String): Boolean = opaqueId.matches(value)
-    fun validCode(value: String): Boolean {
-        if (!unlockCode.matches(value)) return false
-        val compact = value.filterNot { it == '-' }
-        return compact.length in 8..64
-    }
+    fun validCode(value: String): Boolean = unlockCode.matches(value)
 
     private fun validCreatureName(value: String): Boolean {
         val bytes = value.toByteArray(Charsets.UTF_8)

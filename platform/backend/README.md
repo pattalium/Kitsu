@@ -31,6 +31,12 @@ column contains the plaintext companion secret.
   the raw host-only CSRF cookie and constant-time verifies its digest against
   the authenticated server-side session. The session cookie remains
   `HttpOnly`.
+- Unlockable pet bundles are backend-private runtime data, never public-site
+  assets. The account-free redemption route accepts an exact `k32.run`
+  origin, permanently binds the code digest to the hardware UID and pack on
+  first success, and returns the ordinary `.k868` bytes only in that POST
+  response with private/no-store headers. The current serial verification
+  record is device-reported binding evidence, not remote hardware attestation.
 - Credentialed CORS is an exact allowlist for the authenticated companion Web
   UI. The public project/flasher site is a separate origin and must never be
   added. Browser WebSockets use an exact-origin check and a one-use,
@@ -111,6 +117,41 @@ The public listener serves `/health/live`, OIDC metadata, owner/BFF APIs, and
 the trusted-mTLS-proxy gateway routes. The separately bound operations
 listener serves `/health/ready` and `/metrics`; do not expose it publicly.
 
+## Private pet-pack deployment
+
+The backend deliberately loads the complete 21-pack unlock catalogue before
+it begins listening. Each file must be the exact ordinary `.k868` named by the
+catalogue slug in `src/pet_packs.rs`; startup rejects missing files, symlinks,
+unexpected pack IDs, structural mismatches, oversized files, and either CRC
+mismatch.
+
+Deploy the pack bytes as private runtime data, independently of the public
+site and source release:
+
+1. Build all packs in protected, out-of-repository staging. Never add a
+   `.k868` to the public-site tree, Git history, a GitHub release, or an nginx
+   static location.
+2. Install the complete directory at
+   `/var/lib/kitsu-backend/pet-packs/releases/<release-id>` with a real
+   non-symlink directory owned by `root:kitsu-backend` (`0550`) and regular
+   files owned by `root:kitsu-backend` (`0440`).
+3. Point `KITSU_PET_PACK_DIR` at that exact release directory in the protected
+   backend environment. The existing systemd sandbox already permits reads
+   beneath the backend `StateDirectory`; nginx has no access path or alias to
+   it.
+4. Deploy the backend and migration binaries together. Run the existing
+   `kitsu-backend-migrate.service` so embedded migration 11 creates only the
+   code-digest/device binding table, then restart `kitsu-backend.service`.
+5. Keep the existing `api.k32.run` reverse proxy. The only delivery surface is
+   `POST /v1/pet-packs/redeem`; do not add a static pack route. Verify a valid
+   connected-device flow returns `application/octet-stream`, a `.k868`
+   attachment name, and `Cache-Control: private, no-store`, while GET and
+   invalid or rebound POST requests return no pack bytes.
+
+The public `k32.run` origin is allowed by CORS only on this exact redemption
+path. It must not be added to `KITSU_BROWSER_ALLOWED_ORIGINS`, because that
+list protects the credentialed owner/BFF surface.
+
 ## API map
 
 Owner routes accept either a valid native-app Bearer token or a browser BFF
@@ -122,6 +163,7 @@ sessions. Device-relay routes require the separate installation-scoped
 | Method and path | Purpose |
 | --- | --- |
 | `GET /v1/auth/config` | Public OIDC/native-client discovery values. |
+| `POST /v1/pet-packs/redeem` | Validate a device-returned encounter-code binding and stream its backend-private ordinary `.k868` pack. |
 | `GET /v1/browser/auth/start?return_url=...` | Begin browser Code + PKCE flow. |
 | `GET /v1/browser/auth/callback` | OIDC callback; creates opaque BFF session. |
 | `GET /v1/browser/session` | Return owner/session expiry and verified `csrf_token`. |

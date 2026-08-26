@@ -7,11 +7,11 @@ import org.junit.Test
 class EncounterUnlockPresentationTest {
     @Test
     fun maskNeverReturnsTheFullSavedCode() {
-        val code = "KITSU-SECRET-1234"
+        val code = "K8-ABCDE-FGHJK-MNPQR"
         val masked = maskEncounterCode(code)
 
-        assertEquals("KITS••••••1234", masked)
-        assertFalse(masked.contains("SECRET"))
+        assertEquals("K8-A••••••NPQR", masked)
+        assertFalse(masked.contains("FGHJK"))
         assertFalse(masked == code)
     }
 }
