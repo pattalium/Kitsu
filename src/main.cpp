@@ -3876,10 +3876,10 @@ void uiXbm(int16_t x, int16_t y, int16_t width, int16_t height,
   }
 }
 
-void uiEnergyBar(uint8_t value) {
+void uiEnergyBar(uint8_t value, int16_t y = 110) {
   constexpr int16_t innerWidth = 32;
-  uiRect(15, 110, innerWidth + 2, 5);
-  uiFillRect(16, 111, static_cast<int16_t>(innerWidth * value / 100U), 3);
+  uiRect(15, y, innerWidth + 2, 5);
+  uiFillRect(16, y + 1, static_cast<int16_t>(innerWidth * value / 100U), 3);
 }
 
 void uiProgressBar(uint8_t value, int16_t y, int16_t innerWidth = 42) {
@@ -4464,14 +4464,17 @@ void tickAnimation() {
   if (!startTransientAnimation(ambientRole)) scheduleNextAmbientAnimation();
 }
 
-bool drawCreatureSprite(int16_t y = 24) {
+bool drawCreatureSprite(int16_t legacyY = 24, int16_t highResolutionY = 16) {
   if (!activeAnimation.active) startBaseAnimation();
   if (!activeAnimation.active) return false;
   const uint8_t* sprite = companionPack.activeFrame(
       millis() - activeAnimation.startedAt);
   if (!sprite) return false;
-  uiXbm((UI_WIDTH - KITSU_FRAME_WIDTH) / 2, y,
-        KITSU_FRAME_WIDTH, KITSU_FRAME_HEIGHT, sprite);
+  const int16_t y = companionPack.formatVersion() == KITSU_PACK_V2
+                        ? highResolutionY
+                        : legacyY;
+  uiXbm((UI_WIDTH - companionPack.frameWidth()) / 2, y,
+        companionPack.frameWidth(), companionPack.frameHeight(), sprite);
 
   // Evolution remains pack-owned: appearance variants are selected above.
   // A few core sparkles make progression visible even when an older pack has
@@ -4510,13 +4513,14 @@ void renderMissingPack() {
 
 void renderPet() {
   uiConnectionIndicators();
-  if (!drawCreatureSprite(20)) {
+  if (!drawCreatureSprite(20, 16)) {
     renderMissingPack();
     return;
   }
   uiMailBadge();
-  uiTextCentered(moodText(), 93);
-  uiEnergyBar(wisp.energy);
+  const bool highResolution = companionPack.formatVersion() == KITSU_PACK_V2;
+  uiTextCentered(moodText(), highResolution ? 99 : 93);
+  uiEnergyBar(wisp.energy, highResolution ? 113 : 110);
 }
 
 void renderMenu() {
@@ -4660,7 +4664,7 @@ void renderListen() {
   const uint32_t remaining = remainingMs > 0
                                  ? (static_cast<uint32_t>(remainingMs) + 999UL) / 1000UL
                                  : 0;
-  if (!drawCreatureSprite(25)) {
+  if (!drawCreatureSprite(25, 17)) {
     renderMissingPack();
     return;
   }
@@ -4669,7 +4673,7 @@ void renderListen() {
 
 void renderSleep() {
   uiConnectionIndicators();
-  if (!drawCreatureSprite(22)) {
+  if (!drawCreatureSprite(22, 16)) {
     renderMissingPack();
     return;
   }

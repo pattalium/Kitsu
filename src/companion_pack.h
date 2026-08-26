@@ -4,9 +4,13 @@
 #include <esp_partition.h>
 
 constexpr uint16_t KITSU_FRAME_WIDTH = 64;
-constexpr uint16_t KITSU_FRAME_HEIGHT = 64;
-constexpr size_t KITSU_FRAME_BYTES = 512;
-constexpr uint16_t KITSU_PACK_VERSION = 1;
+constexpr uint16_t KITSU_PACK_V1_FRAME_HEIGHT = 64;
+constexpr uint16_t KITSU_PACK_V2_FRAME_HEIGHT = 80;
+constexpr size_t KITSU_PACK_V1_FRAME_BYTES = 512;
+constexpr size_t KITSU_PACK_V2_FRAME_BYTES = 640;
+constexpr size_t KITSU_MAX_FRAME_BYTES = KITSU_PACK_V2_FRAME_BYTES;
+constexpr uint16_t KITSU_PACK_V1 = 1;
+constexpr uint16_t KITSU_PACK_V2 = 2;
 constexpr uint16_t KITSU_PACK_HEADER_BYTES = 64;
 
 enum class CompanionRole : uint8_t {
@@ -97,6 +101,12 @@ class CompanionPack {
   const char* name() const { return valid_ ? displayName_ : "None"; }
   uint32_t id() const { return valid_ ? header_.packId : 0; }
   uint32_t revision() const { return valid_ ? header_.revision : 0; }
+  uint16_t formatVersion() const {
+    return valid_ ? header_.formatVersion : 0;
+  }
+  uint16_t frameWidth() const { return valid_ ? header_.width : 0; }
+  uint16_t frameHeight() const { return valid_ ? header_.height : 0; }
+  size_t frameBytes() const { return valid_ ? frameBytes_ : 0; }
   uint16_t frameCount() const { return valid_ ? header_.frameCount : 0; }
   uint32_t bytes() const { return valid_ ? header_.totalBytes : 0; }
   uint32_t payloadCrc32() const {
@@ -155,5 +165,6 @@ class CompanionPack {
   uint32_t activeForwardDurationMs_ = 0;
   uint32_t activeCycleDurationMs_ = 0;
   uint16_t cachedFrameIndex_ = 0xffff;
-  uint8_t frameBuffer_[KITSU_FRAME_BYTES]{};
+  size_t frameBytes_ = 0;
+  uint8_t frameBuffer_[KITSU_MAX_FRAME_BYTES]{};
 };

@@ -2,7 +2,7 @@
 """Synchronize final wild-pack portraits into firmware and Android sources.
 
 The input must be the complete private manifest produced by
-``build_wild_packs.py``.  This tool copies only each pack's derived 16x18,
+``build_wild_packs.py``.  This tool copies only each pack's exact 16x18,
 36-byte portrait representation; it never reads or publishes pack bytes or
 animation sources.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -19,19 +20,60 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v3"
+MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v4"
 EXPECTED_CREATURES = 21
 PORTRAIT_WIDTH = 16
 PORTRAIT_HEIGHT = 18
 PORTRAIT_BYTES = 36
 PORTRAIT_STORAGE = "XBM least-significant-bit first, two bytes per row"
+DIRECT_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
+IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v1"
+DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
+IMAGEGEN_RASTER_TRANSFORM = (
+    "rgba-over-white-box-area-black-coverage-then-fixed-offset"
+)
+IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM = (
+    "rgba-over-white-fixed-action-sheet-cells-box-area-black-coverage-"
+    "then-fixed-offset"
+)
+EXPECTED_ACTION_SHEET_LAYOUT = {
+    "cell_outer_safe_guard_pixels": 2,
+    "cell_transform": "identity-pinned-box-area-coverage-fixed-offset",
+    "fixed_cell_extraction": True,
+    "gutter_rects": [[560, 0, 562, 1402], [0, 700, 1122, 702]],
+    "per_cell_cleanup": False,
+    "per_cell_crop": False,
+    "per_cell_fit": False,
+    "per_cell_offset": False,
+    "per_cell_threshold": False,
+    "phase_order": [0, 1, 2, 3],
+    "phase_viewports": [
+        [0, 0, 560, 700],
+        [562, 0, 1122, 700],
+        [0, 702, 560, 1402],
+        [562, 702, 1122, 1402],
+    ],
+    "schema": "kitsu-imagegen-action-sheet-2x2-v1",
+    "source_asset_per_action": True,
+    "source_canvas": [1122, 1402],
+}
+TRANSFORM_CONTROLS = {
+    "auto_fit": False,
+    "crop_by_subject": False,
+    "cleanup": False,
+    "per_frame_translation": False,
+    "per_frame_threshold": False,
+}
 EXPECTED_RASTER_CONTRACT = {
-    "transform": "full-cell-nearest-neighbour-resize-then-translation",
-    "auto_crop": False,
-    "auto_shrink": False,
-    "source_cleanup": False,
+    "allowed_pack_transforms": [
+        DIRECT_RASTER_TRANSFORM,
+        IMAGEGEN_RASTER_TRANSFORM,
+        IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM,
+    ],
+    **TRANSFORM_CONTROLS,
     "source_snapshots": True,
-    "portrait_resampling": "full-frame-nearest-neighbour-1-bit",
+    "portrait_source": "independently-authored-exact-16x18",
+    "portrait_resampling": "none",
 }
 
 FIRMWARE_RELATIVE_PATH = Path("src/wild_creature_catalog.cpp")
@@ -104,20 +146,198 @@ def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
         manifest.get("raster_contract"), "raster_contract"
     )
     if raster_contract != EXPECTED_RASTER_CONTRACT:
-        raise ValueError("manifest raster_contract is not the fail-closed v3 contract")
+        raise ValueError("manifest raster_contract is not the fail-closed v4 contract")
+    if manifest.get("identity_lock_schema") not in {
+        DIRECT_LOCK_SCHEMA,
+        IMAGEGEN_LOCK_SCHEMA,
+    }:
+        raise ValueError("manifest uses an unsupported or legacy identity lock")
+
+
+def require_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError(f"{label} must be a lowercase SHA-256")
+    return value
+
+
+def require_imagegen_transform(raw: object, identity_key: str) -> dict[str, object]:
+    transform = require_mapping(raw, f"{identity_key}.identity_lock.transform")
+    if set(transform) != {
+        "alpha_background",
+        "black_coverage_threshold_per_mille",
+        "crop_rect",
+        "luminance_mode",
+        "output_canvas",
+        "output_offset",
+        "resample_mode",
+        "source_canvas",
+    }:
+        raise ValueError(f"{identity_key} ImageGen transform has unexpected fields")
+    source = transform.get("source_canvas")
+    crop = transform.get("crop_rect")
+    offset = transform.get("output_offset")
+    threshold = transform.get("black_coverage_threshold_per_mille")
+    if (
+        not isinstance(source, list)
+        or len(source) != 2
+        or any(not isinstance(value, int) for value in source)
+        or source[0] < 800
+        or source[1] < 1000
+        or not isinstance(crop, list)
+        or len(crop) != 4
+        or any(not isinstance(value, int) for value in crop)
+        or not isinstance(offset, list)
+        or len(offset) != 2
+        or any(not isinstance(value, int) for value in offset)
+        or not isinstance(threshold, int)
+        or not 50 <= threshold <= 500
+        or transform.get("alpha_background") != [255, 255, 255]
+        or transform.get("luminance_mode") != "pillow-rgb-luma-over-white"
+        or transform.get("output_canvas") != [64, 80]
+        or transform.get("resample_mode") != "box-area"
+    ):
+        raise ValueError(f"{identity_key} ImageGen transform is not canonical")
+    left, top, right, bottom = crop
+    source_width, source_height = source
+    crop_width = right - left
+    crop_height = bottom - top
+    if (
+        not (0 <= left < right <= source_width)
+        or not (0 <= top < bottom <= source_height)
+        or crop_width * 5 != crop_height * 4
+        or left + right != source_width
+        or top + bottom != source_height
+        or crop_width < 800
+        or crop_height < 1000
+        or max(left, top, source_width - right, source_height - bottom) > 2
+        or abs(offset[0]) >= 64
+        or abs(offset[1]) >= 80
+    ):
+        raise ValueError(f"{identity_key} ImageGen transform changes the fixed viewport")
+    return transform
 
 
 def require_pack_raster_provenance(
     pack: dict[str, object], identity_key: str
 ) -> None:
-    if (
-        pack.get("raster_transform")
-        != "full-cell-nearest-neighbour-resize-then-translation"
-        or pack.get("auto_crop") is not False
-        or pack.get("auto_shrink") is not False
-        or pack.get("source_cleanup") is not False
-    ):
+    transform_kind = pack.get("raster_transform")
+    if transform_kind not in {
+        DIRECT_RASTER_TRANSFORM,
+        IMAGEGEN_RASTER_TRANSFORM,
+        IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM,
+    }:
         raise ValueError(f"{identity_key} was not built by the fail-closed raster path")
+    if pack.get("transform_controls") != TRANSFORM_CONTROLS:
+        raise ValueError(f"{identity_key} permits a destructive per-frame transform")
+    if (
+        pack.get("format_version") != 2
+        or pack.get("frame_canvas") != [64, 80]
+        or pack.get("pack_bytes") != 31_120
+    ):
+        raise ValueError(f"{identity_key} is not an exact 64x80 K868PK1 v2 pack")
+
+    identity_lock = require_mapping(
+        pack.get("identity_lock"), f"{identity_key}.identity_lock"
+    )
+    lock_schema = identity_lock.get("schema")
+    if transform_kind == DIRECT_RASTER_TRANSFORM:
+        if set(identity_lock) != {
+            "frame_canvas",
+            "identity_frame_sha256",
+            "identity_sha256",
+            "schema",
+        } or lock_schema != DIRECT_LOCK_SCHEMA:
+            raise ValueError(f"{identity_key} direct-target identity lock is invalid")
+        if identity_lock.get("frame_canvas") != [64, 80]:
+            raise ValueError(f"{identity_key} direct-target lock has a wrong canvas")
+        require_sha256(identity_lock.get("identity_sha256"), f"{identity_key}.identity_sha256")
+        require_sha256(
+            identity_lock.get("identity_frame_sha256"),
+            f"{identity_key}.identity_frame_sha256",
+        )
+        if (
+            pack.get("source_kind") != "direct-exact-target"
+            or pack.get("fixed_action_scale") != 1.0
+            or pack.get("identity_raster_scale") != 1.0
+            or pack.get("action_cell_raster_scale") != 1.0
+            or "action_source_layout" in pack
+            or "action_source_layout_sha256" in pack
+        ):
+            raise ValueError(f"{identity_key} direct-target build changed scale")
+    else:
+        if set(identity_lock) != {
+            "identity_frame_sha256",
+            "identity_source_sha256",
+            "schema",
+            "transform",
+            "transform_sha256",
+        } or lock_schema != IMAGEGEN_LOCK_SCHEMA:
+            raise ValueError(f"{identity_key} ImageGen identity lock is invalid")
+        require_sha256(
+            identity_lock.get("identity_source_sha256"),
+            f"{identity_key}.identity_source_sha256",
+        )
+        require_sha256(
+            identity_lock.get("identity_frame_sha256"),
+            f"{identity_key}.identity_frame_sha256",
+        )
+        transform = require_imagegen_transform(identity_lock.get("transform"), identity_key)
+        transform_sha256 = require_sha256(
+            identity_lock.get("transform_sha256"),
+            f"{identity_key}.transform_sha256",
+        )
+        canonical = json.dumps(
+            transform,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+        if hashlib.sha256(canonical).hexdigest() != transform_sha256:
+            raise ValueError(f"{identity_key} ImageGen transform hash does not match")
+        crop = transform["crop_rect"]
+        identity_scale = 64 / (crop[2] - crop[0])
+        action_sheet = transform_kind == IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
+        action_scale = 64 / 560 if action_sheet else identity_scale
+        scale_values = (
+            pack.get("identity_raster_scale"),
+            pack.get("action_cell_raster_scale"),
+            pack.get("fixed_action_scale"),
+        )
+        if (
+            any(not isinstance(value, (int, float)) for value in scale_values)
+            or abs(scale_values[0] - identity_scale) > 1e-12
+            or abs(scale_values[1] - action_scale) > 1e-12
+            or abs(scale_values[2] - action_scale) > 1e-12
+        ):
+            raise ValueError(f"{identity_key} ImageGen fixed scale does not match its lock")
+        if action_sheet:
+            if pack.get("source_kind") != "imagegen-one-action-sheets":
+                raise ValueError(f"{identity_key} action-sheet source kind is invalid")
+            layout = require_mapping(
+                pack.get("action_source_layout"),
+                f"{identity_key}.action_source_layout",
+            )
+            if layout != EXPECTED_ACTION_SHEET_LAYOUT:
+                raise ValueError(f"{identity_key} action-sheet layout is not canonical")
+            layout_sha256 = require_sha256(
+                pack.get("action_source_layout_sha256"),
+                f"{identity_key}.action_source_layout_sha256",
+            )
+            canonical_layout = json.dumps(
+                layout,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("ascii")
+            if hashlib.sha256(canonical_layout).hexdigest() != layout_sha256:
+                raise ValueError(f"{identity_key} action-sheet layout hash does not match")
+        elif (
+            pack.get("source_kind") != "imagegen-locked-import"
+            or "action_source_layout" in pack
+            or "action_source_layout_sha256" in pack
+        ):
+            raise ValueError(f"{identity_key} independent-frame layout is invalid")
+
     source_snapshot = require_mapping(
         pack.get("source_snapshot"), f"{identity_key}.source_snapshot"
     )
@@ -174,9 +394,100 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
             raise ValueError(f"packs[{index}] has invalid canonical pack_id")
         if pack.get("format") != "K868PK1":
             raise ValueError(f"{identity_key} is not an ordinary K868PK1 pack")
-        if pack.get("stored_frames") != 48 or pack.get("clips") != 12:
+        if (
+            pack.get("stored_frames") != 48
+            or pack.get("clips") != 12
+            or pack.get("steps") != 48
+        ):
             raise ValueError(f"{identity_key} does not contain the complete 48/12 pack")
         require_pack_raster_provenance(pack, identity_key)
+        if require_mapping(
+            pack.get("identity_lock"), f"{identity_key}.identity_lock"
+        ).get("schema") != manifest.get("identity_lock_schema"):
+            raise ValueError(f"{identity_key} lock schema differs from the manifest")
+
+        roles = require_list(pack.get("roles"), f"{identity_key}.roles")
+        expected_roles = list((
+            "idle",
+            "blink",
+            "pet",
+            "sleep",
+            "listen",
+            "surprise",
+            "play",
+            "tired",
+            "feed",
+            "wake",
+            "meet",
+            "evolve",
+        ))
+        if [
+            require_mapping(role, f"{identity_key}.roles").get("role")
+            for role in roles
+        ] != expected_roles:
+            raise ValueError(f"{identity_key} roles are missing or out of order")
+        action_sheet_pack = (
+            pack.get("raster_transform")
+            == IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
+        )
+        action_source_hashes: list[str] = []
+        for role in roles:
+            role_record = require_mapping(role, f"{identity_key}.role")
+            if role_record.get("unique_frames") != 4:
+                raise ValueError(f"{identity_key} has a collapsed animation role")
+            phase_hash_fields = ["final_mask_sha256", "frame_sha256"]
+            if action_sheet_pack:
+                action_source_sha256 = require_sha256(
+                    role_record.get("action_source_sha256"),
+                    f"{identity_key}.{role_record.get('role')}.action_source_sha256",
+                )
+                action_source_hashes.append(action_source_sha256)
+                source_hashes = require_mapping(
+                    pack.get("source_sha256"), f"{identity_key}.source_sha256"
+                )
+                if source_hashes.get(f"{role_record.get('role')}.png") != action_source_sha256:
+                    raise ValueError(
+                        f"{identity_key}.{role_record.get('role')} action source "
+                        "hash differs from its snapshot manifest"
+                    )
+                phase_hash_fields.append("source_region_sha256")
+                if "source_sha256" in role_record:
+                    raise ValueError(
+                        f"{identity_key}.{role_record.get('role')} action sheet "
+                        "cannot claim independent source files"
+                    )
+            else:
+                phase_hash_fields.append("source_sha256")
+                if (
+                    "action_source_sha256" in role_record
+                    or "source_region_sha256" in role_record
+                ):
+                    raise ValueError(
+                        f"{identity_key}.{role_record.get('role')} independent "
+                        "layout cannot claim an action sheet"
+                    )
+
+            for field in phase_hash_fields:
+                hashes = require_list(
+                    role_record.get(field), f"{identity_key}.{role_record.get('role')}.{field}"
+                )
+                if len(hashes) != 4:
+                    raise ValueError(
+                        f"{identity_key}.{role_record.get('role')}.{field} "
+                        "must pin four independent frames"
+                    )
+                for frame_index, digest in enumerate(hashes):
+                    require_sha256(
+                        digest,
+                        f"{identity_key}.{role_record.get('role')}.{field}[{frame_index}]",
+                    )
+                if len(set(hashes)) != 4:
+                    raise ValueError(
+                        f"{identity_key}.{role_record.get('role')}.{field} "
+                        "must pin four independent frames"
+                    )
+        if action_sheet_pack and len(set(action_source_hashes)) != len(expected_roles):
+            raise ValueError(f"{identity_key} reuses one action sheet for multiple roles")
 
         portrait = require_mapping(pack.get("portrait"), f"{identity_key}.portrait")
         if (
@@ -184,13 +495,23 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
             or portrait.get("height") != PORTRAIT_HEIGHT
             or portrait.get("bytes") != PORTRAIT_BYTES
             or portrait.get("storage") != PORTRAIT_STORAGE
-            or portrait.get("source") != "approved-identity-master-64x64"
-            or portrait.get("resampling")
-            != "full-frame-nearest-neighbour-1-bit"
+            or portrait.get("source") != "independently-authored-exact-16x18"
+            or portrait.get("resampling") != "none"
         ):
             raise ValueError(
                 f"{identity_key} portrait contract is not identity-locked 16x18 XBM"
             )
+        portrait_source_sha256 = require_sha256(
+            portrait.get("source_sha256"), f"{identity_key}.portrait.source_sha256"
+        )
+        if (
+            portrait.get("png_sha256") != portrait_source_sha256
+            or require_mapping(
+                pack.get("source_sha256"), f"{identity_key}.source_sha256"
+            ).get("portrait.png")
+            != portrait_source_sha256
+        ):
+            raise ValueError(f"{identity_key} portrait is not a byte-exact source copy")
         bitmap_hex = portrait.get("bitmap_hex")
         bitmap_base64 = portrait.get("bitmap_base64")
         if not isinstance(bitmap_hex, str) or not re.fullmatch(

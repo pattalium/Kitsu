@@ -22,9 +22,10 @@ MAGIC = b"K868PK1\0"
 HEADER_BYTES = 64
 CLIP_BYTES = 12
 STEP_BYTES = 4
-FRAME_WIDTH = 64
-FRAME_HEIGHT = 64
-FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT // 8
+FRAME_FORMATS = {
+    1: (64, 64, 512),
+    2: (64, 80, 640),
+}
 
 ROLE_NAMES = (
     "IDLE",
@@ -64,6 +65,9 @@ class Pack:
     path: Path
     name: str
     revision: int
+    format_version: int
+    width: int
+    height: int
     frames: tuple[Image.Image, ...]
     clips: tuple[Clip, ...]
     steps: tuple[Step, ...]
@@ -75,14 +79,15 @@ class Pack:
         return next((clip for clip in matches if clip.variant == 0), matches[0])
 
 
-def decode_frame(raw: bytes) -> Image.Image:
-    if len(raw) != FRAME_BYTES:
-        raise ValueError(f"frame has {len(raw)} bytes, expected {FRAME_BYTES}")
-    image = Image.new("L", (FRAME_WIDTH, FRAME_HEIGHT), 0)
+def decode_frame(raw: bytes, width: int, height: int) -> Image.Image:
+    frame_bytes = width * height // 8
+    if len(raw) != frame_bytes:
+        raise ValueError(f"frame has {len(raw)} bytes, expected {frame_bytes}")
+    image = Image.new("L", (width, height), 0)
     pixels = image.load()
-    for y in range(FRAME_HEIGHT):
-        row = y * (FRAME_WIDTH // 8)
-        for x in range(FRAME_WIDTH):
+    for y in range(height):
+        row = y * (width // 8)
+        for x in range(width):
             if raw[row + x // 8] & (1 << (x & 7)):
                 pixels[x, y] = 255
     return image
@@ -110,20 +115,24 @@ def parse_pack(path: Path) -> Pack:
         encoded_name,
     ) = struct.unpack_from("<HHIIIIIHHHHII16s", data, 8)
 
-    if version != 1 or header_bytes != HEADER_BYTES:
+    frame_format = FRAME_FORMATS.get(version)
+    if frame_format is None or header_bytes != HEADER_BYTES:
         raise ValueError(f"{path}: unsupported pack header")
     if total_bytes != len(data):
         raise ValueError(f"{path}: header says {total_bytes} bytes, file has {len(data)}")
     if not pack_id or not revision or flags:
         raise ValueError(f"{path}: invalid ID, revision, or flags")
-    if (width, height) != (FRAME_WIDTH, FRAME_HEIGHT):
-        raise ValueError(f"{path}: expected a 64x64 canvas, got {width}x{height}")
+    if (width, height) != frame_format[:2]:
+        raise ValueError(
+            f"{path}: unsupported version/canvas {version}/{width}x{height}"
+        )
+    frame_bytes = frame_format[2]
 
     expected_bytes = (
         HEADER_BYTES
         + clip_count * CLIP_BYTES
         + step_count * STEP_BYTES
-        + frame_count * FRAME_BYTES
+        + frame_count * frame_bytes
     )
     if expected_bytes != len(data):
         raise ValueError(f"{path}: invalid fixed-layout length")
@@ -157,13 +166,23 @@ def parse_pack(path: Path) -> Pack:
         steps.append(Step(frame_index, duration_ms))
 
     frames = tuple(
-        decode_frame(data[offset : offset + FRAME_BYTES])
-        for offset in range(frames_offset, len(data), FRAME_BYTES)
+        decode_frame(data[offset : offset + frame_bytes], width, height)
+        for offset in range(frames_offset, len(data), frame_bytes)
     )
     name = encoded_name.split(b"\0", 1)[0].decode("utf-8")
     if not name:
         raise ValueError(f"{path}: empty display name")
-    return Pack(path, name, revision, frames, tuple(clips), tuple(steps))
+    return Pack(
+        path,
+        name,
+        revision,
+        version,
+        width,
+        height,
+        frames,
+        tuple(clips),
+        tuple(steps),
+    )
 
 
 def font(size: int, bold: bool = False) -> ImageFont.ImageFont:
@@ -207,9 +226,10 @@ def playback_steps(pack: Pack, clip: Clip) -> list[Step]:
 
 def make_sheet(packs: list[Pack], output: Path, frame_ms: int) -> tuple[int, tuple[int, int]]:
     role_count = len(ROLE_NAMES)
+    maximum_frame_height = max(pack.height for pack in packs)
     title_height = 60
     species_height = 52
-    row_height = 92
+    row_height = max(92, maximum_frame_height + 28)
     footer_height = 45
     margin = 18
     role_width = 112
@@ -324,13 +344,13 @@ def make_sheet(packs: list[Pack], output: Path, frame_ms: int) -> tuple[int, tup
                 step = sequence[sequence_index]
                 sprite = pack.frames[step.frame_index]
                 sprite_rgb = Image.merge("RGB", (sprite, sprite, sprite))
-                sprite_x = left + (column_width - 8 - FRAME_WIDTH) // 2
+                sprite_x = left + (column_width - 8 - pack.width) // 2
                 sprite_y = top + 5
                 canvas.paste(sprite_rgb, (sprite_x, sprite_y))
                 mode = MODE_NAMES[clip.mode]
                 centered_text(
                     draw,
-                    (left, top + 69, right, top + row_height - 5),
+                    (left, top + maximum_frame_height + 5, right, top + row_height - 5),
                     f"{mode}  •  F{step.frame_index + 1:02d}",
                     tiny_font,
                     (125, 146, 174),

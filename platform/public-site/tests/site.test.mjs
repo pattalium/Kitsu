@@ -38,17 +38,19 @@ function testCrc32(bytes) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function syntheticK868(packId = "A1B2C3D4") {
-  const bytes = new Uint8Array(64 + (12 * 12) + (48 * 4) + (48 * 512));
+function syntheticK868(packId = "A1B2C3D4", formatVersion = 1) {
+  const frameHeight = formatVersion === 2 ? 80 : 64;
+  const frameBytes = 64 * frameHeight / 8;
+  const bytes = new Uint8Array(64 + (12 * 12) + (48 * 4) + (48 * frameBytes));
   bytes.set([0x4b, 0x38, 0x36, 0x38, 0x50, 0x4b, 0x31, 0x00]);
   const view = new DataView(bytes.buffer);
-  view.setUint16(0x08, 1, true);
+  view.setUint16(0x08, formatVersion, true);
   view.setUint16(0x0a, 64, true);
   view.setUint32(0x0c, bytes.byteLength, true);
   view.setUint32(0x18, Number.parseInt(packId, 16), true);
   view.setUint32(0x1c, 3, true);
   view.setUint16(0x20, 64, true);
-  view.setUint16(0x22, 64, true);
+  view.setUint16(0x22, frameHeight, true);
   view.setUint16(0x24, 48, true);
   view.setUint16(0x26, 12, true);
   view.setUint32(0x28, 48, true);
@@ -1327,6 +1329,22 @@ test("redeems a verified pack only through the bounded gated API response", asyn
       entry,
       webcrypto,
     ),
+    (error) => error.code === "invalid_download",
+  );
+});
+
+test("accepts native 64x80 K868PK1 v2 downloads without weakening v1", () => {
+  const v1 = syntheticK868("A1B2C3D4", 1);
+  const v2 = syntheticK868("A1B2C3D4", 2);
+  assert.equal(v1.byteLength, 24_976);
+  assert.equal(v2.byteLength, 31_120);
+  assert.equal(unlockModule.validateK868Pack(v1, "A1B2C3D4").version, 1);
+  assert.equal(unlockModule.validateK868Pack(v2, "A1B2C3D4").version, 2);
+
+  const mismatched = v2.slice();
+  new DataView(mismatched.buffer).setUint16(0x22, 64, true);
+  assert.throws(
+    () => unlockModule.validateK868Pack(mismatched, "A1B2C3D4"),
     (error) => error.code === "invalid_download",
   );
 });

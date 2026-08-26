@@ -51,18 +51,28 @@ void CompanionPack::fail(const char* reason) {
   cachedFrameIndex_ = 0xffff;
   activeForwardDurationMs_ = 0;
   activeCycleDurationMs_ = 0;
+  frameBytes_ = 0;
   error_ = reason;
 }
 
 bool CompanionPack::validateHeader() {
-  if (header_.formatVersion != KITSU_PACK_VERSION ||
-      header_.headerBytes != KITSU_PACK_HEADER_BYTES) {
+  if (header_.headerBytes != KITSU_PACK_HEADER_BYTES) {
     fail("version");
     return false;
   }
-  if (header_.width != KITSU_FRAME_WIDTH ||
-      header_.height != KITSU_FRAME_HEIGHT ||
-      header_.flags != 0 || header_.packId == 0 || header_.revision == 0) {
+  if (header_.formatVersion == KITSU_PACK_V1 &&
+      header_.width == KITSU_FRAME_WIDTH &&
+      header_.height == KITSU_PACK_V1_FRAME_HEIGHT) {
+    frameBytes_ = KITSU_PACK_V1_FRAME_BYTES;
+  } else if (header_.formatVersion == KITSU_PACK_V2 &&
+             header_.width == KITSU_FRAME_WIDTH &&
+             header_.height == KITSU_PACK_V2_FRAME_HEIGHT) {
+    frameBytes_ = KITSU_PACK_V2_FRAME_BYTES;
+  } else {
+    fail("format");
+    return false;
+  }
+  if (header_.flags != 0 || header_.packId == 0 || header_.revision == 0) {
     fail("format");
     return false;
   }
@@ -76,7 +86,7 @@ bool CompanionPack::validateHeader() {
   const uint64_t expected = KITSU_PACK_HEADER_BYTES +
       static_cast<uint64_t>(header_.clipCount) * sizeof(KitsuPackClip) +
       static_cast<uint64_t>(header_.stepCount) * sizeof(KitsuPackStep) +
-      static_cast<uint64_t>(header_.frameCount) * KITSU_FRAME_BYTES;
+      static_cast<uint64_t>(header_.frameCount) * frameBytes_;
   if (expected != header_.totalBytes ||
       expected > partition_->size) {
     fail("size");
@@ -397,8 +407,8 @@ const uint8_t* CompanionPack::activeFrame(uint32_t elapsedMs) {
   const uint32_t frameOffset = KITSU_PACK_HEADER_BYTES +
       static_cast<uint32_t>(header_.clipCount) * sizeof(KitsuPackClip) +
       header_.stepCount * sizeof(KitsuPackStep) +
-      static_cast<uint32_t>(step.frameIndex) * KITSU_FRAME_BYTES;
-  if (!readAt(frameOffset, frameBuffer_, sizeof(frameBuffer_))) {
+      static_cast<uint32_t>(step.frameIndex) * frameBytes_;
+  if (!readAt(frameOffset, frameBuffer_, frameBytes_)) {
     fail("frame-read");
     return nullptr;
   }

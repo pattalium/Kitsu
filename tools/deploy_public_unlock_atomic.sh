@@ -191,7 +191,6 @@ catalog = {
     "rabbit_girl.k868": 0xF0F750BD,
     "deer_girl.k868": 0x52A1C03A,
 }
-expected_bytes = 64 + (12 * 12) + (48 * 4) + (48 * 512)
 present = {
     path.relative_to(root).as_posix()
     for path in root.rglob("*.k868")
@@ -208,7 +207,7 @@ for filename, expected_id in sorted(catalog.items()):
     if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
         raise SystemExit(f"pack_not_regular:{filename}")
     data = path.read_bytes()
-    if len(data) != expected_bytes or data[:8] != b"K868PK1\0":
+    if len(data) < 64 or len(data) > 0x140000 or data[:8] != b"K868PK1\0":
         raise SystemExit(f"pack_header_invalid:{filename}")
     version, header_bytes = struct.unpack_from("<HH", data, 8)
     total_bytes, payload_crc, header_crc, pack_id, revision = struct.unpack_from(
@@ -216,14 +215,22 @@ for filename, expected_id in sorted(catalog.items()):
     )
     width, height, frame_count, clip_count = struct.unpack_from("<HHHH", data, 32)
     step_count, flags = struct.unpack_from("<II", data, 40)
+    frame_bytes = {
+        (1, 64, 64): 512,
+        (2, 64, 80): 640,
+    }.get((version, width, height))
+    expected_bytes = (
+        64 + (clip_count * 12) + (step_count * 4) + (frame_count * frame_bytes)
+        if frame_bytes is not None
+        else None
+    )
     if (
-        version != 1
+        frame_bytes is None
         or header_bytes != 64
         or total_bytes != len(data)
+        or expected_bytes != len(data)
         or pack_id != expected_id
         or revision == 0
-        or width != 64
-        or height != 64
         or frame_count != 48
         or clip_count != 12
         or step_count != 48

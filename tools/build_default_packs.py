@@ -295,16 +295,51 @@ def rasterize(frame: SourceFrame, scale: float) -> set[tuple[int, int]]:
     return output
 
 
-def frame_bytes(mask: set[tuple[int, int]]) -> bytes:
-    packed = bytearray(FRAME_BYTES)
+def frame_bytes(
+    mask: set[tuple[int, int]],
+    width: int = FRAME_WIDTH,
+    height: int = FRAME_HEIGHT,
+) -> bytes:
+    if width <= 0 or height <= 0 or width % 8:
+        raise ValueError(f"invalid 1-bit frame canvas {width}x{height}")
+    packed = bytearray(width * height // 8)
     for x, y in mask:
-        packed[y * (FRAME_WIDTH // 8) + x // 8] |= 1 << (x & 7)
+        if not 0 <= x < width or not 0 <= y < height:
+            raise ValueError(f"frame pixel {(x, y)} is outside {width}x{height}")
+        packed[y * (width // 8) + x // 8] |= 1 << (x & 7)
     return bytes(packed)
 
 
-def build_pack(species: str, display_name: str, frames: list[bytes]) -> bytes:
+def build_pack(
+    species: str,
+    display_name: str,
+    frames: list[bytes],
+    *,
+    format_version: int = PACK_VERSION,
+    frame_width: int = FRAME_WIDTH,
+    frame_height: int = FRAME_HEIGHT,
+) -> bytes:
     if len(frames) != 48:
         raise ValueError(f"{species}: expected 48 frames, got {len(frames)}")
+    if (format_version, frame_width, frame_height) not in {
+        (1, 64, 64),
+        (2, 64, 80),
+    }:
+        raise ValueError(
+            f"{species}: unsupported K868PK1 version/canvas "
+            f"{format_version}/{frame_width}x{frame_height}"
+        )
+    if frame_width <= 0 or frame_height <= 0 or frame_width % 8:
+        raise ValueError(
+            f"{species}: invalid 1-bit frame canvas {frame_width}x{frame_height}"
+        )
+    expected_frame_bytes = frame_width * frame_height // 8
+    for index, frame in enumerate(frames):
+        if len(frame) != expected_frame_bytes:
+            raise ValueError(
+                f"{species}: frame {index} has {len(frame)} bytes; "
+                f"expected {expected_frame_bytes} for {frame_width}x{frame_height}"
+            )
     clips = bytearray()
     steps = bytearray()
     for clip_index, role in enumerate(ROLE_SPECS):
@@ -332,15 +367,15 @@ def build_pack(species: str, display_name: str, frames: list[bytes]) -> bytes:
         "<HHIIIIIHHHHII16s",
         header,
         8,
-        PACK_VERSION,
+        format_version,
         PACK_HEADER_BYTES,
         total_bytes,
         binascii.crc32(payload) & 0xFFFFFFFF,
         0,
         pack_id,
         PACK_REVISION,
-        FRAME_WIDTH,
-        FRAME_HEIGHT,
+        frame_width,
+        frame_height,
         len(frames),
         len(ROLE_SPECS),
         len(ROLE_SPECS) * 4,
@@ -355,28 +390,45 @@ def build_pack(species: str, display_name: str, frames: list[bytes]) -> bytes:
     return bytes(header) + payload
 
 
-def mask_image(mask: set[tuple[int, int]]) -> Image.Image:
-    image = Image.new("1", (FRAME_WIDTH, FRAME_HEIGHT), 1)
+def mask_image(
+    mask: set[tuple[int, int]],
+    width: int = FRAME_WIDTH,
+    height: int = FRAME_HEIGHT,
+) -> Image.Image:
+    image = Image.new("1", (width, height), 1)
     pixels = image.load()
     for x, y in mask:
+        if not 0 <= x < width or not 0 <= y < height:
+            raise ValueError(f"frame pixel {(x, y)} is outside {width}x{height}")
         pixels[x, y] = 0
     return image
 
 
-def write_contact_sheet(frames: list[set[tuple[int, int]]], path: Path) -> None:
-    canvas = Image.new("1", (FRAME_WIDTH * 4, FRAME_HEIGHT * 12), 1)
+def write_contact_sheet(
+    frames: list[set[tuple[int, int]]],
+    path: Path,
+    width: int = FRAME_WIDTH,
+    height: int = FRAME_HEIGHT,
+) -> None:
+    canvas = Image.new("1", (width * 4, height * 12), 1)
     for index, mask in enumerate(frames):
         role = index // 4
         phase = index % 4
-        canvas.paste(mask_image(mask), (phase * FRAME_WIDTH, role * FRAME_HEIGHT))
-    canvas.resize((1024, 3072), Image.Resampling.NEAREST).save(path)
+        canvas.paste(mask_image(mask, width, height), (phase * width, role * height))
+    canvas.resize((width * 4 * 4, height * 12 * 4), Image.Resampling.NEAREST).save(path)
 
 
 def write_role_gif(
-    masks: list[set[tuple[int, int]]], role: RoleSpec, path: Path
+    masks: list[set[tuple[int, int]]],
+    role: RoleSpec,
+    path: Path,
+    width: int = FRAME_WIDTH,
+    height: int = FRAME_HEIGHT,
 ) -> None:
     frames = [
-        mask_image(mask).resize((256, 256), Image.Resampling.NEAREST).convert("P")
+        mask_image(mask, width, height)
+        .resize((width * 4, height * 4), Image.Resampling.NEAREST)
+        .convert("P")
         for mask in masks
     ]
     sequence = frames

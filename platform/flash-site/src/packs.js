@@ -17,13 +17,13 @@ export const REPLACEMENT_TRANSACTION = Object.freeze({
 export const UNLOCKED_PACK_ID = "unlocked";
 
 const K868_FORMAT = Object.freeze({
-  version: 1,
   headerBytes: 64,
   clipBytes: 12,
   stepBytes: 4,
-  frameWidth: 64,
-  frameHeight: 64,
-  frameBytes: 512,
+  versions: Object.freeze({
+    1: Object.freeze({ width: 64, height: 64, frameBytes: 512 }),
+    2: Object.freeze({ width: 64, height: 80, frameBytes: 640 }),
+  }),
   maxClips: 512,
   maxSteps: 65535,
   maxStepsPerClip: 256,
@@ -144,7 +144,8 @@ export function validateUnlockedPackBytes(bytes) {
   const stepCount = view.getUint32(0x28, true);
   const flags = view.getUint32(0x2c, true);
 
-  if (version !== K868_FORMAT.version) fail(`unsupported companion pack version ${version}`);
+  const frameFormat = K868_FORMAT.versions[version];
+  if (!frameFormat) fail(`unsupported companion pack version ${version}`);
   if (headerBytes !== K868_FORMAT.headerBytes) fail(`invalid companion pack header size ${headerBytes}`);
   if (totalBytes !== bytes.byteLength) {
     fail(`companion pack length is ${bytes.byteLength} bytes, header declares ${totalBytes}`);
@@ -154,8 +155,8 @@ export function validateUnlockedPackBytes(bytes) {
   }
   if (packId === 0) fail("companion pack ID must be nonzero");
   if (revision === 0) fail("companion pack revision must be nonzero");
-  if (width !== K868_FORMAT.frameWidth || height !== K868_FORMAT.frameHeight) {
-    fail(`unsupported companion frame canvas ${width}x${height}`);
+  if (width !== frameFormat.width || height !== frameFormat.height) {
+    fail(`unsupported companion pack version/canvas ${version}/${width}x${height}`);
   }
   if (frameCount === 0) fail("companion pack contains no frames");
   if (clipCount === 0 || clipCount > K868_FORMAT.maxClips) {
@@ -170,7 +171,7 @@ export function validateUnlockedPackBytes(bytes) {
   const expectedTotal = K868_FORMAT.headerBytes
     + clipCount * K868_FORMAT.clipBytes
     + stepCount * K868_FORMAT.stepBytes
-    + frameCount * K868_FORMAT.frameBytes;
+    + frameCount * frameFormat.frameBytes;
   if (totalBytes !== expectedTotal) {
     fail(`invalid companion pack layout: expected ${expectedTotal} bytes, found ${totalBytes}`);
   }

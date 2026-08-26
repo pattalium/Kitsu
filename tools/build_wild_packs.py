@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Build private Kitsu wild-creature packs from per-action identity-locked art.
+"""Build private Kitsu wild-creature packs from identity-locked format-v2 art.
 
-Every creature owns one approved canonical identity image and twelve separate
-2x2 action assets. This tool requires all four frames of each action, applies
-one identity-locked full-cell nearest-neighbour scale, rigidly translates each
-frame to the fixed center/floor, builds ordinary CRC-only K868PK1 packs, and
-derives one 16x18 private portrait from the identity master.
+Every creature owns one approved canonical identity image, an independently
+authored exact 16x18 portrait, and four independent frames for each of twelve
+actions. Direct sources must already be exact one-bit 64x80 release rasters.
+ImageGen sources may use one manifest-pinned identity transform for the entire
+creature; the same crop, BOX-area reduction, threshold, and fixed offset are
+then applied to every action frame without per-frame fitting or cleanup.
 
 Action art, serialized frames, GIFs, contact sheets, manifests containing frame
 hashes, and pack bytes are private release inputs. The tool refuses to read or
@@ -23,8 +24,6 @@ import shutil
 import struct
 import tempfile
 from pathlib import Path
-
-from PIL import Image
 
 import build_default_packs as base
 import companion_raster_contract as raster_contract
@@ -58,7 +57,28 @@ WILD_SPECIES: dict[str, dict[str, str]] = {
 PORTRAIT_WIDTH = 16
 PORTRAIT_HEIGHT = 18
 PORTRAIT_BYTES = PORTRAIT_WIDTH * PORTRAIT_HEIGHT // 8
+WILD_PACK_FORMAT_VERSION = 2
+WILD_FRAME_WIDTH = 64
+WILD_FRAME_HEIGHT = 80
+WILD_FRAME_BYTES = WILD_FRAME_WIDTH * WILD_FRAME_HEIGHT // 8
+WILD_FLOOR_Y = 77
 WILD_PACK_REVISION = 3
+PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v4"
+DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
+IMAGEGEN_RASTER_TRANSFORM = (
+    "rgba-over-white-box-area-black-coverage-then-fixed-offset"
+)
+IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM = (
+    "rgba-over-white-fixed-action-sheet-cells-box-area-black-coverage-"
+    "then-fixed-offset"
+)
+TRANSFORM_CONTROLS = {
+    "auto_fit": False,
+    "crop_by_subject": False,
+    "cleanup": False,
+    "per_frame_translation": False,
+    "per_frame_threshold": False,
+}
 
 
 def is_within(path: Path, parent: Path) -> bool:
@@ -74,60 +94,57 @@ def require_private_path(path: Path, project_root: Path, label: str) -> None:
         raise ValueError(f"{label} must stay outside the public checkout: {path}")
 
 
-def make_portrait(mask: set[tuple[int, int]]) -> tuple[set[tuple[int, int]], bytes]:
-    source = base.mask_image(mask)
-    available_width = PORTRAIT_WIDTH
-    available_height = PORTRAIT_HEIGHT
-    scale = min(available_width / source.width, available_height / source.height)
-    width = max(1, round(source.width * scale))
-    height = max(1, round(source.height * scale))
-    reduced = source.resize((width, height), Image.Resampling.NEAREST)
-    if reduced.mode != "1":
-        raise ValueError("nearest-neighbour portrait conversion is not strictly 1-bit")
-    portrait: set[tuple[int, int]] = set()
-    origin_x = (PORTRAIT_WIDTH - width) // 2
-    origin_y = (PORTRAIT_HEIGHT - height) // 2
-    for y in range(height):
-        for x in range(width):
-            if reduced.getpixel((x, y)) == 0:
-                portrait.add((x + origin_x, y + origin_y))
-    if not 16 <= len(portrait) <= 220:
-        raise ValueError(f"derived portrait has implausible ink density: {len(portrait)}")
-    components = sorted(base.connected_components(portrait), key=len, reverse=True)
-    if len(components) > raster_contract.MAX_OUTPUT_COMPONENTS:
-        raise ValueError(
-            f"derived portrait has {len(components)} fragmented components"
+def load_release_identity_locks(
+    path: Path, selected: list[str]
+) -> tuple[
+    str,
+    str,
+    dict[
+        str,
+        raster_contract.HighResIdentityLock
+        | raster_contract.ImageGenImportLock,
+    ],
+]:
+    """Select exactly one v2 source contract without legacy reinterpretation."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read private identity lock: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("private identity lock must be a JSON object")
+    schema = payload.get("schema")
+    if schema == raster_contract.HIGH_RES_IDENTITY_LOCK_SCHEMA:
+        return (
+            "direct-exact-target",
+            schema,
+            raster_contract.load_high_res_identity_locks(path, selected),
         )
-    if len(components[0]) / len(portrait) < 0.55:
-        raise ValueError("derived portrait no longer has one dominant identity subject")
-
-    packed = bytearray(PORTRAIT_BYTES)
-    for x, y in portrait:
-        packed[y * 2 + x // 8] |= 1 << (x & 7)
-    round_trip = {
-        (x, y)
-        for y in range(PORTRAIT_HEIGHT)
-        for x in range(PORTRAIT_WIDTH)
-        if packed[y * 2 + x // 8] & (1 << (x & 7))
-    }
-    if round_trip != portrait:
-        raise ValueError("16x18 portrait packing changed 1-bit pixels")
-    return portrait, bytes(packed)
-
-
-def write_portrait_png(mask: set[tuple[int, int]], path: Path) -> None:
-    image = Image.new("1", (PORTRAIT_WIDTH, PORTRAIT_HEIGHT), 1)
-    pixels = image.load()
-    for x, y in mask:
-        pixels[x, y] = 0
-    path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, optimize=False)
+    if schema == raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA:
+        return (
+            "imagegen-locked-import",
+            schema,
+            raster_contract.load_imagegen_import_locks(path, selected),
+        )
+    raise ValueError(
+        "identity lock must use the exact format-v2 direct-target or "
+        "ImageGen import schema; legacy v1 locks are forbidden"
+    )
 
 
 def build_wild_pack(species: str, display_name: str, frames: list[bytes]) -> bytes:
-    """Build K868PK1 while advancing the leaked draft's revision to v3."""
+    """Build a native 64x80 K868PK1 v2 pack at content revision three."""
 
-    pack = bytearray(base.build_pack(species, display_name, frames))
+    pack = bytearray(
+        base.build_pack(
+            species,
+            display_name,
+            frames,
+            format_version=WILD_PACK_FORMAT_VERSION,
+            frame_width=WILD_FRAME_WIDTH,
+            frame_height=WILD_FRAME_HEIGHT,
+        )
+    )
     struct.pack_into("<I", pack, 0x1C, WILD_PACK_REVISION)
     header_for_crc = bytearray(pack[8 : base.PACK_HEADER_BYTES])
     header_for_crc[0x14 - 8 : 0x18 - 8] = b"\0\0\0\0"
@@ -141,16 +158,95 @@ def build_species(
     source_dir: Path,
     private_output: Path,
     species: str,
-    identity_lock: raster_contract.IdentityLock,
+    identity_lock: (
+        raster_contract.HighResIdentityLock
+        | raster_contract.ImageGenImportLock
+    ),
+    source_kind: str,
 ) -> dict[str, object]:
     definition = WILD_SPECIES[species]
-    raster = raster_contract.load_species_raster(
-        source_dir, species, identity_lock
-    )
+    if source_kind == "direct-exact-target":
+        if not isinstance(identity_lock, raster_contract.HighResIdentityLock):
+            raise ValueError(f"{species}: direct build requires a v2 identity lock")
+        raster = raster_contract.load_high_res_species(
+            source_dir, species, identity_lock
+        )
+        raster_transform = DIRECT_RASTER_TRANSFORM
+        identity_raster_scale = 1.0
+        action_cell_raster_scale = 1.0
+        action_source_layout = None
+        action_source_layout_sha256 = None
+        lock_record: dict[str, object] = {
+            "schema": raster_contract.HIGH_RES_IDENTITY_LOCK_SCHEMA,
+            "identity_sha256": identity_lock.identity_sha256,
+            "identity_frame_sha256": base.sha256_bytes(raster.identity.packed),
+            "frame_canvas": list(identity_lock.frame_canvas),
+        }
+    elif source_kind == "imagegen-locked-import":
+        if not isinstance(identity_lock, raster_contract.ImageGenImportLock):
+            raise ValueError(
+                f"{species}: ImageGen build requires an ImageGen import lock"
+            )
+        raster = raster_contract.load_high_res_generated_species(
+            source_dir, species, identity_lock
+        )
+        raster_transform = IMAGEGEN_RASTER_TRANSFORM
+        crop_width = (
+            identity_lock.transform.crop_rect[2]
+            - identity_lock.transform.crop_rect[0]
+        )
+        identity_raster_scale = WILD_FRAME_WIDTH / crop_width
+        action_cell_raster_scale = identity_raster_scale
+        action_source_layout = None
+        action_source_layout_sha256 = None
+        lock_record = {
+            "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+            "identity_source_sha256": identity_lock.identity_source_sha256,
+            "identity_frame_sha256": identity_lock.identity_frame_sha256,
+            "transform": raster_contract.imagegen_import_transform_record(
+                identity_lock.transform
+            ),
+            "transform_sha256": identity_lock.transform_sha256,
+        }
+    elif source_kind == "imagegen-one-action-sheets":
+        if not isinstance(identity_lock, raster_contract.ImageGenImportLock):
+            raise ValueError(
+                f"{species}: ImageGen action sheets require an ImageGen import lock"
+            )
+        raster = raster_contract.load_high_res_generated_action_sheet_species(
+            source_dir, species, identity_lock
+        )
+        raster_transform = IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
+        crop_width = (
+            identity_lock.transform.crop_rect[2]
+            - identity_lock.transform.crop_rect[0]
+        )
+        identity_raster_scale = WILD_FRAME_WIDTH / crop_width
+        action_cell_raster_scale = WILD_FRAME_WIDTH / 560
+        action_source_layout = (
+            raster_contract.imagegen_action_sheet_layout_record()
+        )
+        action_source_layout_sha256 = (
+            raster_contract.imagegen_action_sheet_layout_sha256()
+        )
+        lock_record = {
+            "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+            "identity_source_sha256": identity_lock.identity_source_sha256,
+            "identity_frame_sha256": identity_lock.identity_frame_sha256,
+            "transform": raster_contract.imagegen_import_transform_record(
+                identity_lock.transform
+            ),
+            "transform_sha256": identity_lock.transform_sha256,
+        }
+    else:
+        raise ValueError(f"{species}: unsupported private source kind {source_kind!r}")
+
     raster_frames = list(raster.frames)
-    source_frames = [frame.source_frame for frame in raster_frames]
-    output_masks = [set(frame.output_mask) for frame in raster_frames]
-    identity_mask = set(raster.identity.output_mask)
+    if len(raster_frames) != len(base.ROLE_SPECS) * 4:
+        raise ValueError(
+            f"{species}: expected 48 exact release frames, got {len(raster_frames)}"
+        )
+    output_masks = [set(frame.mask) for frame in raster_frames]
     idle_similarity = raster_frames[0].identity_jaccard
     role_scales = {
         role.name: raster.fixed_action_scale for role in base.ROLE_SPECS
@@ -162,33 +258,70 @@ def build_species(
     for role_index, role in enumerate(base.ROLE_SPECS):
         role_rasters = raster_frames[role_index * 4 : role_index * 4 + 4]
         role_masks = output_masks[role_index * 4 : role_index * 4 + 4]
-        hashes = [frame.output_sha256 for frame in role_rasters]
+        if [frame.role for frame in role_rasters] != [role.name] * 4 or [
+            frame.phase for frame in role_rasters
+        ] != list(range(4)):
+            raise ValueError(f"{species}/{role.name}: non-canonical frame order")
+        hashes = [base.sha256_bytes(frame.packed) for frame in role_rasters]
         unique_frames = len(set(hashes))
+        if unique_frames != 4:
+            raise ValueError(
+                f"{species}/{role.name}: distinct sources collapsed to "
+                f"{unique_frames} final 64x80 frames"
+            )
         changed_pixels = len(set().union(*role_masks) - set.intersection(*role_masks))
         similarities = [round(frame.identity_jaccard, 4) for frame in role_rasters]
-        role_evidence.append(
-            {
-                "role": role.name,
-                "role_id": role.role,
-                "mode": ("hold", "once", "loop", "pingpong")[role.mode],
-                "durations_ms": list(role.durations_ms),
-                "unique_frames": unique_frames,
-                "changed_pixels": changed_pixels,
-                "identity_jaccard": similarities,
-                "apparent_scale_ratio": [
-                    round(frame.apparent_scale_ratio, 4) for frame in role_rasters
-                ],
-                "source_mask_sha256": [
-                    frame.source_mask_sha256 for frame in role_rasters
-                ],
-                "frame_sha256": hashes,
-            }
-        )
+        role_record: dict[str, object] = {
+            "role": role.name,
+            "role_id": role.role,
+            "mode": ("hold", "once", "loop", "pingpong")[role.mode],
+            "durations_ms": list(role.durations_ms),
+            "unique_frames": unique_frames,
+            "changed_pixels": changed_pixels,
+            "identity_jaccard": similarities,
+            "apparent_scale_ratio": [
+                round(frame.apparent_scale_ratio, 4) for frame in role_rasters
+            ],
+            "final_mask_sha256": [
+                raster_contract.mask_sha256(
+                    frame.mask, WILD_FRAME_WIDTH, WILD_FRAME_HEIGHT
+                )
+                for frame in role_rasters
+            ],
+            "frame_sha256": hashes,
+        }
+        if source_kind == "imagegen-one-action-sheets":
+            role_record["action_source_sha256"] = raster.source_sha256[
+                f"{role.name}.png"
+            ]
+            role_record["source_region_sha256"] = [
+                frame.source_sha256 for frame in role_rasters
+            ]
+        else:
+            role_record["source_sha256"] = [
+                frame.source_sha256 for frame in role_rasters
+            ]
+        role_evidence.append(role_record)
         base.write_role_gif(
-            role_masks, role, evidence_dir / f"{species}-{role.name}.gif"
+            role_masks,
+            role,
+            evidence_dir / f"{species}-{role.name}.gif",
+            WILD_FRAME_WIDTH,
+            WILD_FRAME_HEIGHT,
         )
 
-    encoded_frames = [base.frame_bytes(mask) for mask in output_masks]
+    encoded_frames: list[bytes] = []
+    for index, (frame, mask) in enumerate(
+        zip(raster_frames, output_masks, strict=True)
+    ):
+        if len(frame.packed) != WILD_FRAME_BYTES:
+            raise ValueError(
+                f"{species}: frame {index} has {len(frame.packed)} packed bytes"
+            )
+        if raster_contract.decode_high_res_frame_bytes(frame.packed) != mask:
+            raise ValueError(f"{species}: frame {index} packing changed pixels")
+        encoded_frames.append(frame.packed)
+
     pack = build_wild_pack(species, definition["display_name"], encoded_frames)
     pack_path = private_output / f"{species}.k868"
     with pack_path.open("xb") as output:
@@ -199,38 +332,52 @@ def build_species(
         raise ValueError(
             f"{species}: expected pack ID {definition['pack_id']}, got {actual_pack_id}"
         )
+    if (
+        parsed.format_version != WILD_PACK_FORMAT_VERSION
+        or (parsed.width, parsed.height) != (WILD_FRAME_WIDTH, WILD_FRAME_HEIGHT)
+        or parsed.total_bytes != 31_120
+    ):
+        raise ValueError(f"{species}: serialized pack is not exact K868PK1 v2")
 
     contact_path = evidence_dir / f"{species}-48-frame-contact.png"
-    base.write_contact_sheet(output_masks, contact_path)
-    portrait_mask, portrait_bytes = make_portrait(identity_mask)
+    base.write_contact_sheet(
+        output_masks, contact_path, WILD_FRAME_WIDTH, WILD_FRAME_HEIGHT
+    )
+    portrait_bytes = raster.portrait.packed
+    if len(portrait_bytes) != PORTRAIT_BYTES:
+        raise ValueError(
+            f"{species}: portrait has {len(portrait_bytes)} bytes, expected 36"
+        )
     portrait_path = private_output / "portraits" / f"{species}-16x18.png"
-    write_portrait_png(portrait_mask, portrait_path)
+    portrait_path.parent.mkdir(parents=True, exist_ok=True)
+    with raster.portrait.path.open("rb") as source, portrait_path.open("xb") as output:
+        shutil.copyfileobj(source, output, length=1024 * 1024)
+    if base.sha256_file(portrait_path) != raster.portrait.source_sha256:
+        raise ValueError(f"{species}: exact 16x18 portrait copy changed bytes")
 
     geometry: list[dict[str, object]] = []
-    for source, raster_frame, mask in zip(
-        source_frames, raster_frames, output_masks, strict=True
-    ):
+    for raster_frame, mask in zip(raster_frames, output_masks, strict=True):
         left, top, right, bottom = base.bounds(mask)
         components = base.connected_components(mask)
         geometry.append(
             {
-                "role": source.role.name,
-                "phase": source.phase,
+                "role": raster_frame.role,
+                "phase": raster_frame.phase,
                 "bounds": [left, top, right, bottom],
                 "body_axis_x": base.median_x(mask),
                 "floor_y": bottom,
                 "ink_pixels": len(mask),
                 "components": len(components),
                 "smallest_component_pixels": min(map(len, components)),
-                "source_bounds": list(raster_frame.source_metrics.bounds),
-                "source_components": raster_frame.source_metrics.components,
+                "source_bounds": list(raster_frame.metrics.bounds),
+                "source_components": raster_frame.metrics.components,
                 "source_primary_fraction": round(
-                    raster_frame.source_metrics.primary_fraction, 4
+                    raster_frame.metrics.primary_fraction, 4
                 ),
             }
         )
 
-    return {
+    result = {
         "identity_key": species,
         "slug": definition["slug"],
         "display_name": definition["public_name"],
@@ -239,7 +386,8 @@ def build_species(
         "pack_id": actual_pack_id,
         "revision": WILD_PACK_REVISION,
         "format": "K868PK1",
-        "frame_canvas": [base.FRAME_WIDTH, base.FRAME_HEIGHT],
+        "format_version": WILD_PACK_FORMAT_VERSION,
+        "frame_canvas": [WILD_FRAME_WIDTH, WILD_FRAME_HEIGHT],
         "stored_frames": len(output_masks),
         "clips": len(base.ROLE_SPECS),
         "steps": len(base.ROLE_SPECS) * 4,
@@ -247,26 +395,23 @@ def build_species(
         "pack_bytes": len(pack),
         "pack_sha256": base.sha256_bytes(pack),
         "source_sha256": raster.source_sha256,
-        "identity_lock": {
-            "schema": raster_contract.IDENTITY_LOCK_SCHEMA,
-            "identity_sha256": identity_lock.identity_sha256,
-            "source_canvas": list(identity_lock.source_canvas),
-            "target_long_axis_pixels": identity_lock.target_long_axis_pixels,
-        },
+        "source_kind": source_kind,
+        "identity_lock": lock_record,
         "identity_idle_jaccard": round(idle_similarity, 4),
         "fixed_action_scale": raster.fixed_action_scale,
-        "raster_transform": "full-cell-nearest-neighbour-resize-then-translation",
-        "auto_crop": False,
-        "auto_shrink": False,
-        "source_cleanup": False,
+        "identity_raster_scale": identity_raster_scale,
+        "action_cell_raster_scale": action_cell_raster_scale,
+        "raster_transform": raster_transform,
+        "transform_controls": dict(TRANSFORM_CONTROLS),
         "role_source_scales": role_scales,
         "contact_sheet": contact_path.name,
         "contact_sheet_sha256": base.sha256_file(contact_path),
         "portrait": {
             "width": PORTRAIT_WIDTH,
             "height": PORTRAIT_HEIGHT,
-            "source": "approved-identity-master-64x64",
-            "resampling": "full-frame-nearest-neighbour-1-bit",
+            "source": "independently-authored-exact-16x18",
+            "source_sha256": raster.portrait.source_sha256,
+            "resampling": "none",
             "storage": "XBM least-significant-bit first, two bytes per row",
             "bytes": len(portrait_bytes),
             "bitmap_hex": portrait_bytes.hex(),
@@ -277,6 +422,10 @@ def build_species(
         "roles": role_evidence,
         "geometry": geometry,
     }
+    if action_source_layout is not None:
+        result["action_source_layout"] = action_source_layout
+        result["action_source_layout_sha256"] = action_source_layout_sha256
+    return result
 
 
 def verify_visual_acceptance(
@@ -346,8 +495,19 @@ def snapshot_species_sources(
     destination_dir.mkdir(parents=True, exist_ok=False)
     copied: dict[str, str] = {}
     for filename, expected_hash in sorted(expected_hashes.items()):
-        source = source_dir / species / filename
-        destination = destination_dir / filename
+        relative = Path(filename)
+        if (
+            relative.is_absolute()
+            or filename != relative.as_posix()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ValueError(f"{species}: invalid source snapshot path {filename!r}")
+        source_root = (source_dir / species).resolve()
+        source = (source_root / relative).resolve()
+        if not is_within(source, source_root) or not source.is_file():
+            raise ValueError(f"{species}/{filename}: source snapshot file is invalid")
+        destination = destination_dir / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
         with source.open("rb") as source_handle, destination.open("xb") as output:
             shutil.copyfileobj(source_handle, output, length=1024 * 1024)
         actual_hash = base.sha256_file(destination)
@@ -379,8 +539,9 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help=(
-            "Private kitsu-wild-identity-lock-v1 file pinning each approved "
-            "identity master and its fixed release scale."
+            "Private kitsu-wild-identity-lock-v2 direct-target file or "
+            "kitsu-wild-imagegen-import-lock-v1 file. The two schemas are "
+            "distinct and are never reinterpreted."
         ),
     )
     parser.add_argument(
@@ -388,6 +549,15 @@ def parse_args() -> argparse.Namespace:
         action="append",
         choices=tuple(WILD_SPECIES),
         help="Build only the named identity for a private checkpoint; repeat as needed.",
+    )
+    parser.add_argument(
+        "--imagegen-source-layout",
+        choices=("independent-frames", "one-action-sheets"),
+        default="independent-frames",
+        help=(
+            "Explicit ImageGen source tree: four independent files per action "
+            "or one canonical four-cell sheet per action. Never auto-detected."
+        ),
     )
     parser.add_argument(
         "--visual-acceptance",
@@ -414,9 +584,17 @@ def main() -> int:
             f"private output already exists and will not be overwritten: {private_output}"
         )
     selected = list(dict.fromkeys(args.species or WILD_SPECIES.keys()))
-    identity_locks = raster_contract.load_identity_locks(
-        identity_lock_path, selected
+    source_kind, identity_lock_schema, identity_locks = (
+        load_release_identity_locks(identity_lock_path, selected)
     )
+    if source_kind == "imagegen-locked-import":
+        if args.imagegen_source_layout == "one-action-sheets":
+            source_kind = "imagegen-one-action-sheets"
+    elif args.imagegen_source_layout != "independent-frames":
+        raise ValueError(
+            "--imagegen-source-layout one-action-sheets requires an "
+            "ImageGen import lock"
+        )
     private_output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=f".{private_output.name}.staging-", dir=private_output.parent
@@ -425,7 +603,11 @@ def main() -> int:
         results: list[dict[str, object]] = []
         for species in selected:
             result = build_species(
-                source_dir, staging_output, species, identity_locks[species]
+                source_dir,
+                staging_output,
+                species,
+                identity_locks[species],
+                source_kind,
             )
             snapshot = snapshot_species_sources(
                 source_dir,
@@ -445,45 +627,55 @@ def main() -> int:
                 args.visual_acceptance, results, project_root
             )
         manifest = {
-            "schema": "kitsu-wild-pack-private-release-v3",
+            "schema": PRIVATE_MANIFEST_SCHEMA,
             "identity_keys": selected,
             "complete_roster": selected == list(WILD_SPECIES),
             "public_static_assets_only": True,
             "private_action_assets": True,
             "private_pack_delivery": True,
             "format_security": "ordinary K868PK1 structural checks and CRC32",
-            "identity_lock_schema": raster_contract.IDENTITY_LOCK_SCHEMA,
+            "identity_lock_schema": identity_lock_schema,
             "identity_lock_sha256": base.sha256_file(identity_lock_path),
             "non_destructive_build": True,
             "display_contract": {
                 "device": "Heltec WiFi LoRa 32 V3/V3.2",
                 "oled_pixels": [64, 128],
-                "pack_frame_pixels": [64, 64],
-                "body_axis_x": base.BODY_AXIS_X,
-                "floor_y": base.FLOOR_Y,
+                "pack_format_version": WILD_PACK_FORMAT_VERSION,
+                "pack_frame_pixels": [WILD_FRAME_WIDTH, WILD_FRAME_HEIGHT],
+                "frame_bytes": WILD_FRAME_BYTES,
+                "body_axis_x": raster_contract.HIGH_RES_BODY_AXIS_X,
+                "floor_y": WILD_FLOOR_Y,
                 "safe_bounds": [
-                    base.SAFE_LEFT,
-                    base.SAFE_TOP,
-                    base.SAFE_RIGHT,
-                    base.FLOOR_Y,
+                    raster_contract.HIGH_RES_SAFE_LEFT,
+                    raster_contract.HIGH_RES_SAFE_TOP,
+                    raster_contract.HIGH_RES_SAFE_RIGHT,
+                    WILD_FLOOR_Y,
                 ],
+                "bottom_guard_rows": list(
+                    raster_contract.HIGH_RES_BOTTOM_GUARD_ROWS
+                ),
             },
             "raster_contract": {
-                "transform": (
-                    "full-cell-nearest-neighbour-resize-then-translation"
-                ),
-                "auto_crop": False,
-                "auto_shrink": False,
-                "source_cleanup": False,
+                "allowed_pack_transforms": [
+                    DIRECT_RASTER_TRANSFORM,
+                    IMAGEGEN_RASTER_TRANSFORM,
+                    IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM,
+                ],
+                **TRANSFORM_CONTROLS,
                 "source_snapshots": True,
-                "portrait_resampling": "full-frame-nearest-neighbour-1-bit",
+                "portrait_source": "independently-authored-exact-16x18",
+                "portrait_resampling": "none",
             },
             "animation_contract": {
                 "roles": [role.name for role in base.ROLE_SPECS],
                 "stored_frames_per_role": 4,
                 "required_unique_frames_per_role": 4,
-                "required_changed_pixels_per_role": 8,
-                "source_asset_per_role": True,
+                "required_changed_pixels_per_role": 16,
+                "source_asset_layouts": [
+                    "one-independent-file-per-phase",
+                    "one-fixed-four-cell-sheet-per-action",
+                ],
+                "independent_final_frame_per_phase": True,
                 "mechanical_validation_is_visual_acceptance": False,
             },
             "visual_acceptance_sha256": visual_acceptance_sha256,

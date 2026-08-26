@@ -6,7 +6,9 @@ use crate::crypto::sha256;
 
 const PACK_MAGIC: &[u8; 8] = b"K868PK1\0";
 const PACK_HEADER_BYTES: usize = 64;
-const MAXIMUM_PACK_BYTES: u64 = 2 * 1024 * 1024;
+const MAXIMUM_PACK_BYTES: u64 = 0x140000;
+const PACK_V1_FRAME_BYTES: usize = 512;
+const PACK_V2_FRAME_BYTES: usize = 640;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PetPackCatalogEntry {
@@ -183,18 +185,27 @@ fn validate_pack(input: &[u8], expected_pack_id: u32) -> anyhow::Result<()> {
     if input.len() < PACK_HEADER_BYTES || input.get(..8) != Some(PACK_MAGIC.as_slice()) {
         bail!("invalid K868PK1 header");
     }
-    const EXPECTED_PACK_BYTES: usize = PACK_HEADER_BYTES + (12 * 12) + (48 * 4) + (48 * 512);
-    if little_u16(input, 8)? != 1
-        || usize::from(little_u16(input, 10)?) != PACK_HEADER_BYTES
+    let version = little_u16(input, 8)?;
+    let width = little_u16(input, 32)?;
+    let height = little_u16(input, 34)?;
+    let frame_bytes = match (version, width, height) {
+        (1, 64, 64) => PACK_V1_FRAME_BYTES,
+        (2, 64, 80) => PACK_V2_FRAME_BYTES,
+        _ => bail!("unsupported K868PK1 version/canvas {version}/{width}x{height}"),
+    };
+    const CLIPS: usize = 12;
+    const STEPS: usize = 48;
+    const FRAMES: usize = 48;
+    let expected_pack_bytes =
+        PACK_HEADER_BYTES + (CLIPS * 12) + (STEPS * 4) + (FRAMES * frame_bytes);
+    if usize::from(little_u16(input, 10)?) != PACK_HEADER_BYTES
         || usize::try_from(little_u32(input, 12)?)? != input.len()
-        || input.len() != EXPECTED_PACK_BYTES
+        || input.len() != expected_pack_bytes
         || little_u32(input, 24)? != expected_pack_id
         || little_u32(input, 28)? == 0
-        || little_u16(input, 32)? != 64
-        || little_u16(input, 34)? != 64
-        || little_u16(input, 36)? != 48
-        || little_u16(input, 38)? != 12
-        || little_u32(input, 40)? != 48
+        || usize::from(little_u16(input, 36)?) != FRAMES
+        || usize::from(little_u16(input, 38)?) != CLIPS
+        || usize::try_from(little_u32(input, 40)?)? != STEPS
         || little_u32(input, 44)? != 0
     {
         bail!("unsupported K868PK1 structure");
@@ -211,6 +222,43 @@ fn validate_pack(input: &[u8], expected_pack_id: u32) -> anyhow::Result<()> {
         || display_name[terminator..].iter().any(|byte| *byte != 0)
     {
         bail!("invalid K868PK1 display name");
+    }
+
+    let clips_offset = PACK_HEADER_BYTES;
+    let steps_offset = clips_offset + CLIPS * 12;
+    let mut has_base_idle = false;
+    for index in 0..CLIPS {
+        let offset = clips_offset + index * 12;
+        let role = *input.get(offset).context("truncated clip role")?;
+        let variant = *input.get(offset + 1).context("truncated clip variant")?;
+        let mode = *input.get(offset + 2).context("truncated clip mode")?;
+        let weight = *input.get(offset + 3).context("truncated clip weight")?;
+        let first_step = usize::try_from(little_u32(input, offset + 4)?)?;
+        let count = usize::from(little_u16(input, offset + 8)?);
+        let reserved = little_u16(input, offset + 10)?;
+        if role > 11
+            || mode > 3
+            || weight == 0
+            || count == 0
+            || count > 256
+            || first_step.checked_add(count).is_none_or(|end| end > STEPS)
+            || (mode == 0 && count != 1)
+            || reserved != 0
+        {
+            bail!("invalid K868PK1 clip {index}");
+        }
+        has_base_idle |= role == 0 && variant == 0;
+    }
+    if !has_base_idle {
+        bail!("K868PK1 pack has no base IDLE clip");
+    }
+    for index in 0..STEPS {
+        let offset = steps_offset + index * 4;
+        let frame_index = usize::from(little_u16(input, offset)?);
+        let duration_ms = little_u16(input, offset + 2)?;
+        if frame_index >= FRAMES || !(100..=60_000).contains(&duration_ms) {
+            bail!("invalid K868PK1 animation step {index}");
+        }
     }
 
     let payload_crc = little_u32(input, 16)?;
@@ -241,21 +289,43 @@ pub fn crc32(input: &[u8]) -> u32 {
 mod tests {
     use super::*;
 
-    fn test_pack(pack_id: u32) -> Vec<u8> {
-        let mut bytes = vec![0_u8; PACK_HEADER_BYTES + (12 * 12) + (48 * 4) + (48 * 512)];
+    fn test_pack(pack_id: u32, version: u16) -> Vec<u8> {
+        let (height, frame_bytes) = match version {
+            1 => (64_u16, PACK_V1_FRAME_BYTES),
+            2 => (80_u16, PACK_V2_FRAME_BYTES),
+            _ => panic!("unsupported test pack version"),
+        };
+        let mut bytes =
+            vec![0_u8; PACK_HEADER_BYTES + (12 * 12) + (48 * 4) + (48 * frame_bytes)];
         bytes[..8].copy_from_slice(PACK_MAGIC);
-        bytes[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[8..10].copy_from_slice(&version.to_le_bytes());
         bytes[10..12].copy_from_slice(&(PACK_HEADER_BYTES as u16).to_le_bytes());
         let total = u32::try_from(bytes.len()).unwrap();
         bytes[12..16].copy_from_slice(&total.to_le_bytes());
         bytes[24..28].copy_from_slice(&pack_id.to_le_bytes());
         bytes[28..32].copy_from_slice(&2_u32.to_le_bytes());
         bytes[32..34].copy_from_slice(&64_u16.to_le_bytes());
-        bytes[34..36].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[34..36].copy_from_slice(&height.to_le_bytes());
         bytes[36..38].copy_from_slice(&48_u16.to_le_bytes());
         bytes[38..40].copy_from_slice(&12_u16.to_le_bytes());
         bytes[40..44].copy_from_slice(&48_u32.to_le_bytes());
         bytes[48..53].copy_from_slice(b"Frog\0");
+        for role in 0..12_usize {
+            let offset = PACK_HEADER_BYTES + role * 12;
+            bytes[offset] = u8::try_from(role).unwrap();
+            bytes[offset + 2] = if role == 0 { 2 } else { 1 };
+            bytes[offset + 3] = 1;
+            bytes[offset + 4..offset + 8]
+                .copy_from_slice(&u32::try_from(role * 4).unwrap().to_le_bytes());
+            bytes[offset + 8..offset + 10].copy_from_slice(&4_u16.to_le_bytes());
+        }
+        let steps_offset = PACK_HEADER_BYTES + 12 * 12;
+        for step in 0..48_usize {
+            let offset = steps_offset + step * 4;
+            bytes[offset..offset + 2]
+                .copy_from_slice(&u16::try_from(step).unwrap().to_le_bytes());
+            bytes[offset + 2..offset + 4].copy_from_slice(&500_u16.to_le_bytes());
+        }
         let payload_crc = crc32(&bytes[PACK_HEADER_BYTES..]);
         bytes[16..20].copy_from_slice(&payload_crc.to_le_bytes());
         let mut header = bytes[8..PACK_HEADER_BYTES].to_vec();
@@ -267,13 +337,24 @@ mod tests {
 
     #[test]
     fn validates_exact_pack_identity_and_both_crcs() {
-        let pack = test_pack(0x5CAC86A3);
+        let pack = test_pack(0x5CAC86A3, 1);
         assert!(validate_pack(&pack, 0x5CAC86A3).is_ok());
         assert!(validate_pack(&pack, 0x13793DC7).is_err());
 
         let mut corrupt = pack;
         *corrupt.last_mut().unwrap() ^= 1;
         assert!(validate_pack(&corrupt, 0x5CAC86A3).is_err());
+    }
+
+    #[test]
+    fn accepts_native_64_by_80_v2_and_rejects_mismatched_canvas() {
+        let pack = test_pack(0x5CAC86A3, 2);
+        assert_eq!(pack.len(), 31_120);
+        assert!(validate_pack(&pack, 0x5CAC86A3).is_ok());
+
+        let mut mismatched = pack;
+        mismatched[34..36].copy_from_slice(&64_u16.to_le_bytes());
+        assert!(validate_pack(&mismatched, 0x5CAC86A3).is_err());
     }
 
     #[test]

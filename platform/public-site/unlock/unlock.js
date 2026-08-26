@@ -17,13 +17,14 @@ export const MAX_PACK_RESPONSE_BYTES = 2_097_152;
 
 const K868_MAGIC = Object.freeze([0x4b, 0x38, 0x36, 0x38, 0x50, 0x4b, 0x31, 0x00]);
 const K868 = Object.freeze({
-  version: 1,
   headerBytes: 64,
   clipBytes: 12,
   stepBytes: 4,
-  frameBytes: 512,
-  width: 64,
-  height: 64,
+  slotBytes: 0x140000,
+  versions: Object.freeze({
+    1: Object.freeze({ width: 64, height: 64, frameBytes: 512 }),
+    2: Object.freeze({ width: 64, height: 80, frameBytes: 640 }),
+  }),
   frames: 48,
   clips: 12,
   steps: 48,
@@ -170,7 +171,7 @@ export function validateK868Pack(bytes, expectedPackId = null) {
   if (!(bytes instanceof Uint8Array)) {
     throw protocolError("invalid_download", "The downloaded pack is not a byte array.");
   }
-  if (bytes.byteLength < K868.headerBytes || bytes.byteLength > MAX_PACK_RESPONSE_BYTES) {
+  if (bytes.byteLength < K868.headerBytes || bytes.byteLength > K868.slotBytes) {
     throw protocolError("invalid_download", "The downloaded pack has an invalid size.");
   }
   if (K868_MAGIC.some((value, index) => bytes[index] !== value)) {
@@ -191,15 +192,16 @@ export function validateK868Pack(bytes, expectedPackId = null) {
   const clipCount = view.getUint16(0x26, true);
   const stepCount = view.getUint32(0x28, true);
   const flags = view.getUint32(0x2c, true);
+  const frameFormat = K868.versions[version];
 
   if (
-    version !== K868.version
+    !frameFormat
     || headerBytes !== K868.headerBytes
     || totalBytes !== bytes.byteLength
     || packId === "00000000"
     || revision === 0
-    || width !== K868.width
-    || height !== K868.height
+    || width !== frameFormat?.width
+    || height !== frameFormat?.height
     || frameCount !== K868.frames
     || clipCount !== K868.clips
     || stepCount !== K868.steps
@@ -217,7 +219,7 @@ export function validateK868Pack(bytes, expectedPackId = null) {
   const expectedTotal = K868.headerBytes
     + clipCount * K868.clipBytes
     + stepCount * K868.stepBytes
-    + frameCount * K868.frameBytes;
+    + frameCount * frameFormat.frameBytes;
   if (expectedTotal !== bytes.byteLength || crc32(bytes.subarray(K868.headerBytes)) !== payloadCrc) {
     throw protocolError("invalid_download", "The downloaded pack failed its payload CRC check.");
   }
@@ -276,7 +278,14 @@ export function validateK868Pack(bytes, expectedPackId = null) {
       throw protocolError("invalid_download", "The downloaded pack has an invalid animation step.");
     }
   }
-  return Object.freeze({ bytes: totalBytes, packId, revision });
+  return Object.freeze({
+    bytes: totalBytes,
+    packId,
+    revision,
+    version,
+    width,
+    height,
+  });
 }
 
 export function buildRedemptionRequest(code, verification) {

@@ -33,6 +33,47 @@ function localFile(name, source, declaredSize = source.byteLength) {
   };
 }
 
+function testCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) === 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function promoteToV2(source) {
+  const original = Uint8Array.from(source);
+  const originalView = new DataView(
+    original.buffer,
+    original.byteOffset,
+    original.byteLength,
+  );
+  const frameCount = originalView.getUint16(0x24, true);
+  const clipCount = originalView.getUint16(0x26, true);
+  const stepCount = originalView.getUint32(0x28, true);
+  const framesOffset = 64 + clipCount * 12 + stepCount * 4;
+  const bytes = new Uint8Array(original.byteLength + frameCount * (640 - 512));
+  bytes.set(original.subarray(0, framesOffset));
+  for (let index = 0; index < frameCount; index += 1) {
+    bytes.set(
+      original.subarray(framesOffset + index * 512, framesOffset + (index + 1) * 512),
+      framesOffset + index * 640,
+    );
+  }
+  const view = new DataView(bytes.buffer);
+  view.setUint16(0x08, 2, true);
+  view.setUint32(0x0c, bytes.byteLength, true);
+  view.setUint16(0x22, 80, true);
+  view.setUint32(0x10, testCrc32(bytes.subarray(64)), true);
+  const headerForCrc = bytes.slice(8, 64);
+  headerForCrc.fill(0, 0x14 - 8, 0x18 - 8);
+  view.setUint32(0x14, testCrc32(headerForCrc), true);
+  return bytes;
+}
+
 test("official companion catalog pins only Cat, Fox, and Dog to the one pack slot", async () => {
   assert.deepEqual(Object.keys(PACK_CATALOG).sort(), ["cat", "dog", "fox"]);
   assert.deepEqual(PACK_SLOT, {
@@ -366,6 +407,32 @@ test("a local unlocked .k868 file is fully parsed, hashed, and bound to the exis
   await reverifyPack(pack);
 });
 
+test("native 64x80 v2 packs use the same bounded slot and validator", async () => {
+  const legacy = new Uint8Array(await readFile(new URL("assets/packs/fox.k868", root)));
+  const bytes = promoteToV2(legacy);
+  const metadata = validateUnlockedPackBytes(bytes);
+  assert.equal(metadata.version, 2);
+  assert.equal(metadata.width, 64);
+  assert.equal(metadata.height, 80);
+  assert.equal(metadata.totalBytes, 31_120);
+  assert.ok(metadata.totalBytes < PACK_SLOT.bytes);
+
+  const pack = await loadUnlockedPack(localFile("native-fox.k868", bytes));
+  assert.equal(pack.record.offset, PACK_SLOT.offset);
+  assert.equal(pack.record.bytes, 31_120);
+  await reverifyPack(pack);
+
+  const loader = {
+    async readFlash(offset, length) {
+      assert.equal(offset, PACK_SLOT.offset);
+      return bytes.slice(0, length);
+    },
+  };
+  const installed = await inspectInstalledPack(loader);
+  assert.equal(installed.status, "valid");
+  assert.equal(installed.bytes, 31_120);
+});
+
 test("unlocked companion files fail closed on naming, size, header, layout, or CRC changes", async () => {
   const valid = new Uint8Array(await readFile(new URL("assets/packs/fox.k868", root)));
 
@@ -378,7 +445,7 @@ test("unlocked companion files fail closed on naming, size, header, layout, or C
 
   const badVersion = valid.slice();
   new DataView(badVersion.buffer).setUint16(0x08, 2, true);
-  assert.throws(() => validateUnlockedPackBytes(badVersion), /unsupported companion pack version 2/);
+  assert.throws(() => validateUnlockedPackBytes(badVersion), /version\/canvas 2\/64x64/);
 
   const badLength = valid.slice();
   new DataView(badLength.buffer).setUint32(0x0c, valid.byteLength - 1, true);

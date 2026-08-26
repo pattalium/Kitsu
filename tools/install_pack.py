@@ -18,13 +18,16 @@ from pathlib import Path
 
 
 PACK_MAGIC = b"K868PK1\0"
-PACK_VERSION = 1
+PACK_V1 = 1
+PACK_V2 = 2
 PACK_HEADER_BYTES = 64
 PACK_CLIP_BYTES = 12
 PACK_STEP_BYTES = 4
 PACK_FRAME_WIDTH = 64
-PACK_FRAME_HEIGHT = 64
-PACK_FRAME_BYTES = PACK_FRAME_WIDTH * PACK_FRAME_HEIGHT // 8
+PACK_V1_FRAME_HEIGHT = 64
+PACK_V2_FRAME_HEIGHT = 80
+PACK_V1_FRAME_BYTES = PACK_FRAME_WIDTH * PACK_V1_FRAME_HEIGHT // 8
+PACK_V2_FRAME_BYTES = PACK_FRAME_WIDTH * PACK_V2_FRAME_HEIGHT // 8
 PACK_MAX_CLIPS = 512
 PACK_MAX_STEPS = 65535
 PACK_MAX_STEPS_PER_CLIP = 256
@@ -39,7 +42,7 @@ PACK_FLASH_END = PACK_FLASH_OFFSET + PACK_PARTITION_BYTES
 
 
 class PackValidationError(ValueError):
-    """Raised when bytes do not conform to the Kitsu868 pack v1 format."""
+    """Raised when bytes do not conform to a supported Kitsu868 pack format."""
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,7 @@ class PackInfo:
     display_name: str
     pack_id: int
     revision: int
+    format_version: int
     width: int
     height: int
     frame_count: int
@@ -74,7 +78,7 @@ def _decode_display_name(encoded: bytes) -> str:
 
 
 def validate_pack(path: Path | str) -> PackInfo:
-    """Fully validate a .k868 v1 file and return its trusted metadata."""
+    """Fully validate a .k868 v1/v2 file and return its trusted metadata."""
 
     pack_path = Path(path).expanduser().resolve()
     if pack_path.suffix.lower() != ".k868":
@@ -118,8 +122,20 @@ def validate_pack(path: Path | str) -> PackInfo:
 
     if magic != PACK_MAGIC:
         raise PackValidationError("invalid .k868 v1 magic")
-    if version != PACK_VERSION:
-        raise PackValidationError(f"unsupported pack version {version}")
+    if version == PACK_V1 and (width, height) == (
+        PACK_FRAME_WIDTH,
+        PACK_V1_FRAME_HEIGHT,
+    ):
+        frame_bytes = PACK_V1_FRAME_BYTES
+    elif version == PACK_V2 and (width, height) == (
+        PACK_FRAME_WIDTH,
+        PACK_V2_FRAME_HEIGHT,
+    ):
+        frame_bytes = PACK_V2_FRAME_BYTES
+    else:
+        raise PackValidationError(
+            f"unsupported pack version/canvas {version}/{width}x{height}"
+        )
     if header_bytes != PACK_HEADER_BYTES:
         raise PackValidationError(f"invalid header size {header_bytes}")
     if total_bytes != len(pack):
@@ -134,8 +150,6 @@ def validate_pack(path: Path | str) -> PackInfo:
         raise PackValidationError("pack ID must be nonzero")
     if revision == 0:
         raise PackValidationError("pack revision must be nonzero")
-    if (width, height) != (PACK_FRAME_WIDTH, PACK_FRAME_HEIGHT):
-        raise PackValidationError(f"unsupported frame canvas {width}x{height}")
     if frame_count == 0:
         raise PackValidationError("pack contains no frames")
     if clip_count == 0 or clip_count > PACK_MAX_CLIPS:
@@ -151,7 +165,7 @@ def validate_pack(path: Path | str) -> PackInfo:
         PACK_HEADER_BYTES
         + clip_count * PACK_CLIP_BYTES
         + step_count * PACK_STEP_BYTES
-        + frame_count * PACK_FRAME_BYTES
+        + frame_count * frame_bytes
     )
     if total_bytes != expected_total:
         raise PackValidationError(
@@ -224,6 +238,7 @@ def validate_pack(path: Path | str) -> PackInfo:
         display_name=display_name,
         pack_id=pack_id,
         revision=revision,
+        format_version=version,
         width=width,
         height=height,
         frame_count=frame_count,
@@ -287,7 +302,7 @@ def esptool_command(info: PackInfo, port: str, baud: int) -> list[str]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate a Kitsu868 .k868 v1 pack, then write only the raw "
+            "Validate a Kitsu868 .k868 v1/v2 pack, then write only the raw "
             "single-pack slot at flash offset 0x670000."
         )
     )
@@ -314,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "PACK_VALID "
         f'name="{info.display_name}" id={info.pack_id:08X} '
-        f"revision={info.revision} frames={info.frame_count} "
+        f"revision={info.revision} format={info.format_version} "
+        f"canvas={info.width}x{info.height} frames={info.frame_count} "
         f"clips={info.clip_count} steps={info.step_count} bytes={info.total_bytes} "
         f"payload_crc={info.payload_crc32:08X} header_crc={info.header_crc32:08X}"
     )
