@@ -78,6 +78,19 @@ IMAGEGEN_RECOMMENDED_BLACK_COVERAGE_PER_MILLE = 180
 IMAGEGEN_COVERAGE_STABILITY_PER_MILLE = 20
 IMAGEGEN_MAX_AMBIGUOUS_SOURCE_FRACTION = 0.55
 IMAGEGEN_MAX_THRESHOLD_SENSITIVE_FRACTION = 0.05
+IMAGEGEN_ACTION_SHEET_LAYOUT_SCHEMA = "kitsu-imagegen-action-sheet-2x2-v1"
+IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS = (1122, 1402)
+IMAGEGEN_ACTION_SHEET_PHASE_RECTS = (
+    (0, 0, 560, 700),
+    (562, 0, 1122, 700),
+    (0, 702, 560, 1402),
+    (562, 702, 1122, 1402),
+)
+IMAGEGEN_ACTION_SHEET_GUTTER_RECTS = (
+    (560, 0, 562, 1402),
+    (0, 700, 1122, 702),
+)
+IMAGEGEN_ACTION_SHEET_CELL_SAFE_GUARD_PIXELS = SOURCE_EDGE_GUARD + 1
 
 # Direct-at-target art has no builder scale knob.  These are fail-closed
 # plausibility gates for camera/identity pops, not permission to rescale a
@@ -913,6 +926,41 @@ def imagegen_import_transform_sha256(transform: ImageGenImportTransform) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def imagegen_action_sheet_layout_record() -> dict[str, object]:
+    """Canonical four-phase layout for one—and only one—named action."""
+
+    return {
+        "cell_outer_safe_guard_pixels": (
+            IMAGEGEN_ACTION_SHEET_CELL_SAFE_GUARD_PIXELS
+        ),
+        "cell_transform": "identity-pinned-box-area-coverage-fixed-offset",
+        "fixed_cell_extraction": True,
+        "gutter_rects": [list(rect) for rect in IMAGEGEN_ACTION_SHEET_GUTTER_RECTS],
+        "per_cell_cleanup": False,
+        "per_cell_crop": False,
+        "per_cell_fit": False,
+        "per_cell_offset": False,
+        "per_cell_threshold": False,
+        "phase_order": [0, 1, 2, 3],
+        "phase_viewports": [
+            list(rect) for rect in IMAGEGEN_ACTION_SHEET_PHASE_RECTS
+        ],
+        "schema": IMAGEGEN_ACTION_SHEET_LAYOUT_SCHEMA,
+        "source_asset_per_action": True,
+        "source_canvas": list(IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS),
+    }
+
+
+def imagegen_action_sheet_layout_sha256() -> str:
+    payload = json.dumps(
+        imagegen_action_sheet_layout_record(),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def validate_imagegen_import_transform(
     transform: ImageGenImportTransform, label: str
 ) -> None:
@@ -1289,6 +1337,195 @@ def load_imagegen_import_frame(
     )
 
 
+def _load_imagegen_action_sheet_luma(
+    path: Path, transform: ImageGenImportTransform, label: str
+) -> Image.Image:
+    """Composite one action sheet without extracting or writing partial files."""
+
+    validate_imagegen_import_transform(transform, f"{label}/transform")
+    if transform.source_canvas != IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS:
+        raise RasterContractError(
+            f"{label}: action-sheet identity source family must be exact "
+            f"{IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS}"
+        )
+    with Image.open(path) as image:
+        if image.size != IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS:
+            raise RasterContractError(
+                f"{label}: action sheet canvas {image.size} differs from exact "
+                f"{IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS}; per-action resize is forbidden"
+            )
+        if image.mode not in {"RGB", "RGBA"}:
+            raise RasterContractError(
+                f"{label}: action sheet expects RGB/RGBA, got {image.mode!r}"
+            )
+        rgba = image.convert("RGBA")
+        background = Image.new(
+            "RGBA", image.size, (*transform.alpha_background, 255)
+        )
+        return Image.alpha_composite(background, rgba).convert("RGB").convert("L")
+
+
+def _require_blank_action_sheet_gutters(
+    gray: Image.Image, transform: ImageGenImportTransform, label: str
+) -> None:
+    threshold = transform.black_coverage_threshold_per_mille
+    for gutter in IMAGEGEN_ACTION_SHEET_GUTTER_RECTS:
+        values = gray.crop(gutter).tobytes()
+        if any(_coverage_is_ink(value, threshold) for value in values):
+            raise RasterContractError(
+                f"{label}: center gutter {gutter} contains ink; labels, dividers, "
+                "grid lines, and cross-cell artwork are forbidden"
+            )
+
+
+def _load_imagegen_action_cell(
+    path: Path,
+    gray: Image.Image,
+    species: str,
+    role: str,
+    phase: int,
+    transform: ImageGenImportTransform,
+    identity_mask: set[tuple[int, int]],
+) -> HighResFrame:
+    """Import one fixed cell; no subject detection affects its transform."""
+
+    label = f"{species}/{role}/{phase}"
+    rect = IMAGEGEN_ACTION_SHEET_PHASE_RECTS[phase]
+    cell = gray.crop(rect)
+    cell_width, cell_height = cell.size
+    if (cell_width, cell_height) != (560, 700):
+        raise RasterContractError(f"{label}: internal action viewport changed")
+
+    threshold = transform.black_coverage_threshold_per_mille
+    source_values = list(cell.tobytes())
+    source_mask = {
+        (index % cell_width, index // cell_width)
+        for index, value in enumerate(source_values)
+        if _coverage_is_ink(value, threshold)
+    }
+    # This raw-cell gate catches outer-edge clipping, labels, dividers, debris,
+    # and a second comparable animal before any area sampling can hide them.
+    validate_source_mask(source_mask, cell_width, cell_height, f"{label}/raw-cell")
+
+    histogram = cell.histogram()
+    nonwhite = sum(histogram[:250])
+    ambiguous = sum(histogram[17:239])
+    ambiguous_fraction = ambiguous / nonwhite if nonwhite else 0.0
+    if ambiguous_fraction > IMAGEGEN_MAX_AMBIGUOUS_SOURCE_FRACTION:
+        raise RasterContractError(
+            f"{label}: {ambiguous_fraction:.3f} of nonwhite cell pixels are "
+            "mid-tone/antialiased; regenerate the complete named action"
+        )
+
+    reduced = cell.resize(IMAGEGEN_OUTPUT_CANVAS, Image.Resampling.BOX)
+    reduced_values = list(reduced.tobytes())
+    unshifted_mask = {
+        (index % HIGH_RES_FRAME_WIDTH, index // HIGH_RES_FRAME_WIDTH)
+        for index, value in enumerate(reduced_values)
+        if _coverage_is_ink(value, threshold)
+    }
+    offset_x, offset_y = transform.output_offset
+    mask = {(x + offset_x, y + offset_y) for x, y in unshifted_mask}
+    if any(
+        x < 0
+        or x >= HIGH_RES_FRAME_WIDTH
+        or y < 0
+        or y >= HIGH_RES_FRAME_HEIGHT
+        for x, y in mask
+    ):
+        raise RasterContractError(
+            f"{label}: the identity-locked output offset "
+            f"{transform.output_offset} clips this phase; the complete action "
+            "is rejected and per-cell fitting is forbidden"
+        )
+
+    low_threshold = max(0, threshold - IMAGEGEN_COVERAGE_STABILITY_PER_MILLE)
+    high_threshold = min(1000, threshold + IMAGEGEN_COVERAGE_STABILITY_PER_MILLE)
+    low_mask = {
+        index
+        for index, value in enumerate(reduced_values)
+        if _coverage_is_ink(value, low_threshold)
+    }
+    high_mask = {
+        index
+        for index, value in enumerate(reduced_values)
+        if _coverage_is_ink(value, high_threshold)
+    }
+    sensitive_pixels = len(low_mask ^ high_mask)
+    maximum_sensitive = max(
+        4,
+        math.ceil(
+            len(unshifted_mask) * IMAGEGEN_MAX_THRESHOLD_SENSITIVE_FRACTION
+        ),
+    )
+    if sensitive_pixels > maximum_sensitive:
+        raise RasterContractError(
+            f"{label}: {sensitive_pixels} target pixels are coverage-threshold "
+            f"sensitive (maximum {maximum_sensitive}); regenerate the action"
+        )
+
+    metrics = validate_high_res_mask(mask, label)
+    apparent_scale = _high_res_apparent_scale(mask, identity_mask)
+    lower, upper = HIGH_RES_ROLE_SCALE_ENVELOPES[role]
+    if not lower <= apparent_scale <= upper:
+        raise RasterContractError(
+            f"{label}: apparent identity scale {apparent_scale:.3f} is outside "
+            f"[{lower:.3f}, {upper:.3f}]; one bad cell rejects the action"
+        )
+    similarity = jaccard(identity_mask, mask)
+    minimum = ROLE_IDENTITY_JACCARD_MINIMUM[role]
+    if similarity < minimum:
+        raise RasterContractError(
+            f"{label}: identity overlap {similarity:.3f} is below role floor "
+            f"{minimum:.3f}; one bad cell rejects the action"
+        )
+
+    # The byte-exact sheet hash is kept in SpeciesRaster.source_sha256.  This
+    # composited-region hash proves the four fixed viewports are independently
+    # populated and lets duplicate-cell gates run before serialization.
+    source_region_sha256 = hashlib.sha256(cell.tobytes()).hexdigest()
+    packed = high_res_frame_bytes(mask)
+    return HighResFrame(
+        path=path,
+        role=role,
+        phase=phase,
+        source_sha256=source_region_sha256,
+        mask=frozenset(mask),
+        metrics=metrics,
+        apparent_scale_ratio=apparent_scale,
+        identity_jaccard=similarity,
+        packed=packed,
+    )
+
+
+def load_imagegen_action_sheet_frames(
+    path: Path,
+    species: str,
+    role: base.RoleSpec,
+    transform: ImageGenImportTransform,
+    identity_mask: set[tuple[int, int]],
+) -> tuple[HighResFrame, ...]:
+    """Fail the complete named action before returning any phase."""
+
+    label = f"{species}/{role.name}"
+    gray = _load_imagegen_action_sheet_luma(path, transform, label)
+    _require_blank_action_sheet_gutters(gray, transform, label)
+    frames = [
+        _load_imagegen_action_cell(
+            path,
+            gray,
+            species,
+            role.name,
+            phase,
+            transform,
+            identity_mask,
+        )
+        for phase in range(REQUIRED_FRAMES_PER_ROLE)
+    ]
+    validate_high_res_four_frame_role(role, frames)
+    return tuple(frames)
+
+
 def decode_high_res_frame_bytes(payload: bytes) -> set[tuple[int, int]]:
     """Decode one format-v2 frame without interpreting or changing pixels."""
 
@@ -1469,7 +1706,19 @@ def validate_high_res_four_frame_role(
 ) -> None:
     """Reject missing, duplicate, scale-popping, or incoherent phase sets."""
 
-    label = f"{frames[0].path.parent.parent.name}/{role.name}" if frames else role.name
+    if frames:
+        # Independent frames live under <species>/<role>/, whereas all four
+        # action-sheet frames deliberately point at <species>/<role>.png.
+        # Keep diagnostics correct without inferring which loader to invoke.
+        first_path = frames[0].path
+        owner = (
+            first_path.parent.name
+            if all(frame.path == first_path for frame in frames)
+            else first_path.parent.parent.name
+        )
+        label = f"{owner}/{role.name}"
+    else:
+        label = role.name
     phases = [frame.phase for frame in frames]
     if len(frames) != REQUIRED_FRAMES_PER_ROLE or phases != list(
         range(REQUIRED_FRAMES_PER_ROLE)
@@ -1759,4 +2008,95 @@ def load_high_res_generated_species(
         frames=tuple(frames),
         source_sha256=source_hashes,
         fixed_action_scale=fixed_scale,
+    )
+
+
+def load_high_res_generated_action_sheet_species(
+    source_dir: Path,
+    species: str,
+    lock: ImageGenImportLock,
+    roles: tuple[base.RoleSpec, ...] = base.ROLE_SPECS,
+) -> HighResSpeciesRaster:
+    """Validate one generated source file per action, with four fixed cells."""
+
+    if species in PROTECTED_STARTERS:
+        raise RasterContractError(
+            f"{species}: protected legacy starter cannot enter action-sheet import"
+        )
+    if lock.identity_key != species or not lock.approved:
+        raise RasterContractError(
+            f"{species}: approved ImageGen identity lock is required"
+        )
+    validate_imagegen_import_transform(lock.transform, f"{species}/transform")
+    if lock.transform.source_canvas != IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS:
+        raise RasterContractError(
+            f"{species}: action-sheet path requires identity/source family "
+            f"{IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS}"
+        )
+    if imagegen_import_transform_sha256(lock.transform) != lock.transform_sha256:
+        raise RasterContractError(
+            f"{species}: in-memory ImageGen transform differs from locked hash"
+        )
+
+    species_dir = source_dir / species
+    expected_top = {
+        "identity.png",
+        "portrait.png",
+        *(f"{role.name}.png" for role in roles),
+    }
+    actual_top = {path.name for path in species_dir.iterdir()}
+    if actual_top != expected_top:
+        raise RasterContractError(
+            f"{species}: exact one-action-per-file tree required; "
+            f"missing={sorted(expected_top - actual_top)} "
+            f"unexpected={sorted(actual_top - expected_top)}"
+        )
+
+    identity_path = species_dir / "identity.png"
+    if sha256_file(identity_path) != lock.identity_source_sha256:
+        raise RasterContractError(
+            f"{species}: generated identity source SHA-256 differs from lock"
+        )
+    identity = load_imagegen_import_frame(
+        identity_path,
+        "identity",
+        -1,
+        lock.transform,
+    )
+    if hashlib.sha256(identity.packed).hexdigest() != lock.identity_frame_sha256:
+        raise RasterContractError(
+            f"{species}: imported identity 64x80 SHA-256 differs from lock"
+        )
+    portrait = load_high_res_portrait(species_dir / "portrait.png", species)
+    identity_mask = set(identity.mask)
+    source_hashes = {
+        "identity.png": identity.source_sha256,
+        "portrait.png": portrait.source_sha256,
+    }
+
+    frames: list[HighResFrame] = []
+    for role in roles:
+        path = species_dir / f"{role.name}.png"
+        if not path.is_file():
+            raise RasterContractError(
+                f"{species}/{role.name}: exact action sheet is missing"
+            )
+        role_frames = load_imagegen_action_sheet_frames(
+            path,
+            species,
+            role,
+            lock.transform,
+            identity_mask,
+        )
+        # Nothing is written or returned until every phase of every selected
+        # role passes, so a late failure cannot leave a partial extraction.
+        source_hashes[path.name] = sha256_file(path)
+        frames.extend(role_frames)
+
+    return HighResSpeciesRaster(
+        identity=identity,
+        portrait=portrait,
+        frames=tuple(frames),
+        source_sha256=source_hashes,
+        fixed_action_scale=HIGH_RES_FRAME_WIDTH / 560,
     )

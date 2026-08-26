@@ -220,6 +220,79 @@ def write_valid_imagegen_sources(
     )
 
 
+def write_imagegen_action_sheet(
+    path: Path,
+    logical_masks: list[set[tuple[int, int]]],
+) -> None:
+    """Write one named action without changing any cell's fixed camera."""
+
+    if len(logical_masks) != 4:
+        raise ValueError("an action sheet requires exactly four logical masks")
+    sheet = Image.new(
+        "RGB", contract.IMAGEGEN_ACTION_SHEET_SOURCE_CANVAS, "white"
+    )
+    for mask, rect in zip(
+        logical_masks, contract.IMAGEGEN_ACTION_SHEET_PHASE_RECTS
+    ):
+        logical = Image.new(
+            "1",
+            (contract.HIGH_RES_FRAME_WIDTH, contract.HIGH_RES_FRAME_HEIGHT),
+            1,
+        )
+        pixels = logical.load()
+        for x, y in mask:
+            pixels[x, y] = 0
+        left, top, right, bottom = rect
+        cell = logical.resize(
+            (right - left, bottom - top), Image.Resampling.NEAREST
+        ).convert("RGB")
+        sheet.paste(cell, (left, top))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path)
+
+
+def write_valid_imagegen_action_sheet_sources(
+    root: Path, species: str
+) -> contract.ImageGenImportLock:
+    transform = contract.recommended_imagegen_import_transform()
+    species_dir = root / species
+    species_dir.mkdir(parents=True)
+    identity_path = species_dir / "identity.png"
+    write_imagegen_raw(identity_path, transform, imagegen_logical_outline())
+
+    portrait = Image.new(
+        "1",
+        (contract.HIGH_RES_PORTRAIT_WIDTH, contract.HIGH_RES_PORTRAIT_HEIGHT),
+        1,
+    )
+    ImageDraw.Draw(portrait).rectangle((4, 3, 11, 15), fill=0)
+    portrait.save(species_dir / "portrait.png")
+    write_imagegen_action_sheet(
+        species_dir / "idle.png",
+        [imagegen_logical_outline(phase) for phase in range(4)],
+    )
+
+    identity = contract.load_imagegen_import_frame(
+        identity_path, "identity", -1, transform
+    )
+    return contract.ImageGenImportLock(
+        identity_key=species,
+        identity_source_sha256=contract.sha256_file(identity_path),
+        identity_frame_sha256=hashlib.sha256(identity.packed).hexdigest(),
+        transform_sha256=contract.imagegen_import_transform_sha256(transform),
+        transform=transform,
+        approved=True,
+    )
+
+
+def byte_exact_tree_snapshot(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): contract.sha256_file(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 class CompanionRasterContractTests(unittest.TestCase):
     def test_valid_frames_use_one_full_cell_scale_and_remain_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -399,7 +472,10 @@ class CompanionRasterContractTests(unittest.TestCase):
                 "identity_sha256": "d" * 64,
                 "schema": portrait_sync.DIRECT_LOCK_SCHEMA,
             },
+            "source_kind": "direct-exact-target",
             "fixed_action_scale": 1.0,
+            "identity_raster_scale": 1.0,
+            "action_cell_raster_scale": 1.0,
             "source_sha256": {"identity.png": "a" * 64},
             "source_snapshot": {
                 "byte_exact_sha256": {"identity.png": "b" * 64}
@@ -732,6 +808,172 @@ class CompanionRasterContractTests(unittest.TestCase):
             ):
                 contract.load_high_res_generated_species(
                     source, "capybara", lock, roles=(IDLE,)
+                )
+
+    def test_imagegen_action_sheet_layout_is_byte_exact_and_hash_pinned(self) -> None:
+        record = contract.imagegen_action_sheet_layout_record()
+
+        self.assertEqual(record["source_canvas"], [1122, 1402])
+        self.assertEqual(
+            record["phase_viewports"],
+            [
+                [0, 0, 560, 700],
+                [562, 0, 1122, 700],
+                [0, 702, 560, 1402],
+                [562, 702, 1122, 1402],
+            ],
+        )
+        self.assertEqual(
+            record["gutter_rects"],
+            [[560, 0, 562, 1402], [0, 700, 1122, 702]],
+        )
+        self.assertEqual(record["cell_outer_safe_guard_pixels"], 2)
+        self.assertIs(record["fixed_cell_extraction"], True)
+        self.assertTrue(
+            all(
+                record[name] is False
+                for name in (
+                    "per_cell_cleanup",
+                    "per_cell_crop",
+                    "per_cell_fit",
+                    "per_cell_offset",
+                    "per_cell_threshold",
+                )
+            )
+        )
+        self.assertEqual(
+            contract.imagegen_action_sheet_layout_sha256(),
+            "7ce76bf5a00170641374b0b964e085f39e1aea7e51ad2dc0f019f27b9146552e",
+        )
+
+    def test_imagegen_one_action_sheet_imports_four_distinct_native_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
+            raster = contract.load_high_res_generated_action_sheet_species(
+                source, "ferret", lock, roles=(IDLE,)
+            )
+
+        self.assertEqual(len(raster.frames), 4)
+        self.assertEqual(len({frame.source_sha256 for frame in raster.frames}), 4)
+        self.assertEqual(len({frame.packed for frame in raster.frames}), 4)
+        self.assertEqual(
+            raster.fixed_action_scale,
+            contract.HIGH_RES_FRAME_WIDTH / 560,
+        )
+        self.assertEqual(
+            set(raster.source_sha256),
+            {"identity.png", "portrait.png", "idle.png"},
+        )
+        self.assertTrue(
+            all(
+                base.bounds(frame.mask)[3] == contract.HIGH_RES_FLOOR_Y
+                for frame in raster.frames
+            )
+        )
+
+    def test_imagegen_action_sheet_gutter_ink_rejects_the_complete_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
+            path = source / "ferret" / "idle.png"
+            image = Image.open(path).copy()
+            ImageDraw.Draw(image).line((560, 0, 560, 1401), fill=(0, 0, 0))
+            image.save(path)
+            before = byte_exact_tree_snapshot(source)
+
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"center gutter .* contains ink.*labels, dividers, grid lines",
+            ):
+                contract.load_high_res_generated_action_sheet_species(
+                    source, "ferret", lock, roles=(IDLE,)
+                )
+
+            self.assertEqual(byte_exact_tree_snapshot(source), before)
+
+    def test_imagegen_one_shifted_sheet_cell_rejects_without_partial_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_action_sheet_sources(source, "rabbit")
+            masks = [imagegen_logical_outline(phase) for phase in range(4)]
+            masks[2] = {(x - 10, y) for x, y in masks[2]}
+            write_imagegen_action_sheet(source / "rabbit" / "idle.png", masks)
+            before = byte_exact_tree_snapshot(source)
+
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"rabbit/idle/2/raw-cell: subject touches source-cell edge",
+            ):
+                contract.load_high_res_generated_action_sheet_species(
+                    source, "rabbit", lock, roles=(IDLE,)
+                )
+
+            self.assertEqual(byte_exact_tree_snapshot(source), before)
+            self.assertFalse((source / "rabbit" / "idle").exists())
+
+    def test_imagegen_one_oversized_sheet_cell_rejects_the_whole_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_action_sheet_sources(source, "raccoon")
+            masks = [imagegen_logical_outline(phase) for phase in range(4)]
+            masks[1] = {
+                (x, y)
+                for y in range(15, 51)
+                for x in range(2, 62)
+                if x in (2, 61) or y in (15, 50)
+            }
+            write_imagegen_action_sheet(source / "raccoon" / "idle.png", masks)
+            before = byte_exact_tree_snapshot(source)
+
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"raccoon/idle/1: subject touches source-cell edge|"
+                r"raccoon/idle/1: bounds .* violate format-v2 safe stage",
+            ):
+                contract.load_high_res_generated_action_sheet_species(
+                    source, "raccoon", lock, roles=(IDLE,)
+                )
+
+            self.assertEqual(byte_exact_tree_snapshot(source), before)
+
+    def test_imagegen_duplicate_action_sheet_cells_are_missing_animation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_action_sheet_sources(source, "capybara")
+            write_imagegen_action_sheet(
+                source / "capybara" / "idle.png",
+                [imagegen_logical_outline() for _phase in range(4)],
+            )
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"all four exact canonical PNGs must be distinct|"
+                r"area import collapsed one or more phases",
+            ):
+                contract.load_high_res_generated_action_sheet_species(
+                    source, "capybara", lock, roles=(IDLE,)
+                )
+
+    def test_imagegen_action_sheet_second_animal_is_rejected_before_sampling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_action_sheet_sources(source, "otter")
+            masks = [imagegen_logical_outline(phase) for phase in range(4)]
+            masks[3] = {
+                (x, y)
+                for left, right in ((8, 29), (36, 57))
+                for y in range(29, 51)
+                for x in range(left, right + 1)
+                if x in (left, right) or y in (29, 50)
+            }
+            write_imagegen_action_sheet(source / "otter" / "idle.png", masks)
+
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"primary subject is only .* second subject",
+            ):
+                contract.load_high_res_generated_action_sheet_species(
+                    source, "otter", lock, roles=(IDLE,)
                 )
 
     def test_imagegen_transform_may_remove_only_centered_two_pixel_border(self) -> None:

@@ -37,9 +37,10 @@ to reduce art quality.
 
 ## Exact direct-at-target source layout
 
-Release artwork is forty-eight independent native PNGs, one identity PNG, and
-one independently authored portrait PNG. There are no multi-action sheets and
-no 2x2 release sheets.
+Release artwork is forty-eight independent native frames, one identity, and
+one independently authored portrait. There are no multi-action release sheets
+and no 2x2 sheets in the serialized pack. The preferred direct-target source
+tree stores each release frame as its own PNG:
 
 ```text
 <private-source>/ferret/
@@ -78,6 +79,67 @@ exact identity source canvas. The exact 16x18 portrait is still authored
 separately. The two paths have different lock schemas and cannot be silently
 reinterpreted as one another.
 
+## One-action four-phase ImageGen source layout
+
+When four separate ImageGen calls cannot preserve one action's camera and
+identity, one generated **source file per named action** may hold that action's
+four phases. This is not a twelve-action mega-sheet. `idle.png` contains only
+idle phases 0..3, `blink.png` contains only blink phases 0..3, and so on. The
+source selector must explicitly choose `one-action-sheets`; the builder must
+not guess from the tree or reinterpret independent-frame input.
+
+```text
+<private-source>/ferret/
+  identity.png                 # exact locked 1122x1402 RGB/RGBA identity
+  portrait.png                 # exact 16x18, mode 1, separately authored
+  idle.png                     # exact 1122x1402 RGB/RGBA, idle phases only
+  blink.png                    # exact 1122x1402 RGB/RGBA, blink phases only
+  pet.png
+  sleep.png
+  listen.png
+  surprise.png
+  play.png
+  tired.png
+  feed.png
+  wake.png
+  meet.png
+  evolve.png
+```
+
+The canonical `kitsu-imagegen-action-sheet-2x2-v1` layout is byte-exact:
+
+```text
+source canvas: 1122x1402
+phase 0: (0,   0,   560,  700)   phase 1: (562, 0,   1122, 700)
+phase 2: (0,   702, 560,  1402)  phase 3: (562, 702, 1122, 1402)
+vertical gutter:   (560, 0,   562, 1402)
+horizontal gutter: (0,   700, 1122, 702)
+```
+
+Each phase viewport is exactly 560x700, or 4:5. The full two-pixel cross
+gutter and the two source pixels along every cell's outer edge must be white.
+Ink there means a divider, label, cross-cell drawing, or clipped subject and
+rejects the complete action. Each fixed viewport is extracted by coordinate;
+the importer never locates the subject, adjusts a viewport, or uses a bounding
+box. The resulting cell is composited over white, BOX area sampled to 64x80,
+tested at the identity's single coverage threshold, and moved by the identity's
+single output offset. These exact operations are repeated for all four cells.
+There is no per-cell crop, fit, resize policy, translation, threshold tuning,
+cleanup, morphology, or component deletion.
+
+The canonical layout record and its SHA-256 are release provenance. The record
+pins the source canvas, phase order, four viewports, both gutters, two-pixel
+cell-edge guards, fixed extraction, and every forbidden per-cell control. A
+one-pixel change creates a different hash and fails the build. The current
+canonical layout hash is
+`7ce76bf5a00170641374b0b964e085f39e1aea7e51ad2dc0f019f27b9146552e`.
+
+Import is all-or-nothing. The validator reads one sheet once, validates all
+four raw cells and final masks in memory, and returns no phases if one cell
+fails. It performs no extraction writes. A builder may stage output only after
+all selected actions pass, so a shifted or oversized late cell cannot leave a
+partial accepted action or species.
+
 ## Image-generation workflow
 
 ImageGen is used one identity or one named action at a time. Cat, Dog, and Fox
@@ -89,7 +151,8 @@ Direct 64x80 art remains preferred. A larger ImageGen result may enter the
 separate importer only through one quality-preserving transform approved from
 the identity and reused byte-for-byte for all forty-eight frames:
 
-1. require the exact locked source canvas for identity and every action;
+1. require the exact locked source canvas for identity and every independent
+   frame or one-action sheet;
 2. composite RGB/RGBA over opaque white;
 3. use an exact centered 4:5 viewport that removes at most a two-pixel proven-
    white source border—never a subject bounding-box crop;
@@ -184,11 +247,21 @@ must reuse it exactly.
 
 The manifest repeats the complete transform, its hash, the raw identity hash,
 the imported 640-byte identity hash, every raw action hash, every final frame
-hash, and `fixed_action_scale=64/1120`. A one-pixel source-canvas, crop, or
-offset change breaks the lock. The importer rejects more than 55% mid-tone
-source ink, or a final raster where more than 5% of ink pixels change under a
-`+/-20`-per-mille coverage-stability probe; these are rejection gates, not
-alternate thresholds.
+hash, and the applicable fixed scales. Independent-frame imports record
+`identity_raster_scale=action_cell_raster_scale=64/1120`. One-action-sheet
+imports record `identity_raster_scale=64/1120` and
+`action_cell_raster_scale=64/560`; this documents their two fixed source
+viewports and does not authorize an identity or subject auto-fit. The exact
+64x80 masks remain the scale/identity acceptance evidence.
+
+One-action-sheet provenance also records source kind, layout record and hash,
+the whole action-source SHA-256, four fixed composited-region SHA-256 values,
+four final-mask hashes, and four packed-frame hashes. All four region hashes
+and all four packed hashes must be distinct. A one-pixel source-canvas, crop,
+offset, cell-layout, or gutter change breaks its corresponding lock. The
+importer rejects more than 55% mid-tone source ink, or a final raster where
+more than 5% of ink pixels change under a `+/-20`-per-mille coverage-stability
+probe; these are rejection gates, not alternate thresholds.
 
 ## Frame and portrait packing
 
@@ -209,6 +282,11 @@ The format-v2 validator rejects the complete build when any of these occur:
 
 - a direct-target frame is not exact mode `1` or is not exactly 64x80;
 - a generated frame is not RGB/RGBA on the exact locked source canvas;
+- the selected source layout does not match its exact source tree;
+- a one-action sheet is not exact 1122x1402 RGB/RGBA, contains more than one
+  named action, or differs from the four fixed 560x700 phase viewports;
+- a one-action sheet contains ink in either two-pixel center gutter or a
+  phase's two-pixel outer safe guard;
 - the portrait is not exact mode `1` or is not exactly 16x18;
 - the source tree has missing or unexpected identities, actions, or phases;
 - any subject pixel leaves `[2, 2, 61, 77]` or enters rows 78..79;
@@ -218,6 +296,9 @@ The format-v2 validator rejects the complete build when any of these occur:
   unapproved identity is used;
 - a generated source contains ink in the removed border, the BOX/coverage
   result is threshold-unstable, or the fixed output offset clips an action;
+- one action-sheet cell is shifted, oversized, clipped, duplicated, collapsed,
+  scale-popping, identity-incoherent, or discontinuous; one bad cell rejects
+  all four phases and leaves no partial output;
 - the frame contains excessive components, a second subject, or detached
   debris outside the primary subject;
 - any phase is byte-identical to another phase, an adjacent pair changes fewer
