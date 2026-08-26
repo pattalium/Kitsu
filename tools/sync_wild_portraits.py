@@ -27,7 +27,7 @@ PORTRAIT_HEIGHT = 18
 PORTRAIT_BYTES = 36
 PORTRAIT_STORAGE = "XBM least-significant-bit first, two bytes per row"
 DIRECT_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
-IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v1"
+IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v2"
 DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
 IMAGEGEN_RASTER_TRANSFORM = (
     "rgba-over-white-box-area-black-coverage-then-fixed-offset"
@@ -163,6 +163,7 @@ def require_sha256(value: object, label: str) -> str:
 def require_imagegen_transform(raw: object, identity_key: str) -> dict[str, object]:
     transform = require_mapping(raw, f"{identity_key}.identity_lock.transform")
     if set(transform) != {
+        "action_output_offset",
         "alpha_background",
         "black_coverage_threshold_per_mille",
         "crop_rect",
@@ -176,6 +177,7 @@ def require_imagegen_transform(raw: object, identity_key: str) -> dict[str, obje
     source = transform.get("source_canvas")
     crop = transform.get("crop_rect")
     offset = transform.get("output_offset")
+    action_offset = transform.get("action_output_offset")
     threshold = transform.get("black_coverage_threshold_per_mille")
     if (
         not isinstance(source, list)
@@ -188,7 +190,10 @@ def require_imagegen_transform(raw: object, identity_key: str) -> dict[str, obje
         or any(not isinstance(value, int) for value in crop)
         or not isinstance(offset, list)
         or len(offset) != 2
-        or any(not isinstance(value, int) for value in offset)
+        or any(type(value) is not int for value in offset)
+        or not isinstance(action_offset, list)
+        or len(action_offset) != 2
+        or any(type(value) is not int for value in action_offset)
         or not isinstance(threshold, int)
         or not 50 <= threshold <= 500
         or transform.get("alpha_background") != [255, 255, 255]
@@ -212,6 +217,9 @@ def require_imagegen_transform(raw: object, identity_key: str) -> dict[str, obje
         or max(left, top, source_width - right, source_height - bottom) > 2
         or abs(offset[0]) >= 64
         or abs(offset[1]) >= 80
+        or abs(action_offset[0]) >= 64
+        or abs(action_offset[1]) >= 80
+        or action_offset == offset
     ):
         raise ValueError(f"{identity_key} ImageGen transform changes the fixed viewport")
     return transform
@@ -262,6 +270,7 @@ def require_pack_raster_provenance(
             or pack.get("action_cell_raster_scale") != 1.0
             or "action_source_layout" in pack
             or "action_source_layout_sha256" in pack
+            or "action_output_offset" in pack
         ):
             raise ValueError(f"{identity_key} direct-target build changed scale")
     else:
@@ -331,10 +340,17 @@ def require_pack_raster_provenance(
             ).encode("ascii")
             if hashlib.sha256(canonical_layout).hexdigest() != layout_sha256:
                 raise ValueError(f"{identity_key} action-sheet layout hash does not match")
+            action_output_offset = pack.get("action_output_offset")
+            if action_output_offset != transform["action_output_offset"]:
+                raise ValueError(
+                    f"{identity_key} action-sheet output offset differs from its "
+                    "hash-bound identity lock"
+                )
         elif (
             pack.get("source_kind") != "imagegen-locked-import"
             or "action_source_layout" in pack
             or "action_source_layout_sha256" in pack
+            or "action_output_offset" in pack
         ):
             raise ValueError(f"{identity_key} independent-frame layout is invalid")
 
@@ -433,6 +449,11 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
         action_source_hashes: list[str] = []
         for role in roles:
             role_record = require_mapping(role, f"{identity_key}.role")
+            if "action_output_offset" in role_record:
+                raise ValueError(
+                    f"{identity_key}.{role_record.get('role')} cannot override the "
+                    "single hash-bound action-sheet output offset"
+                )
             if role_record.get("unique_frames") != 4:
                 raise ValueError(f"{identity_key} has a collapsed animation role")
             phase_hash_fields = ["final_mask_sha256", "frame_sha256"]

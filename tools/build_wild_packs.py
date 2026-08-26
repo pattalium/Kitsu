@@ -176,6 +176,7 @@ def build_species(
         action_cell_raster_scale = 1.0
         action_source_layout = None
         action_source_layout_sha256 = None
+        action_output_offset = None
         lock_record: dict[str, object] = {
             "schema": raster_contract.HIGH_RES_IDENTITY_LOCK_SCHEMA,
             "identity_sha256": identity_lock.identity_sha256,
@@ -186,6 +187,14 @@ def build_species(
         if not isinstance(identity_lock, raster_contract.ImageGenImportLock):
             raise ValueError(
                 f"{species}: ImageGen build requires an ImageGen import lock"
+            )
+        if (
+            identity_lock.transform.action_output_offset
+            == identity_lock.transform.output_offset
+        ):
+            raise ValueError(
+                f"{species}: ImageGen action output offset must be explicitly "
+                "pinned and distinct from the identity output offset"
             )
         raster = raster_contract.load_high_res_generated_species(
             source_dir, species, identity_lock
@@ -199,6 +208,7 @@ def build_species(
         action_cell_raster_scale = identity_raster_scale
         action_source_layout = None
         action_source_layout_sha256 = None
+        action_output_offset = None
         lock_record = {
             "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
             "identity_source_sha256": identity_lock.identity_source_sha256,
@@ -212,6 +222,14 @@ def build_species(
         if not isinstance(identity_lock, raster_contract.ImageGenImportLock):
             raise ValueError(
                 f"{species}: ImageGen action sheets require an ImageGen import lock"
+            )
+        if (
+            identity_lock.transform.action_output_offset
+            == identity_lock.transform.output_offset
+        ):
+            raise ValueError(
+                f"{species}: action-sheet output offset must be explicitly pinned "
+                "and distinct from the identity output offset"
             )
         raster = raster_contract.load_high_res_generated_action_sheet_species(
             source_dir, species, identity_lock
@@ -229,6 +247,7 @@ def build_species(
         action_source_layout_sha256 = (
             raster_contract.imagegen_action_sheet_layout_sha256()
         )
+        action_output_offset = list(identity_lock.transform.action_output_offset)
         lock_record = {
             "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
             "identity_source_sha256": identity_lock.identity_source_sha256,
@@ -425,6 +444,7 @@ def build_species(
     if action_source_layout is not None:
         result["action_source_layout"] = action_source_layout
         result["action_source_layout_sha256"] = action_source_layout_sha256
+        result["action_output_offset"] = action_output_offset
     return result
 
 
@@ -540,7 +560,7 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help=(
             "Private kitsu-wild-identity-lock-v2 direct-target file or "
-            "kitsu-wild-imagegen-import-lock-v1 file. The two schemas are "
+            "kitsu-wild-imagegen-import-lock-v2 file. The two schemas are "
             "distinct and are never reinterpreted."
         ),
     )

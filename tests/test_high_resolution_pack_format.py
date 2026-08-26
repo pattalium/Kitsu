@@ -24,6 +24,7 @@ import companion_raster_contract as raster_contract  # noqa: E402
 import make_companion_gif_sheet as gif_sheet  # noqa: E402
 import sync_wild_portraits as portrait_sync  # noqa: E402
 from test_companion_raster_contract import (  # noqa: E402
+    imagegen_action_logical_outline,
     imagegen_logical_outline,
     write_imagegen_action_sheet,
     write_valid_imagegen_action_sheet_sources,
@@ -265,6 +266,31 @@ class HighResolutionPackFormatTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "legacy v1 locks are forbidden"):
                 wild_builder.load_release_identity_locks(path, ["ferret"])
 
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "kitsu-wild-imagegen-import-lock-v1",
+                        "identities": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "legacy v1 locks are forbidden"):
+                wild_builder.load_release_identity_locks(path, ["ferret"])
+
+        with self.assertRaisesRegex(ValueError, "unsupported or legacy identity lock"):
+            portrait_sync.require_fail_closed_manifest(
+                {
+                    "schema": wild_builder.PRIVATE_MANIFEST_SCHEMA,
+                    "complete_roster": True,
+                    "non_destructive_build": True,
+                    "identity_lock_schema": "kitsu-wild-imagegen-import-lock-v1",
+                    "raster_contract": dict(
+                        portrait_sync.EXPECTED_RASTER_CONTRACT
+                    ),
+                }
+            )
+
     def test_wild_builder_accepts_only_explicit_fixed_action_sheets(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -276,7 +302,7 @@ class HighResolutionPackFormatTests(unittest.TestCase):
                 masks: list[set[tuple[int, int]]] = []
                 marker_y = 31 + role_index
                 for phase in range(4):
-                    mask = imagegen_logical_outline(phase)
+                    mask = imagegen_action_logical_outline(phase)
                     mask.add((11, marker_y))
                     masks.append(mask)
                 write_imagegen_action_sheet(
@@ -305,6 +331,10 @@ class HighResolutionPackFormatTests(unittest.TestCase):
         )
         self.assertEqual(result["identity_raster_scale"], 64 / 1120)
         self.assertEqual(result["action_cell_raster_scale"], 64 / 560)
+        self.assertEqual(
+            result["action_output_offset"],
+            list(lock.transform.action_output_offset),
+        )
         self.assertEqual(result["action_source_layout"]["phase_order"], [0, 1, 2, 3])
         self.assertEqual(len(result["source_sha256"]), 14)
         self.assertTrue(
@@ -312,13 +342,16 @@ class HighResolutionPackFormatTests(unittest.TestCase):
                 "action_source_sha256" in role
                 and len(role["source_region_sha256"]) == 4
                 and "source_sha256" not in role
+                and "action_output_offset" not in role
                 for role in result["roles"]
             )
         )
         portrait_sync.require_pack_raster_provenance(result, "ferret")
 
     def test_portrait_sync_pins_the_complete_imagegen_transform(self):
-        transform = raster_contract.recommended_imagegen_import_transform()
+        transform = raster_contract.recommended_imagegen_import_transform(
+            action_output_offset=(-1, 30)
+        )
         transform_record = raster_contract.imagegen_import_transform_record(transform)
         source_hashes = {
             "identity.png": "a" * 64,
@@ -359,6 +392,24 @@ class HighResolutionPackFormatTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "transform hash does not match"):
             portrait_sync.require_pack_raster_provenance(drifted, "ferret")
 
+        missing_transform_offset = json.loads(json.dumps(pack))
+        del missing_transform_offset["identity_lock"]["transform"][
+            "action_output_offset"
+        ]
+        with self.assertRaisesRegex(ValueError, "unexpected fields"):
+            portrait_sync.require_pack_raster_provenance(
+                missing_transform_offset, "ferret"
+            )
+
+        independent_override = json.loads(json.dumps(pack))
+        independent_override["action_output_offset"] = list(
+            transform.action_output_offset
+        )
+        with self.assertRaisesRegex(ValueError, "independent-frame layout is invalid"):
+            portrait_sync.require_pack_raster_provenance(
+                independent_override, "ferret"
+            )
+
         action_sheet = json.loads(json.dumps(pack))
         action_sheet["raster_transform"] = (
             wild_builder.IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
@@ -372,11 +423,45 @@ class HighResolutionPackFormatTests(unittest.TestCase):
         action_sheet["action_source_layout_sha256"] = (
             raster_contract.imagegen_action_sheet_layout_sha256()
         )
+        action_sheet["action_output_offset"] = list(
+            transform.action_output_offset
+        )
         portrait_sync.require_pack_raster_provenance(action_sheet, "ferret")
 
-        action_sheet["action_source_layout"]["phase_order"] = [0, 1, 3, 2]
+        drifted_layout = json.loads(json.dumps(action_sheet))
+        drifted_layout["action_source_layout"]["phase_order"] = [0, 1, 3, 2]
         with self.assertRaisesRegex(ValueError, "layout is not canonical"):
-            portrait_sync.require_pack_raster_provenance(action_sheet, "ferret")
+            portrait_sync.require_pack_raster_provenance(drifted_layout, "ferret")
+
+        missing_action_offset = json.loads(json.dumps(action_sheet))
+        del missing_action_offset["action_output_offset"]
+        with self.assertRaisesRegex(ValueError, "output offset differs"):
+            portrait_sync.require_pack_raster_provenance(
+                missing_action_offset, "ferret"
+            )
+
+        drifted_action_offset = json.loads(json.dumps(action_sheet))
+        drifted_action_offset["action_output_offset"][1] += 1
+        with self.assertRaisesRegex(ValueError, "output offset differs"):
+            portrait_sync.require_pack_raster_provenance(
+                drifted_action_offset, "ferret"
+            )
+
+        equal_offsets = json.loads(json.dumps(pack))
+        equal_offsets["identity_lock"]["transform"]["action_output_offset"] = list(
+            equal_offsets["identity_lock"]["transform"]["output_offset"]
+        )
+        canonical = json.dumps(
+            equal_offsets["identity_lock"]["transform"],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+        equal_offsets["identity_lock"]["transform_sha256"] = hashlib.sha256(
+            canonical
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "changes the fixed viewport"):
+            portrait_sync.require_pack_raster_provenance(equal_offsets, "ferret")
 
 
 if __name__ == "__main__":
