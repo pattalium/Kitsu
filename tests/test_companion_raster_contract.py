@@ -383,17 +383,23 @@ class CompanionRasterContractTests(unittest.TestCase):
             "non_destructive_build": False,
             "raster_contract": {},
         }
-        with self.assertRaisesRegex(ValueError, r"schema must be .*v3"):
+        with self.assertRaisesRegex(ValueError, r"schema must be .*v4"):
             portrait_sync.require_fail_closed_manifest(legacy)
 
     def test_portrait_sync_requires_exact_source_snapshot_provenance(self) -> None:
         pack = {
-            "raster_transform": (
-                "full-cell-nearest-neighbour-resize-then-translation"
-            ),
-            "auto_crop": False,
-            "auto_shrink": False,
-            "source_cleanup": False,
+            "raster_transform": portrait_sync.DIRECT_RASTER_TRANSFORM,
+            "transform_controls": dict(portrait_sync.TRANSFORM_CONTROLS),
+            "format_version": 2,
+            "frame_canvas": [64, 80],
+            "pack_bytes": 31_120,
+            "identity_lock": {
+                "frame_canvas": [64, 80],
+                "identity_frame_sha256": "c" * 64,
+                "identity_sha256": "d" * 64,
+                "schema": portrait_sync.DIRECT_LOCK_SCHEMA,
+            },
+            "fixed_action_scale": 1.0,
             "source_sha256": {"identity.png": "a" * 64},
             "source_snapshot": {
                 "byte_exact_sha256": {"identity.png": "b" * 64}
