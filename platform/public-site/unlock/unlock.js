@@ -4,7 +4,7 @@ import {
   isPublishedPackEntry,
   publishedPackFor,
   rarityLabel,
-} from "./catalog.js?sha256=97dfd326e5075930311c1be0d34a67fe0e72b3a5d35894274f3d939fb4f26105";
+} from "./catalog.js?sha256=d20e8a0da7f059ee69635857163018a9844ea0e9291a20ae0fa66afdf6e8f43f";
 
 export const VERIFY_MARKER = "KITSU_CODE_VERIFY_V1 ";
 export const VERIFY_SCHEMA = "kitsu.code-verification.v1";
