@@ -459,14 +459,14 @@ phases. Four packed-frame hashes that differ only through scattered head, tail,
 paw, or background noise—and off-role noise hiding a one-pixel landmark
 shimmer—do not constitute an animation.
 
-New private builds use `kitsu-wild-pack-private-release-v7`. It repeats the
-complete transform and hash, accepted semantic-v3/v4 contract and hash,
-preauthorization-v2 and registration-v1 schemas, truthful reference modes,
-raw identity and imported identity hashes, every preauthorization, raw action,
-and referenced Image 3 source hash, every imported/registered/baseline/final
-packed hash, role registrations, and fixed scales. Already-audited v6 manifests
-and v4 locks remain accepted under their exact old two-reference shape; they
-cannot contain or imply Image 3. ImageGen imports record
+New private builds use `kitsu-wild-pack-private-release-v8`. It preserves the
+complete v7 transform, semantic, preauthorization, registration, reference,
+source, packed-frame, and fixed-scale records and adds the authenticated
+allow-listed species/role visual-gate policy and per-role passing evidence.
+Already-audited v6 and v7 manifests remain accepted under their exact old
+shapes: neither may contain v8 policy or role-evidence fields. V4 locks retain
+their exact old two-reference shape and cannot contain or imply Image 3.
+ImageGen imports record
 `identity_raster_scale=action_cell_raster_scale=64/1120`; the only permitted
 generated source layout is one independent full-canvas file per phase. The
 portrait synchronizer revalidates the star lineage, reference-mode truthfulness,
@@ -479,6 +479,70 @@ ambiguity outside that region is recorded in raw/candidate hashes and
 discarded by construction. The composited final raster is always validated
 globally. These are rejection and composition rules, never alternate per-frame
 thresholds.
+
+## Allow-listed species/role visual gates
+
+The repository-owned
+`assets/companion-sources/species-role-visual-gates-v1.json` policy applies
+only to these six final, post-composition role sequences:
+
+- Axolotl Idle, Blink, and Pet;
+- Rabbit Idle, Blink, and Listen.
+
+The policy contains native inclusive ROIs, numeric thresholds, exact gate
+names, and the approved 640-byte packed identity-frame SHA-256 for Axolotl and
+Rabbit. Before any ROI is interpreted, that identity hash must match the
+actual import/semantic lock and final raster identity. This makes every ROI's
+coordinate basis fail closed when identity geometry changes.
+
+The parser requires exactly those six ordered entries and rejects unknown,
+missing, duplicate, malformed, or protected entries. It never infers generic
+anatomy rules. Cat, Dog, and Fox remain outside the wild pipeline; Ferret Blink
+retains the existing common raster/semantic gates and receives no new
+species/role policy. Connectivity reuses the canonical eight-neighbor
+implementation, including diagonal adjacency; no four-neighbor tail or nose
+claim is valid under this contract.
+
+The configured checks are intentionally role-specific:
+
+- Axolotl Idle: body/tail anchor connectivity (including all foreground inside
+  every anchor ROI), phase-local gill/tail motion, and P3-to-P0 loop seam;
+- Axolotl Blink: body/tail connectivity, pupil-only deltas, and per-eye phase
+  occupancy;
+- Axolotl Pet: body/tail connectivity, adjacent redraw budget, exact per-eye
+  P0 pupil-mask translation by one shared integer vector, and P0-derived
+  gill-base templates measured over the complete source-to-target trajectory
+  so source-position ghosts count;
+- Rabbit Idle: phase-specific ear/nose locality, split-nose ink/white topology,
+  and the canonical RoleSpec cadence `700/550/700/550` ms;
+- Rabbit Blink: open/close/recovery eye mass, a fully ROI-contained
+  one-component one-pixel closed lid, and local eye-centroid stability;
+- Rabbit Listen: frozen skull and ear-base regions plus a P0-seeded,
+  full-canvas head/ear component track whose ink and bounds cannot hide beyond
+  the configured left/top ROI border.
+
+An ROI never truncates a component before a topology, geometry, mass,
+centroid, rigid-transform, or local-scale decision. Those gates extract the
+canonical eight-connected components on the full 64x80 canvas, use policy ROIs
+only to select them, and require unambiguous ownership and the configured
+containment. Cropped ROIs remain valid only as exact delta allow-lists or as
+explicit local ink/white presence templates. Rabbit Listen's ink ratio is
+measured from the tracked component's intersection with its policy ROI, while
+the same component's full-canvas bounds enforce containment.
+
+The builder evaluates these gates only after exact P0..P3 ordering, packing,
+uniqueness, bounded composition, and identity hashes are known. A configured
+failure stops the build with deterministic reason codes. A pass emits a v8
+role-sibling evidence record binding the policy file SHA-256, canonical entry
+SHA-256, identity hash, four final frame hashes, actual RoleSpec durations,
+gate set, measurements, and possible failure-code catalog. The evidence itself
+has a canonical JSON SHA-256. The portrait synchronizer authenticates the same
+on-disk policy and checks all of those bindings; evidence is required exactly
+for configured roles and forbidden everywhere else.
+
+These are mechanical rejection gates. They neither modify pixels nor grant
+human acceptance, and they do not authorize release of a visually rejected
+role merely because its measurements pass.
 
 ## Frame and portrait packing
 
@@ -507,6 +571,13 @@ The format-v2 validator rejects the complete build when any of these occur:
 - any subject pixel leaves `[2, 2, 61, 77]` or enters rows 78..79;
 - the subject does not land on floor `y=77` or leaves the centered stage;
 - Cat, Dog, or Fox enters the new-art pipeline;
+- the species/role visual policy changes its exact allow-list, identity
+  coordinate-basis hash, gate entry, path, or raw file hash; a configured role
+  lacks hash-bound passing evidence; an unconfigured role claims such evidence;
+  or a v6/v7 manifest carries reserved v8 fields;
+- an Axolotl/Rabbit configured role violates its policy's connectivity,
+  locality, loop, pupil, redraw, gill-base, nose, cadence, lid, skull,
+  ear-base, or local-scale gate;
 - a legacy identity lock, ImageGen import lock v1/v2/v3, changed identity hash,
   changed import-transform hash, missing or drifted semantic/preauthorization/
   registration hash, or unapproved identity is used;

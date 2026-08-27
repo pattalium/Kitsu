@@ -39,3 +39,15 @@ Sheet rows, top to bottom:
 The builder records the exact source SHA-256 digests in
 `assets/packs/default-packs-manifest.json` and produces the Cat, Fox, and Dog
 default K868 payloads from these nine files only.
+
+## Wild-pack visual-gate policy
+
+`species-role-visual-gates-v1.json` is policy data, not artwork and not another
+input to the default-pack builder. It contains only native 64x80 ROIs,
+thresholds, an exact six-role Axolotl/Rabbit allow-list, and the two approved
+packed identity-frame hashes that authenticate the ROI coordinate basis.
+
+The wild-pack v8 builder and portrait synchronizer hash-bind this file and its
+selected entry. The policy never applies to, regenerates, resizes, or modifies
+Cat, Dog, Fox, or Ferret Blink. Unlisted species and roles retain their existing
+gates; no anatomy rule is inferred from this policy.

@@ -76,6 +76,84 @@ THREE_REFERENCE_GENERATION_MODE = (
 NATIVE_REGION_MASK_SCHEMA = "kitsu-native-region-mask-64x80-v1"
 NATIVE_REGION_MASK_ENCODING = "lsb0-row-major-hex"
 PROTECTED_STARTERS = frozenset({"cat", "dog", "fox"})
+SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA = (
+    "kitsu-species-role-visual-gates-v1"
+)
+SPECIES_ROLE_VISUAL_GATE_EVIDENCE_SCHEMA = (
+    "kitsu-species-role-visual-gate-evidence-v1"
+)
+SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH = (
+    "assets/companion-sources/species-role-visual-gates-v1.json"
+)
+SPECIES_ROLE_VISUAL_GATE_KEYS = (
+    ("axolotl", "idle"),
+    ("axolotl", "blink"),
+    ("axolotl", "pet"),
+    ("rabbit", "idle"),
+    ("rabbit", "blink"),
+    ("rabbit", "listen"),
+)
+SPECIES_ROLE_VISUAL_GATE_REASON_CODES = {
+    ("axolotl", "idle", "required_8_connected_anchors"): (
+        "AX_REQUIRED_LANDMARK_DISCONNECTED"
+    ),
+    ("axolotl", "idle", "phase_delta_locality"): (
+        "AX_IDLE_GILL_PHASE_LOCALITY"
+    ),
+    ("axolotl", "idle", "loop_seam"): "AX_IDLE_LOOP_SEAM",
+    ("axolotl", "blink", "required_8_connected_anchors"): (
+        "AX_REQUIRED_LANDMARK_DISCONNECTED"
+    ),
+    ("axolotl", "blink", "pupil_only"): "AX_BLINK_PUPIL_ONLY",
+    ("axolotl", "blink", "per_eye_occupancy"): (
+        "AX_BLINK_PER_EYE_OCCUPANCY"
+    ),
+    ("axolotl", "pet", "required_8_connected_anchors"): (
+        "AX_REQUIRED_LANDMARK_DISCONNECTED"
+    ),
+    ("axolotl", "pet", "localized_redraw"): "AX_PET_REDRAW_BUDGET",
+    ("axolotl", "pet", "rigid_pupil_translation"): (
+        "AX_PET_NONRIGID_PUPIL_TRANSFORM"
+    ),
+    ("axolotl", "pet", "gill_base_shared_transform"): (
+        "AX_PET_GILL_BASE_DRIFT"
+    ),
+    ("rabbit", "idle", "phase_delta_locality"): (
+        "RABBIT_IDLE_PHASE_RESIDUAL"
+    ),
+    ("rabbit", "idle", "split_nose_topology"): (
+        "RABBIT_IDLE_SPLIT_NOSE_TOPOLOGY"
+    ),
+    ("rabbit", "idle", "cadence"): "RABBIT_IDLE_CADENCE",
+    ("rabbit", "blink", "eye_sequence"): (
+        "RABBIT_BLINK_EYE_MASS_SEQUENCE"
+    ),
+    ("rabbit", "listen", "skull_freeze"): (
+        "RABBIT_LISTEN_SKULL_FREEZE"
+    ),
+    ("rabbit", "listen", "ear_base_freeze"): (
+        "RABBIT_LISTEN_EAR_BASE_FREEZE"
+    ),
+    ("rabbit", "listen", "local_scale_ink"): (
+        "RABBIT_LISTEN_LOCAL_SCALE_INK"
+    ),
+}
+SPECIES_ROLE_VISUAL_GATE_EXECUTION_ORDER = (
+    "required_8_connected_anchors",
+    "phase_delta_locality",
+    "loop_seam",
+    "pupil_only",
+    "per_eye_occupancy",
+    "localized_redraw",
+    "rigid_pupil_translation",
+    "gill_base_shared_transform",
+    "split_nose_topology",
+    "cadence",
+    "eye_sequence",
+    "skull_freeze",
+    "ear_base_freeze",
+    "local_scale_ink",
+)
 SOURCE_THRESHOLD = 170
 SOURCE_EDGE_GUARD = 1
 MIN_SOURCE_INK = 80
@@ -295,6 +373,27 @@ class RasterContractError(ValueError):
     """Artwork violates a condition that must never be auto-repaired."""
 
 
+class SpeciesRoleVisualGateError(RasterContractError):
+    """One configured visual gate rejected a final composited frame sequence."""
+
+    def __init__(
+        self,
+        message: str,
+        reason_code: str | tuple[str, ...] | list[str],
+    ) -> None:
+        super().__init__(message)
+        raw_reason_codes = (
+            (reason_code,)
+            if isinstance(reason_code, str)
+            else tuple(reason_code)
+        )
+        reason_codes = tuple(dict.fromkeys(raw_reason_codes))
+        if not reason_codes:
+            raise ValueError("species-role visual gate error requires a reason code")
+        self.reason_codes = reason_codes
+        self.reason_code = reason_codes[0]
+
+
 @dataclass(frozen=True)
 class IdentityLock:
     identity_key: str
@@ -383,6 +482,29 @@ class HighResSpeciesRaster:
     fixed_action_scale: float = 1.0
     generated_semantic_evidence: dict[str, dict[str, object]] | None = None
     generated_action_semantic_contract_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class SpeciesRoleVisualGateEntry:
+    """One strictly parsed, species/role-specific ROI policy entry."""
+
+    identity_key: str
+    role: str
+    identity_frame_sha256: str
+    gates: dict[str, object]
+    entry_sha256: str
+
+
+@dataclass(frozen=True)
+class SpeciesRoleVisualGatePolicy:
+    """The canonical allow-listed visual gate policy and its file binding."""
+
+    schema: str
+    relative_path: str
+    source_sha256: str
+    source_bytes: bytes
+    identity_frame_sha256: dict[str, str]
+    entries: dict[tuple[str, str], SpeciesRoleVisualGateEntry]
 
 
 @dataclass(frozen=True)
@@ -1109,6 +1231,583 @@ def _require_canonical_relative_path(value: object, label: str) -> str:
     ):
         raise RasterContractError(f"{label}: path is not canonical and relative")
     return value
+
+
+def _canonical_json_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _require_exact_object(
+    raw: object, expected: set[str], label: str
+) -> dict[str, object]:
+    if not isinstance(raw, dict) or set(raw) != expected:
+        actual = set(raw) if isinstance(raw, dict) else set()
+        raise RasterContractError(
+            f"{label}: exact object is required; "
+            f"missing={sorted(expected - actual)} "
+            f"unexpected={sorted(actual - expected)}"
+        )
+    return raw
+
+
+def _require_visual_int(
+    value: object, label: str, minimum: int = 0, maximum: int = 5120
+) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise RasterContractError(
+            f"{label}: integer must be in {minimum}..{maximum}"
+        )
+    return value
+
+
+def _require_visual_number(
+    value: object, label: str, minimum: float = 0.0, maximum: float = 5120.0
+) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not minimum <= float(value) <= maximum
+    ):
+        raise RasterContractError(
+            f"{label}: number must be finite and in {minimum}..{maximum}"
+        )
+    return float(value)
+
+
+def _parse_visual_rect(raw: object, label: str) -> list[int]:
+    if not isinstance(raw, list) or len(raw) != 4:
+        raise RasterContractError(f"{label}: inclusive ROI must contain four integers")
+    values = [
+        _require_visual_int(value, f"{label}[{index}]", 0, 79)
+        for index, value in enumerate(raw)
+    ]
+    left, top, right, bottom = values
+    if (
+        right >= HIGH_RES_FRAME_WIDTH
+        or bottom >= HIGH_RES_FRAME_HEIGHT
+        or left > right
+        or top > bottom
+    ):
+        raise RasterContractError(f"{label}: inclusive ROI leaves the 64x80 canvas")
+    return values
+
+
+def _parse_visual_named_rects(
+    raw: object, expected_names: set[str], label: str
+) -> dict[str, object]:
+    mapping = _require_exact_object(raw, expected_names, label)
+    for name, rect in mapping.items():
+        _parse_visual_rect(rect, f"{label}.{name}")
+    return mapping
+
+
+def _parse_visual_int_min_max(
+    raw: object, label: str, maximum: int = 5120
+) -> list[int]:
+    if not isinstance(raw, list) or len(raw) != 2:
+        raise RasterContractError(f"{label}: minimum/maximum pair is required")
+    low = _require_visual_int(raw[0], f"{label}[0]", 0, maximum)
+    high = _require_visual_int(raw[1], f"{label}[1]", 0, maximum)
+    if low > high:
+        raise RasterContractError(f"{label}: minimum exceeds maximum")
+    return [low, high]
+
+
+def _parse_visual_number_min_max(
+    raw: object, label: str, maximum: float = 10.0
+) -> list[float]:
+    if not isinstance(raw, list) or len(raw) != 2:
+        raise RasterContractError(f"{label}: minimum/maximum pair is required")
+    low = _require_visual_number(raw[0], f"{label}[0]", 0.0, maximum)
+    high = _require_visual_number(raw[1], f"{label}[1]", 0.0, maximum)
+    if low > high:
+        raise RasterContractError(f"{label}: minimum exceeds maximum")
+    return [low, high]
+
+
+_SPECIES_ROLE_VISUAL_GATE_KIND_SETS = {
+    ("axolotl", "idle"): {
+        "required_8_connected_anchors",
+        "phase_delta_locality",
+        "loop_seam",
+    },
+    ("axolotl", "blink"): {
+        "required_8_connected_anchors",
+        "pupil_only",
+        "per_eye_occupancy",
+    },
+    ("axolotl", "pet"): {
+        "required_8_connected_anchors",
+        "localized_redraw",
+        "rigid_pupil_translation",
+        "gill_base_shared_transform",
+    },
+    ("rabbit", "idle"): {
+        "phase_delta_locality",
+        "split_nose_topology",
+        "cadence",
+    },
+    ("rabbit", "blink"): {"eye_sequence"},
+    ("rabbit", "listen"): {
+        "skull_freeze",
+        "ear_base_freeze",
+        "local_scale_ink",
+    },
+}
+
+
+def _parse_species_role_visual_gate(
+    kind: str, raw: object, label: str
+) -> dict[str, object]:
+    if kind == "required_8_connected_anchors":
+        gate = _require_exact_object(raw, {"anchors", "apply_to_phases"}, label)
+        if gate["apply_to_phases"] != [0, 1, 2, 3]:
+            raise RasterContractError(f"{label}: all four ordered phases are required")
+        _parse_visual_named_rects(
+            gate["anchors"], {"body", "upper_tail", "lower_tail"}, f"{label}.anchors"
+        )
+        return gate
+    if kind == "phase_delta_locality":
+        gate = _require_exact_object(raw, {"baseline_phase", "phases"}, label)
+        if gate["baseline_phase"] != 0:
+            raise RasterContractError(f"{label}: baseline phase must be P0")
+        phases = gate["phases"]
+        if not isinstance(phases, list) or len(phases) != 3:
+            raise RasterContractError(f"{label}: exact P1/P2/P3 rules are required")
+        for expected_phase, value in enumerate(phases, start=1):
+            phase = _require_exact_object(
+                value,
+                {"allowed_rects", "maximum_outside_xor_pixels", "phase"},
+                f"{label}.phases[{expected_phase - 1}]",
+            )
+            if phase["phase"] != expected_phase:
+                raise RasterContractError(f"{label}: phase rules must be ordered P1/P2/P3")
+            rects = phase["allowed_rects"]
+            if not isinstance(rects, list) or not rects or len(rects) > 4:
+                raise RasterContractError(f"{label}: one to four allowed ROIs are required")
+            for index, rect in enumerate(rects):
+                _parse_visual_rect(rect, f"{label}.phases[{expected_phase - 1}].allowed_rects[{index}]")
+            _require_visual_int(
+                phase["maximum_outside_xor_pixels"],
+                f"{label}.phases[{expected_phase - 1}].maximum_outside_xor_pixels",
+            )
+        return gate
+    if kind == "loop_seam":
+        gate = _require_exact_object(
+            raw, {"from_phase", "maximum_xor_pixels", "to_phase"}, label
+        )
+        if gate["from_phase"] != 3 or gate["to_phase"] != 0:
+            raise RasterContractError(f"{label}: loop seam must measure P3 to P0")
+        _require_visual_int(gate["maximum_xor_pixels"], f"{label}.maximum_xor_pixels")
+        return gate
+    if kind == "pupil_only":
+        gate = _require_exact_object(
+            raw, {"baseline_phase", "eye_rects", "maximum_outside_xor_pixels"}, label
+        )
+        if gate["baseline_phase"] != 0:
+            raise RasterContractError(f"{label}: baseline phase must be P0")
+        _parse_visual_named_rects(gate["eye_rects"], {"left", "right"}, f"{label}.eye_rects")
+        _require_visual_int(
+            gate["maximum_outside_xor_pixels"], f"{label}.maximum_outside_xor_pixels"
+        )
+        return gate
+    if kind == "per_eye_occupancy":
+        gate = _require_exact_object(raw, {"eye_rects", "phase_min_max_pixels"}, label)
+        _parse_visual_named_rects(gate["eye_rects"], {"left", "right"}, f"{label}.eye_rects")
+        ranges = gate["phase_min_max_pixels"]
+        if not isinstance(ranges, list) or len(ranges) != 4:
+            raise RasterContractError(f"{label}: four occupancy ranges are required")
+        for phase, pair in enumerate(ranges):
+            _parse_visual_int_min_max(pair, f"{label}.phase_min_max_pixels[{phase}]", 64)
+        return gate
+    if kind == "localized_redraw":
+        gate = _require_exact_object(raw, {"maximum_adjacent_xor_pixels"}, label)
+        _require_visual_int(
+            gate["maximum_adjacent_xor_pixels"], f"{label}.maximum_adjacent_xor_pixels"
+        )
+        return gate
+    if kind == "rigid_pupil_translation":
+        gate = _require_exact_object(
+            raw,
+            {
+                "component_bbox_max",
+                "component_pixels_min_max",
+                "maximum_inter_eye_translation_delta",
+                "tracking_windows",
+            },
+            label,
+        )
+        _parse_visual_named_rects(
+            gate["tracking_windows"], {"left", "right"}, f"{label}.tracking_windows"
+        )
+        _parse_visual_int_min_max(
+            gate["component_pixels_min_max"], f"{label}.component_pixels_min_max", 64
+        )
+        bbox = gate["component_bbox_max"]
+        if not isinstance(bbox, list) or len(bbox) != 2:
+            raise RasterContractError(f"{label}: component bbox maximum must have two integers")
+        for index, value in enumerate(bbox):
+            _require_visual_int(value, f"{label}.component_bbox_max[{index}]", 1, 16)
+        delta = gate["maximum_inter_eye_translation_delta"]
+        if not isinstance(delta, list) or len(delta) != 2:
+            raise RasterContractError(f"{label}: translation delta must have two numbers")
+        for index, value in enumerate(delta):
+            _require_visual_number(
+                value, f"{label}.maximum_inter_eye_translation_delta[{index}]", 0.0, 8.0
+            )
+        if delta != [0, 0]:
+            raise RasterContractError(
+                f"{label}: both pupils must use one exact shared integer vector"
+            )
+        return gate
+    if kind == "gill_base_shared_transform":
+        gate = _require_exact_object(
+            raw,
+            {"maximum_template_xor_pixels_each", "template_phase", "template_rects"},
+            label,
+        )
+        if gate["template_phase"] != 0:
+            raise RasterContractError(f"{label}: gill templates must derive from P0")
+        _parse_visual_named_rects(
+            gate["template_rects"],
+            {"dorsal_base", "middle_base", "ventral_base"},
+            f"{label}.template_rects",
+        )
+        _require_visual_int(
+            gate["maximum_template_xor_pixels_each"],
+            f"{label}.maximum_template_xor_pixels_each",
+        )
+        return gate
+    if kind == "split_nose_topology":
+        gate = _require_exact_object(raw, {"ink_rois", "phase", "white_rois"}, label)
+        if gate["phase"] != 1:
+            raise RasterContractError(f"{label}: split-nose topology is frozen at P1")
+        ink = _require_exact_object(
+            gate["ink_rois"], {"bridge", "left_lobe", "right_lobe"}, f"{label}.ink_rois"
+        )
+        for name, value in ink.items():
+            record = _require_exact_object(
+                value, {"minimum_ink_pixels", "rect"}, f"{label}.ink_rois.{name}"
+            )
+            rect = _parse_visual_rect(record["rect"], f"{label}.ink_rois.{name}.rect")
+            maximum = (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)
+            _require_visual_int(
+                record["minimum_ink_pixels"],
+                f"{label}.ink_rois.{name}.minimum_ink_pixels",
+                1,
+                maximum,
+            )
+        white = _require_exact_object(gate["white_rois"], {"cleft"}, f"{label}.white_rois")
+        for name, value in white.items():
+            record = _require_exact_object(
+                value, {"maximum_ink_pixels", "rect"}, f"{label}.white_rois.{name}"
+            )
+            rect = _parse_visual_rect(record["rect"], f"{label}.white_rois.{name}.rect")
+            maximum = (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)
+            _require_visual_int(
+                record["maximum_ink_pixels"],
+                f"{label}.white_rois.{name}.maximum_ink_pixels",
+                0,
+                maximum,
+            )
+        return gate
+    if kind == "cadence":
+        gate = _require_exact_object(raw, {"required_durations_ms"}, label)
+        durations = gate["required_durations_ms"]
+        if not isinstance(durations, list) or len(durations) != 4:
+            raise RasterContractError(f"{label}: four cadence durations are required")
+        for phase, value in enumerate(durations):
+            _require_visual_int(value, f"{label}.required_durations_ms[{phase}]", 10, 10000)
+        return gate
+    if kind == "eye_sequence":
+        gate = _require_exact_object(
+            raw,
+            {
+                "closed_phase",
+                "closed_phase_required_component_count",
+                "closed_phase_required_height_pixels",
+                "containment_rect",
+                "eye_rect",
+                "maximum_centroid_distance_from_p0",
+                "phase_mass_ratio_min_max_from_p0",
+            },
+            label,
+        )
+        eye_rect = _parse_visual_rect(gate["eye_rect"], f"{label}.eye_rect")
+        containment_rect = _parse_visual_rect(
+            gate["containment_rect"], f"{label}.containment_rect"
+        )
+        if not (
+            containment_rect[0] < eye_rect[0]
+            and containment_rect[1] < eye_rect[1]
+            and containment_rect[2] > eye_rect[2]
+            and containment_rect[3] > eye_rect[3]
+        ):
+            raise RasterContractError(
+                f"{label}: containment rect must guard every eye-ROI border"
+            )
+        ranges = gate["phase_mass_ratio_min_max_from_p0"]
+        if not isinstance(ranges, list) or len(ranges) != 4:
+            raise RasterContractError(f"{label}: four eye-mass ranges are required")
+        for phase, pair in enumerate(ranges):
+            _parse_visual_number_min_max(
+                pair, f"{label}.phase_mass_ratio_min_max_from_p0[{phase}]", 2.0
+            )
+        _require_visual_int(gate["closed_phase"], f"{label}.closed_phase", 0, 3)
+        _require_visual_int(
+            gate["closed_phase_required_component_count"],
+            f"{label}.closed_phase_required_component_count",
+            1,
+            8,
+        )
+        _require_visual_int(
+            gate["closed_phase_required_height_pixels"],
+            f"{label}.closed_phase_required_height_pixels",
+            1,
+            16,
+        )
+        _require_visual_number(
+            gate["maximum_centroid_distance_from_p0"],
+            f"{label}.maximum_centroid_distance_from_p0",
+            0.0,
+            16.0,
+        )
+        return gate
+    if kind == "skull_freeze":
+        gate = _require_exact_object(raw, {"baseline_phase", "maximum_xor_pixels", "rect"}, label)
+        if gate["baseline_phase"] != 0:
+            raise RasterContractError(f"{label}: skull baseline must be P0")
+        _parse_visual_rect(gate["rect"], f"{label}.rect")
+        _require_visual_int(gate["maximum_xor_pixels"], f"{label}.maximum_xor_pixels")
+        return gate
+    if kind == "ear_base_freeze":
+        gate = _require_exact_object(
+            raw, {"baseline_phase", "maximum_xor_pixels_each", "rects"}, label
+        )
+        if gate["baseline_phase"] != 0:
+            raise RasterContractError(f"{label}: ear-base baseline must be P0")
+        _parse_visual_named_rects(gate["rects"], {"left", "right"}, f"{label}.rects")
+        _require_visual_int(
+            gate["maximum_xor_pixels_each"], f"{label}.maximum_xor_pixels_each"
+        )
+        return gate
+    if kind == "local_scale_ink":
+        gate = _require_exact_object(
+            raw,
+            {
+                "ink_ratio_min_max_from_p0",
+                "maximum_left_top_bbox_expansion_pixels",
+                "rect",
+            },
+            label,
+        )
+        _parse_visual_rect(gate["rect"], f"{label}.rect")
+        _parse_visual_number_min_max(
+            gate["ink_ratio_min_max_from_p0"], f"{label}.ink_ratio_min_max_from_p0", 2.0
+        )
+        _require_visual_int(
+            gate["maximum_left_top_bbox_expansion_pixels"],
+            f"{label}.maximum_left_top_bbox_expansion_pixels",
+            0,
+            8,
+        )
+        return gate
+    raise RasterContractError(f"{label}: unsupported visual gate {kind!r}")
+
+
+def _reject_duplicate_json_pairs(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RasterContractError(f"visual gate policy duplicates JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def load_species_role_visual_gate_policy(
+    path: Path,
+    relative_path: str = SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH,
+) -> SpeciesRoleVisualGatePolicy:
+    """Load the exact allow-listed ROI policy without inferring anatomy."""
+
+    relative_path = _require_canonical_relative_path(relative_path, "visual gate policy")
+    try:
+        source_bytes = path.read_bytes()
+        payload = json.loads(
+            source_bytes.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RasterContractError(f"cannot read visual gate policy: {error}") from error
+    raw = _require_exact_object(
+        payload,
+        {"canvas", "connectivity", "entries", "identity_frame_sha256", "schema"},
+        "visual gate policy",
+    )
+    if raw["schema"] != SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA:
+        raise RasterContractError("visual gate policy schema is unsupported")
+    if raw["canvas"] != [HIGH_RES_FRAME_WIDTH, HIGH_RES_FRAME_HEIGHT]:
+        raise RasterContractError("visual gate policy canvas must be exact 64x80")
+    if raw["connectivity"] != 8:
+        raise RasterContractError("visual gate policy must use eight-neighbor connectivity")
+    identity_hashes = _require_exact_object(
+        raw["identity_frame_sha256"], {"axolotl", "rabbit"}, "visual gate identity hashes"
+    )
+    parsed_identity_hashes = {
+        identity: _require_lower_sha256(value, f"visual gate identity hashes/{identity}")
+        for identity, value in identity_hashes.items()
+    }
+    entries = raw["entries"]
+    if not isinstance(entries, list) or len(entries) != len(SPECIES_ROLE_VISUAL_GATE_KEYS):
+        raise RasterContractError("visual gate policy must contain the exact six configured entries")
+    parsed: dict[tuple[str, str], SpeciesRoleVisualGateEntry] = {}
+    actual_order: list[tuple[str, str]] = []
+    for index, value in enumerate(entries):
+        entry = _require_exact_object(
+            value, {"gates", "identity_key", "role"}, f"visual gate entries[{index}]"
+        )
+        identity_key = _require_semantic_name(
+            entry["identity_key"], f"visual gate entries[{index}].identity_key"
+        )
+        role = _require_semantic_name(entry["role"], f"visual gate entries[{index}].role")
+        key = (identity_key, role)
+        if identity_key in PROTECTED_STARTERS or key == ("ferret", "blink"):
+            raise RasterContractError(f"visual gate policy cannot configure protected {identity_key}/{role}")
+        expected_kinds = _SPECIES_ROLE_VISUAL_GATE_KIND_SETS.get(key)
+        if expected_kinds is None:
+            raise RasterContractError(f"visual gate policy contains unapproved {identity_key}/{role}")
+        gates = _require_exact_object(
+            entry["gates"], expected_kinds, f"visual gate entries[{index}].gates"
+        )
+        for kind, gate in gates.items():
+            _parse_species_role_visual_gate(
+                kind, gate, f"visual gate entries[{index}].gates.{kind}"
+            )
+        if key in parsed:
+            raise RasterContractError(f"visual gate policy duplicates {identity_key}/{role}")
+        actual_order.append(key)
+        parsed[key] = SpeciesRoleVisualGateEntry(
+            identity_key=identity_key,
+            role=role,
+            identity_frame_sha256=parsed_identity_hashes[identity_key],
+            gates=gates,
+            entry_sha256=_canonical_json_sha256(entry),
+        )
+    if tuple(actual_order) != SPECIES_ROLE_VISUAL_GATE_KEYS:
+        raise RasterContractError(
+            "visual gate entries differ from the exact ordered allow-list"
+        )
+    return SpeciesRoleVisualGatePolicy(
+        schema=SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA,
+        relative_path=relative_path,
+        source_sha256=hashlib.sha256(source_bytes).hexdigest(),
+        source_bytes=source_bytes,
+        identity_frame_sha256=parsed_identity_hashes,
+        entries=parsed,
+    )
+
+
+def species_role_visual_gate_policy_record(
+    policy: SpeciesRoleVisualGatePolicy,
+) -> dict[str, object]:
+    _require_species_role_visual_gate_policy_integrity(policy)
+    return {
+        "configured_species_roles": [
+            f"{identity_key}/{role}" for identity_key, role in policy.entries
+        ],
+        "identity_frame_sha256": dict(policy.identity_frame_sha256),
+        "relative_path": policy.relative_path,
+        "schema": policy.schema,
+        "sha256": policy.source_sha256,
+    }
+
+
+def _require_species_role_visual_gate_policy_integrity(
+    policy: SpeciesRoleVisualGatePolicy,
+) -> None:
+    """Detect mutation of the parsed policy before any ROI is consumed."""
+
+    if (
+        policy.schema != SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA
+        or policy.relative_path != SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH
+        or not _is_lower_sha256(policy.source_sha256)
+        or not isinstance(policy.source_bytes, bytes)
+        or hashlib.sha256(policy.source_bytes).hexdigest() != policy.source_sha256
+        or set(policy.identity_frame_sha256) != {"axolotl", "rabbit"}
+    ):
+        raise RasterContractError("visual gate policy object drifted after parsing")
+    if tuple(policy.entries) != SPECIES_ROLE_VISUAL_GATE_KEYS:
+        raise RasterContractError("visual gate policy entry order drifted")
+    for key, entry in policy.entries.items():
+        if (
+            key != (entry.identity_key, entry.role)
+            or entry.identity_frame_sha256
+            != policy.identity_frame_sha256.get(entry.identity_key)
+            or not _is_lower_sha256(entry.identity_frame_sha256)
+            or _canonical_json_sha256(
+                {
+                    "gates": entry.gates,
+                    "identity_key": entry.identity_key,
+                    "role": entry.role,
+                }
+            )
+            != entry.entry_sha256
+        ):
+            raise RasterContractError(
+                f"visual gate policy entry {key[0]}/{key[1]} drifted after parsing"
+            )
+        expected_kinds = _SPECIES_ROLE_VISUAL_GATE_KIND_SETS[key]
+        if set(entry.gates) != expected_kinds:
+            raise RasterContractError(
+                f"visual gate policy entry {key[0]}/{key[1]} gate set drifted"
+            )
+        for kind, gate in entry.gates.items():
+            _parse_species_role_visual_gate(
+                kind,
+                gate,
+                f"visual gate policy entry {key[0]}/{key[1]}.{kind}",
+            )
+    expected_document = {
+        "canvas": [HIGH_RES_FRAME_WIDTH, HIGH_RES_FRAME_HEIGHT],
+        "connectivity": 8,
+        "entries": [
+            {
+                "gates": entry.gates,
+                "identity_key": entry.identity_key,
+                "role": entry.role,
+            }
+            for entry in policy.entries.values()
+        ],
+        "identity_frame_sha256": dict(policy.identity_frame_sha256),
+        "schema": policy.schema,
+    }
+    try:
+        source_document = json.loads(
+            policy.source_bytes.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RasterContractError,
+    ) as error:
+        raise RasterContractError(
+            "visual gate policy source bytes drifted after parsing"
+        ) from error
+    if source_document != expected_document:
+        raise RasterContractError(
+            "visual gate policy source document drifted after parsing"
+        )
 
 
 def native_region_mask_lock(
@@ -3877,6 +4576,1032 @@ def _require_live_region_lock(region: NativeRegionMaskLock, label: str) -> None:
         native_region_mask_record(region)
     except RasterContractError as error:
         raise RasterContractError(f"{label}: {error}") from error
+
+
+def _visual_rect_points(rect: list[int]) -> set[tuple[int, int]]:
+    left, top, right, bottom = rect
+    return {
+        (x, y)
+        for y in range(top, bottom + 1)
+        for x in range(left, right + 1)
+    }
+
+
+def _visual_mask_in_rect(
+    mask: set[tuple[int, int]], rect: list[int]
+) -> set[tuple[int, int]]:
+    left, top, right, bottom = rect
+    return {
+        (x, y)
+        for x, y in mask
+        if left <= x <= right and top <= y <= bottom
+    }
+
+
+def _visual_centroid(mask: set[tuple[int, int]]) -> tuple[float, float]:
+    if not mask:
+        raise RasterContractError("visual gate cannot measure an empty landmark")
+    return (
+        sum(x for x, _y in mask) / len(mask),
+        sum(y for _x, y in mask) / len(mask),
+    )
+
+
+def _visual_shift_mask(
+    mask: set[tuple[int, int]], dx: int, dy: int
+) -> set[tuple[int, int]]:
+    return {(x + dx, y + dy) for x, y in mask}
+
+
+def _visual_shift_rect(rect: list[int], dx: int, dy: int) -> list[int]:
+    left, top, right, bottom = rect
+    shifted = [left + dx, top + dy, right + dx, bottom + dy]
+    if (
+        shifted[0] < 0
+        or shifted[1] < 0
+        or shifted[2] >= HIGH_RES_FRAME_WIDTH
+        or shifted[3] >= HIGH_RES_FRAME_HEIGHT
+    ):
+        raise RasterContractError("visual gate translated ROI leaves the 64x80 canvas")
+    return shifted
+
+
+def _visual_trajectory_rect(
+    source_rect: list[int], target_rect: list[int]
+) -> list[int]:
+    """Return the inclusive canvas region swept from source to target ROI."""
+
+    return [
+        min(source_rect[0], target_rect[0]),
+        min(source_rect[1], target_rect[1]),
+        max(source_rect[2], target_rect[2]),
+        max(source_rect[3], target_rect[3]),
+    ]
+
+
+def _visual_mask_is_inside_rect_and_canvas(
+    mask: set[tuple[int, int]], rect: list[int]
+) -> bool:
+    left, top, right, bottom = rect
+    return all(
+        0 <= x < HIGH_RES_FRAME_WIDTH
+        and 0 <= y < HIGH_RES_FRAME_HEIGHT
+        and left <= x <= right
+        and top <= y <= bottom
+        for x, y in mask
+    )
+
+
+def _visual_gate_error(
+    identity_key: str,
+    role: str,
+    kind: str,
+    detail: str,
+    reason_code: str | None = None,
+) -> SpeciesRoleVisualGateError:
+    reason = reason_code or SPECIES_ROLE_VISUAL_GATE_REASON_CODES[
+        (identity_key, role, kind)
+    ]
+    return SpeciesRoleVisualGateError(
+        f"{identity_key}/{role}: species-role visual gate {reason} failed: {detail}",
+        reason,
+    )
+
+
+def _visual_gate_failure(
+    identity_key: str,
+    role: str,
+    kind: str,
+    detail: str,
+    reason_code: str | None = None,
+) -> None:
+    raise _visual_gate_error(identity_key, role, kind, detail, reason_code)
+
+
+def _raise_accumulated_visual_gate_failures(
+    identity_key: str,
+    role: str,
+    failures: list[SpeciesRoleVisualGateError],
+) -> None:
+    reason_codes = tuple(
+        reason_code
+        for failure in failures
+        for reason_code in failure.reason_codes
+    )
+    raise SpeciesRoleVisualGateError(
+        f"{identity_key}/{role}: species-role visual gates failed in deterministic "
+        f"order: {'; '.join(str(failure) for failure in failures)}",
+        reason_codes,
+    )
+
+
+def _visual_gate_reason_codes(
+    identity_key: str, role: str, kind: str
+) -> list[str]:
+    if (identity_key, role, kind) == ("rabbit", "blink", "eye_sequence"):
+        return [
+            "RABBIT_BLINK_EYE_MASS_SEQUENCE",
+            "RABBIT_BLINK_LID_GEOMETRY",
+            "RABBIT_BLINK_EYE_CENTROID_DRIFT",
+        ]
+    return [SPECIES_ROLE_VISUAL_GATE_REASON_CODES[(identity_key, role, kind)]]
+
+
+def _visual_detect_landmark_component(
+    frame: set[tuple[int, int]],
+    window: list[int],
+    pixel_range: list[int],
+    bbox_maximum: list[int],
+) -> set[tuple[int, int]] | None:
+    # Detect on the full canvas, then use the policy window only to select and
+    # contain the landmark. This prevents a component that crosses the ROI
+    # border from looking valid after cropping. A surrounding-anatomy
+    # component may intersect the window only when its full component crosses
+    # the window; every wholly contained component is landmark-significant.
+    window_points = _visual_rect_points(window)
+    contained: list[set[tuple[int, int]]] = []
+    for component in base.connected_components(frame):
+        if not component & window_points:
+            continue
+        if component <= window_points:
+            contained.append(component)
+    if len(contained) != 1:
+        return None
+    component = contained[0]
+    left, top, right, bottom = base.bounds(component)
+    width = right - left + 1
+    height = bottom - top + 1
+    if (
+        not pixel_range[0] <= len(component) <= pixel_range[1]
+        or width > bbox_maximum[0]
+        or height > bbox_maximum[1]
+    ):
+        return None
+    return component
+
+
+def _run_visual_required_8_connected_anchors_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    phase_results: list[dict[str, object]] = []
+    anchors = dict(gate["anchors"])
+    for phase in gate["apply_to_phases"]:
+        frame = frame_masks[phase]
+        components = base.connected_components(frame)
+        component_ids: dict[str, set[int]] = {}
+        anchor_ink: dict[str, int] = {}
+        for name, rect in anchors.items():
+            selected = _visual_mask_in_rect(frame, rect)
+            anchor_ink[name] = len(selected)
+            component_ids[name] = {
+                index
+                for index, component in enumerate(components)
+                if component & selected
+            }
+        common = set.intersection(*component_ids.values())
+        exact_shared_component = (
+            len(common) == 1
+            and all(ids == common for ids in component_ids.values())
+        )
+        phase_results.append(
+            {
+                "anchor_component_count": {
+                    name: len(ids) for name, ids in component_ids.items()
+                },
+                "anchor_ink_pixels": anchor_ink,
+                "common_component_count": len(common),
+                "phase": phase,
+            }
+        )
+        if not all(anchor_ink.values()) or not exact_shared_component:
+            _visual_gate_failure(
+                identity_key,
+                role,
+                "required_8_connected_anchors",
+                f"P{phase} every anchor ROI does not contain only the same "
+                "single eight-connected foreground component",
+            )
+    return {"phases": phase_results}
+
+
+def _run_visual_phase_delta_locality_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    baseline = frame_masks[gate["baseline_phase"]]
+    phase_results: list[dict[str, object]] = []
+    for phase_rule_value in gate["phases"]:
+        phase_rule = dict(phase_rule_value)
+        allowed: set[tuple[int, int]] = set()
+        for rect in phase_rule["allowed_rects"]:
+            allowed.update(_visual_rect_points(rect))
+        phase = phase_rule["phase"]
+        delta = baseline ^ frame_masks[phase]
+        outside = delta - allowed
+        phase_results.append(
+            {
+                "outside_xor_pixels": len(outside),
+                "phase": phase,
+                "total_xor_pixels": len(delta),
+            }
+        )
+        if len(outside) > phase_rule["maximum_outside_xor_pixels"]:
+            _visual_gate_failure(
+                identity_key,
+                role,
+                "phase_delta_locality",
+                f"P{phase} has {len(outside)} outside-mask XOR pixels",
+            )
+    return {"phases": phase_results}
+
+
+def _run_visual_loop_seam_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    changed = len(
+        frame_masks[gate["from_phase"]] ^ frame_masks[gate["to_phase"]]
+    )
+    if changed > gate["maximum_xor_pixels"]:
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "loop_seam",
+            f"P3-to-P0 XOR is {changed} pixels",
+        )
+    return {"xor_pixels": changed}
+
+
+def _run_visual_pupil_only_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    allowed = set().union(
+        *(
+            _visual_rect_points(rect)
+            for rect in dict(gate["eye_rects"]).values()
+        )
+    )
+    baseline = frame_masks[gate["baseline_phase"]]
+    outside = [len((frame ^ baseline) - allowed) for frame in frame_masks]
+    if any(value > gate["maximum_outside_xor_pixels"] for value in outside):
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "pupil_only",
+            f"outside-pupil XOR sequence is {outside}",
+        )
+    return {"outside_xor_pixels": outside}
+
+
+def _run_visual_per_eye_occupancy_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    counts: dict[str, list[int]] = {}
+    for name, rect in dict(gate["eye_rects"]).items():
+        rect_points = _visual_rect_points(rect)
+        counts[name] = []
+        for phase, frame in enumerate(frame_masks):
+            components = [
+                component
+                for component in base.connected_components(frame)
+                if component & rect_points
+            ]
+            if len(components) != 1 or not components[0] <= rect_points:
+                _visual_gate_failure(
+                    identity_key,
+                    role,
+                    "per_eye_occupancy",
+                    f"P{phase} {name} eye is ambiguous or crosses its ROI border",
+                )
+            counts[name].append(len(components[0]))
+    ranges = gate["phase_min_max_pixels"]
+    if any(
+        not ranges[phase][0] <= value <= ranges[phase][1]
+        for values in counts.values()
+        for phase, value in enumerate(values)
+    ):
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "per_eye_occupancy",
+            f"per-eye occupancy sequence is {counts}",
+        )
+    return {"ink_pixels": counts}
+
+
+def _run_visual_localized_redraw_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    adjacent = [
+        len(frame_masks[phase - 1] ^ frame_masks[phase])
+        for phase in range(1, REQUIRED_FRAMES_PER_ROLE)
+    ]
+    if any(value > gate["maximum_adjacent_xor_pixels"] for value in adjacent):
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "localized_redraw",
+            f"adjacent XOR sequence is {adjacent}",
+        )
+    return {"adjacent_xor_pixels": adjacent}
+
+
+def _run_visual_rigid_pupil_translation_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> tuple[
+    dict[str, object],
+    list[tuple[int, int]],
+]:
+    detected: dict[str, list[set[tuple[int, int]]]] = {}
+    for name, window in dict(gate["tracking_windows"]).items():
+        detected[name] = []
+        for phase, frame in enumerate(frame_masks):
+            component = _visual_detect_landmark_component(
+                frame,
+                window,
+                gate["component_pixels_min_max"],
+                gate["component_bbox_max"],
+            )
+            if component is None:
+                _visual_gate_failure(
+                    identity_key,
+                    role,
+                    "rigid_pupil_translation",
+                    f"P{phase} {name} pupil is missing or ambiguous",
+                )
+            detected[name].append(component)
+    pupil_translations: dict[str, list[tuple[int, int]]] = {}
+    for name, components in detected.items():
+        base_component = components[0]
+        base_left, base_top, _base_right, _base_bottom = base.bounds(
+            base_component
+        )
+        window = dict(gate["tracking_windows"])[name]
+        pupil_translations[name] = []
+        for phase, component in enumerate(components):
+            left, top, _right, _bottom = base.bounds(component)
+            dx = left - base_left
+            dy = top - base_top
+            expected = _visual_shift_mask(base_component, dx, dy)
+            if (
+                not _visual_mask_is_inside_rect_and_canvas(expected, window)
+                or component != expected
+            ):
+                _visual_gate_failure(
+                    identity_key,
+                    role,
+                    "rigid_pupil_translation",
+                    f"P{phase} {name} pupil is not an exact integer translation "
+                    "of its P0 component",
+                )
+            pupil_translations[name].append((dx, dy))
+    limits = gate["maximum_inter_eye_translation_delta"]
+    translation_delta: list[list[int]] = []
+    for phase in range(REQUIRED_FRAMES_PER_ROLE):
+        delta_x = abs(
+            pupil_translations["left"][phase][0]
+            - pupil_translations["right"][phase][0]
+        )
+        delta_y = abs(
+            pupil_translations["left"][phase][1]
+            - pupil_translations["right"][phase][1]
+        )
+        translation_delta.append([delta_x, delta_y])
+        if delta_x > limits[0] or delta_y > limits[1]:
+            _visual_gate_failure(
+                identity_key,
+                role,
+                "rigid_pupil_translation",
+                f"P{phase} inter-eye translation delta is {[delta_x, delta_y]}",
+            )
+    return (
+        {
+            "inter_eye_translation_delta": translation_delta,
+            "pupil_translation": {
+                name: [[x, y] for x, y in values]
+                for name, values in pupil_translations.items()
+            },
+        },
+        list(pupil_translations["left"]),
+    )
+
+
+def _run_visual_gill_base_shared_transform_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+    shared_pupil_translations: list[tuple[int, int]] | None,
+) -> dict[str, object]:
+    if shared_pupil_translations is None:
+        raise RasterContractError(
+            f"{identity_key}/{role}: gill gate dependency was not evaluated"
+        )
+    phase_results: list[dict[str, object]] = []
+    for phase in range(REQUIRED_FRAMES_PER_ROLE):
+        dx, dy = shared_pupil_translations[phase]
+        template_xor: dict[str, int] = {}
+        source_residue: dict[str, int] = {}
+        trajectory_rects: dict[str, list[int]] = {}
+        for name, rect in dict(gate["template_rects"]).items():
+            template = _visual_mask_in_rect(
+                frame_masks[gate["template_phase"]], rect
+            )
+            if not template:
+                _visual_gate_failure(
+                    identity_key,
+                    role,
+                    "gill_base_shared_transform",
+                    f"P0 {name} template is empty",
+                )
+            expected = _visual_shift_mask(template, dx, dy)
+            target_rect = _visual_shift_rect(rect, dx, dy)
+            trajectory_rect = _visual_trajectory_rect(rect, target_rect)
+            actual = _visual_mask_in_rect(frame_masks[phase], trajectory_rect)
+            changed = len(expected ^ actual)
+            template_xor[name] = changed
+            source_only = _visual_rect_points(rect) - _visual_rect_points(target_rect)
+            source_residue[name] = len((actual - expected) & source_only)
+            trajectory_rects[name] = trajectory_rect
+            if changed > gate["maximum_template_xor_pixels_each"]:
+                _visual_gate_failure(
+                    identity_key,
+                    role,
+                    "gill_base_shared_transform",
+                    f"P{phase} {name} template XOR is {changed}",
+                )
+        phase_results.append(
+            {
+                "phase": phase,
+                "source_residue_pixels": source_residue,
+                "template_xor_pixels": template_xor,
+                "trajectory_rects": trajectory_rects,
+                "translation": [dx, dy],
+            }
+        )
+    return {"phases": phase_results}
+
+
+def _run_visual_split_nose_topology_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    frame = frame_masks[gate["phase"]]
+    ink_counts: dict[str, int] = {}
+    for name, roi_value in dict(gate["ink_rois"]).items():
+        roi = dict(roi_value)
+        count = len(_visual_mask_in_rect(frame, roi["rect"]))
+        ink_counts[name] = count
+        if count < roi["minimum_ink_pixels"]:
+            _visual_gate_failure(
+                identity_key,
+                role,
+                "split_nose_topology",
+                f"{name} contains only {count} ink pixels",
+            )
+    white_counts: dict[str, int] = {}
+    for name, roi_value in dict(gate["white_rois"]).items():
+        roi = dict(roi_value)
+        count = len(_visual_mask_in_rect(frame, roi["rect"]))
+        white_counts[name] = count
+        if count > roi["maximum_ink_pixels"]:
+            _visual_gate_failure(
+                identity_key,
+                role,
+                "split_nose_topology",
+                f"{name} contains {count} ink pixels",
+            )
+    return {
+        "ink_roi_pixels": ink_counts,
+        "white_roi_ink_pixels": white_counts,
+    }
+
+
+def _run_visual_cadence_gate(
+    identity_key: str,
+    role: str,
+    actual_durations: list[int],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    if actual_durations != gate["required_durations_ms"]:
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "cadence",
+            f"actual cadence is {actual_durations}",
+        )
+    return {"durations_ms": actual_durations}
+
+
+def _run_visual_eye_sequence_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    eye_rect = gate["eye_rect"]
+    eye_rect_points = _visual_rect_points(eye_rect)
+    containment_rect = gate["containment_rect"]
+    eyes = [
+        _visual_mask_in_rect(frame, eye_rect)
+        for frame in frame_masks
+    ]
+    if any(not eye for eye in eyes):
+        _visual_gate_failure(
+            identity_key, role, "eye_sequence", "one or more eye phases are empty"
+        )
+    masses = [len(eye) for eye in eyes]
+    ratios = [mass / masses[0] for mass in masses]
+    ranges = gate["phase_mass_ratio_min_max_from_p0"]
+    failures: list[SpeciesRoleVisualGateError] = []
+    containment_component_counts: list[int] = []
+    outside_eye_rect_pixels: list[int] = []
+    full_component_counts: list[int] = []
+    full_component_contained: list[bool] = []
+    for frame, eye in zip(frame_masks, eyes):
+        containment_mask = _visual_mask_in_rect(frame, containment_rect)
+        containment_component_counts.append(
+            len(base.connected_components(containment_mask))
+        )
+        outside_eye_rect_pixels.append(
+            len(containment_mask - eye_rect_points)
+        )
+        full_components = [
+            component
+            for component in base.connected_components(frame)
+            if component & eye
+        ]
+        full_component_counts.append(len(full_components))
+        full_component_contained.append(
+            len(full_components) == 1
+            and full_components[0] <= eye_rect_points
+        )
+    containment_failed = (
+        any(count != 1 for count in containment_component_counts)
+        or any(outside_eye_rect_pixels)
+        or not all(full_component_contained)
+    )
+    if any(
+        not ranges[phase][0] <= ratio <= ranges[phase][1]
+        for phase, ratio in enumerate(ratios)
+    ):
+        failures.append(
+            _visual_gate_error(
+                identity_key,
+                role,
+                "eye_sequence",
+                f"eye mass ratios are {ratios}",
+            )
+        )
+    closed = eyes[gate["closed_phase"]]
+    components = base.connected_components(closed)
+    left, top, right, bottom = base.bounds(closed)
+    height = bottom - top + 1
+    closed_geometry_failed = (
+        len(components) != gate["closed_phase_required_component_count"]
+        or height != gate["closed_phase_required_height_pixels"]
+    )
+    if containment_failed or closed_geometry_failed:
+        failures.append(
+            _visual_gate_error(
+                identity_key,
+                role,
+                "eye_sequence",
+                "eye/lid containment or closed geometry failed; "
+                f"containment components={containment_component_counts}, "
+                f"outside pixels={outside_eye_rect_pixels}, "
+                f"full components={full_component_counts}, closed lid has "
+                f"{len(components)} components and height {height}",
+                "RABBIT_BLINK_LID_GEOMETRY",
+            )
+        )
+    base_center = _visual_centroid(eyes[0])
+    distances = [
+        math.dist(base_center, _visual_centroid(eye)) for eye in eyes
+    ]
+    if any(
+        distance > gate["maximum_centroid_distance_from_p0"]
+        for distance in distances
+    ):
+        failures.append(
+            _visual_gate_error(
+                identity_key,
+                role,
+                "eye_sequence",
+                f"eye centroid distances are {distances}",
+                "RABBIT_BLINK_EYE_CENTROID_DRIFT",
+            )
+        )
+    if failures:
+        _raise_accumulated_visual_gate_failures(identity_key, role, failures)
+    return {
+        "centroid_distance_from_p0": distances,
+        "closed_component_count": len(components),
+        "closed_height_pixels": height,
+        "containment_component_count": containment_component_counts,
+        "containment_outside_eye_rect_pixels": outside_eye_rect_pixels,
+        "full_component_contained": full_component_contained,
+        "full_component_count": full_component_counts,
+        "ink_pixels": masses,
+        "mass_ratio_from_p0": ratios,
+    }
+
+
+def _run_visual_skull_freeze_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    baseline = _visual_mask_in_rect(
+        frame_masks[gate["baseline_phase"]], gate["rect"]
+    )
+    changed = [
+        len(baseline ^ _visual_mask_in_rect(frame, gate["rect"]))
+        for frame in frame_masks
+    ]
+    if any(value > gate["maximum_xor_pixels"] for value in changed):
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "skull_freeze",
+            f"skull XOR sequence is {changed}",
+        )
+    return {"xor_pixels": changed}
+
+
+def _run_visual_ear_base_freeze_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    changed_by_ear: dict[str, list[int]] = {}
+    for name, rect in dict(gate["rects"]).items():
+        baseline = _visual_mask_in_rect(
+            frame_masks[gate["baseline_phase"]], rect
+        )
+        changed = [
+            len(baseline ^ _visual_mask_in_rect(frame, rect))
+            for frame in frame_masks
+        ]
+        changed_by_ear[name] = changed
+        if any(value > gate["maximum_xor_pixels_each"] for value in changed):
+            _visual_gate_failure(
+                identity_key,
+                role,
+                "ear_base_freeze",
+                f"{name} ear-base XOR sequence is {changed}",
+            )
+    return {"xor_pixels": changed_by_ear}
+
+
+def _run_visual_local_scale_ink_gate(
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    gate: dict[str, object],
+) -> dict[str, object]:
+    tracking_rect = gate["rect"]
+    baseline_components = [
+        component
+        for component in base.connected_components(frame_masks[0])
+        if _visual_mask_in_rect(component, tracking_rect)
+    ]
+    if not baseline_components:
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "local_scale_ink",
+            "P0 has no full-canvas component owning tracking-ROI ink",
+        )
+    baseline_seeds = [
+        _visual_mask_in_rect(component, tracking_rect)
+        for component in baseline_components
+    ]
+    seed_sizes = [len(seed) for seed in baseline_seeds]
+    maximum_seed_size = max(seed_sizes)
+    if seed_sizes.count(maximum_seed_size) != 1:
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "local_scale_ink",
+            "P0 primary full-canvas component seed is ambiguous",
+        )
+    primary_seed_index = seed_sizes.index(maximum_seed_size)
+    primary_seed = baseline_seeds[primary_seed_index]
+
+    tracked_components: list[set[tuple[int, int]]] = []
+    roi_component_counts: list[int] = []
+    for phase, frame in enumerate(frame_masks):
+        roi_owners = [
+            component
+            for component in base.connected_components(frame)
+            if _visual_mask_in_rect(component, tracking_rect)
+        ]
+        roi_component_counts.append(len(roi_owners))
+        owner_seed_ids = [
+            {
+                index
+                for index, seed in enumerate(baseline_seeds)
+                if component & seed
+            }
+            for component in roi_owners
+        ]
+        seed_owner_counts = [
+            sum(index in seed_ids for seed_ids in owner_seed_ids)
+            for index in range(len(baseline_seeds))
+        ]
+        primary_owners = [
+            component
+            for component, seed_ids in zip(roi_owners, owner_seed_ids)
+            if primary_seed_index in seed_ids
+        ]
+        if (
+            any(not seed_ids for seed_ids in owner_seed_ids)
+            or any(count != 1 for count in seed_owner_counts)
+            or len(primary_owners) != 1
+        ):
+            _visual_gate_failure(
+                identity_key,
+                role,
+                "local_scale_ink",
+                f"P{phase} tracking-ROI components do not retain unambiguous "
+                "P0-seed ownership",
+            )
+        tracked_components.append(primary_owners[0])
+
+    tracking_rect_points = _visual_rect_points(tracking_rect)
+    local_ink = [
+        len(component & tracking_rect_points)
+        for component in tracked_components
+    ]
+    base_ink = local_ink[0]
+    ratios = [ink / base_ink for ink in local_ink]
+    full_bounds = [
+        list(base.bounds(component)) for component in tracked_components
+    ]
+    baseline_bounds = full_bounds[0]
+    maximum_expansion = gate["maximum_left_top_bbox_expansion_pixels"]
+    ratio_range = gate["ink_ratio_min_max_from_p0"]
+    left_border, top_border, _right_border, _bottom_border = tracking_rect
+    if any(
+        not ratio_range[0] <= ratio <= ratio_range[1]
+        for ratio in ratios
+    ) or any(
+        candidate[0] < baseline_bounds[0] - maximum_expansion
+        or candidate[1] < baseline_bounds[1] - maximum_expansion
+        or candidate[0] < left_border
+        or candidate[1] < top_border
+        for candidate in full_bounds
+    ):
+        _visual_gate_failure(
+            identity_key,
+            role,
+            "local_scale_ink",
+            f"full-canvas tracked ink ratios/bounds are {ratios}/{full_bounds}",
+        )
+    return {
+        "full_canvas_bounds": full_bounds,
+        "ink_ratio_from_p0": ratios,
+        "local_ink_pixels": local_ink,
+        "p0_primary_seed_pixels": len(primary_seed),
+        "p0_roi_component_count": len(baseline_seeds),
+        "roi_component_count": roi_component_counts,
+    }
+
+
+def _run_species_role_visual_gate_kind(
+    kind: str,
+    identity_key: str,
+    role: str,
+    frame_masks: list[set[tuple[int, int]]],
+    actual_durations: list[int],
+    gate: dict[str, object],
+    shared_pupil_translations: list[tuple[int, int]] | None,
+) -> tuple[
+    dict[str, object],
+    list[tuple[int, int]] | None,
+]:
+    if kind == "required_8_connected_anchors":
+        measurements = _run_visual_required_8_connected_anchors_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "phase_delta_locality":
+        measurements = _run_visual_phase_delta_locality_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "loop_seam":
+        measurements = _run_visual_loop_seam_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "pupil_only":
+        measurements = _run_visual_pupil_only_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "per_eye_occupancy":
+        measurements = _run_visual_per_eye_occupancy_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "localized_redraw":
+        measurements = _run_visual_localized_redraw_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "rigid_pupil_translation":
+        return _run_visual_rigid_pupil_translation_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "gill_base_shared_transform":
+        measurements = _run_visual_gill_base_shared_transform_gate(
+            identity_key,
+            role,
+            frame_masks,
+            gate,
+            shared_pupil_translations,
+        )
+    elif kind == "split_nose_topology":
+        measurements = _run_visual_split_nose_topology_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "cadence":
+        measurements = _run_visual_cadence_gate(
+            identity_key, role, actual_durations, gate
+        )
+    elif kind == "eye_sequence":
+        measurements = _run_visual_eye_sequence_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "skull_freeze":
+        measurements = _run_visual_skull_freeze_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "ear_base_freeze":
+        measurements = _run_visual_ear_base_freeze_gate(
+            identity_key, role, frame_masks, gate
+        )
+    elif kind == "local_scale_ink":
+        measurements = _run_visual_local_scale_ink_gate(
+            identity_key, role, frame_masks, gate
+        )
+    else:
+        raise RasterContractError(
+            f"{identity_key}/{role}: unsupported parsed visual gate {kind}"
+        )
+    return measurements, shared_pupil_translations
+
+
+def species_role_visual_gate_evidence_sha256(
+    evidence: dict[str, object],
+) -> str:
+    return _canonical_json_sha256(evidence)
+
+
+def validate_species_role_visual_gates(
+    policy: SpeciesRoleVisualGatePolicy,
+    identity_key: str,
+    identity_frame_sha256: str,
+    role: base.RoleSpec,
+    frames: list[HighResFrame] | tuple[HighResFrame, ...],
+    durations_ms: tuple[int, int, int, int] | list[int] | None,
+) -> dict[str, object] | None:
+    """Apply only an explicitly configured species/role visual policy.
+
+    The policy's identity-frame hash authenticates the coordinate basis before
+    any ROI is interpreted. Unconfigured species/roles retain the pre-existing
+    raster and semantic gates and receive no inferred anatomy policy.
+    """
+
+    _require_species_role_visual_gate_policy_integrity(policy)
+    key = (identity_key, role.name)
+    entry = policy.entries.get(key)
+    if entry is None:
+        return None
+    if identity_key in PROTECTED_STARTERS or key == ("ferret", "blink"):
+        raise RasterContractError(
+            f"{identity_key}/{role.name}: protected companion entered visual gates"
+        )
+    actual_identity_hash = _require_lower_sha256(
+        identity_frame_sha256,
+        f"{identity_key}/{role.name}/visual-gate-identity-frame",
+    )
+    if actual_identity_hash != entry.identity_frame_sha256:
+        raise RasterContractError(
+            f"{identity_key}/{role.name}: visual gate identity-frame SHA-256 "
+            "does not authenticate the policy coordinate basis"
+        )
+    if len(frames) != REQUIRED_FRAMES_PER_ROLE:
+        raise RasterContractError(
+            f"{identity_key}/{role.name}: visual gate requires exact P0..P3"
+        )
+    frame_masks: list[set[tuple[int, int]]] = []
+    frame_hashes: list[str] = []
+    for phase, frame in enumerate(frames):
+        if frame.role != role.name or frame.phase != phase:
+            raise RasterContractError(
+                f"{identity_key}/{role.name}: visual gate frame order drifted"
+            )
+        mask = set(frame.mask)
+        if high_res_frame_bytes(mask) != frame.packed:
+            raise RasterContractError(
+                f"{identity_key}/{role.name}/P{phase}: visual gate input packing drifted"
+            )
+        frame_masks.append(mask)
+        frame_hashes.append(hashlib.sha256(frame.packed).hexdigest())
+    if durations_ms is None:
+        raise RasterContractError(
+            f"{identity_key}/{role.name}: visual gate requires actual role cadence"
+        )
+    if (
+        not isinstance(durations_ms, (tuple, list))
+        or len(durations_ms) != REQUIRED_FRAMES_PER_ROLE
+        or any(type(value) is not int or value <= 0 for value in durations_ms)
+    ):
+        raise RasterContractError(
+            f"{identity_key}/{role.name}: visual gate cadence is malformed"
+        )
+    actual_durations = list(durations_ms)
+    gate_results: dict[str, object] = {}
+    shared_pupil_translations: list[tuple[int, int]] | None = None
+    failures: list[SpeciesRoleVisualGateError] = []
+
+    for kind in SPECIES_ROLE_VISUAL_GATE_EXECUTION_ORDER:
+        if kind not in entry.gates:
+            continue
+        # Gill evidence is meaningful only after every pupil phase has
+        # established an exact integer P0 translation. A pupil failure is
+        # already diagnosed; inventing a downstream gill failure from an
+        # unavailable transform would be false evidence.
+        if (
+            kind == "gill_base_shared_transform"
+            and shared_pupil_translations is None
+        ):
+            continue
+        gate_value = entry.gates[kind]
+        gate = dict(gate_value)
+        try:
+            (
+                measurements,
+                shared_pupil_translations,
+            ) = _run_species_role_visual_gate_kind(
+                kind,
+                identity_key,
+                role.name,
+                frame_masks,
+                actual_durations,
+                gate,
+                shared_pupil_translations,
+            )
+        except SpeciesRoleVisualGateError as error:
+            failures.append(error)
+            continue
+        gate_results[kind] = {
+            "possible_failure_reason_codes": _visual_gate_reason_codes(
+                identity_key, role.name, kind
+            ),
+            "measurements": measurements,
+            "status": "pass",
+        }
+
+    if failures:
+        _raise_accumulated_visual_gate_failures(
+            identity_key, role.name, failures
+        )
+
+    return {
+        "durations_ms": actual_durations,
+        "frame_sha256": frame_hashes,
+        "gate_results": gate_results,
+        "identity_frame_sha256": actual_identity_hash,
+        "identity_key": identity_key,
+        "policy_entry_sha256": entry.entry_sha256,
+        "policy_relative_path": policy.relative_path,
+        "policy_schema": policy.schema,
+        "policy_sha256": policy.source_sha256,
+        "role": role.name,
+        "schema": SPECIES_ROLE_VISUAL_GATE_EVIDENCE_SCHEMA,
+        "status": "pass",
+    }
 
 
 def validate_generated_action_semantic_role(

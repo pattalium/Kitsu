@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install pinned PlatformIO
-        run: python -m pip install platformio==6.1.19
+        run: python -m pip install platformio==6.1.19 pillow==12.2.0
       - name: Link owner-reflashable Heltec V3 firmware
         run: pio run -e heltec_wifi_lora_32_V3_reflashable
       - name: Local-first Python model, source-contract, layout, and release tests
@@ -39,9 +39,12 @@ jobs:
           tests.test_portrait_ui_layout
           tests.test_rx_rearm
           tests.test_rx_observability
+          tests.test_species_role_visual_gates
           tests.test_stable_release_tooling
           tests.test_transport_scope
           tests.test_tx_turnaround
+      - name: Default-pack release and source-inventory audit
+        run: python tools/test_default_pack_release.py
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

@@ -22,6 +22,7 @@ from pathlib import Path
 
 LEGACY_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
 MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v7"
+VISUAL_GATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v8"
 EXPECTED_CREATURES = 21
 PORTRAIT_WIDTH = 16
 PORTRAIT_HEIGHT = 18
@@ -48,6 +49,123 @@ TWO_REFERENCE_GENERATION_MODE = "two-reference-same-p0-star-v1"
 THREE_REFERENCE_GENERATION_MODE = (
     "three-reference-same-p0-native-grid-star-v1"
 )
+SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA = (
+    "kitsu-species-role-visual-gates-v1"
+)
+SPECIES_ROLE_VISUAL_GATE_EVIDENCE_SCHEMA = (
+    "kitsu-species-role-visual-gate-evidence-v1"
+)
+SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH = (
+    "assets/companion-sources/species-role-visual-gates-v1.json"
+)
+SPECIES_ROLE_VISUAL_GATE_KEYS = (
+    ("axolotl", "idle"),
+    ("axolotl", "blink"),
+    ("axolotl", "pet"),
+    ("rabbit", "idle"),
+    ("rabbit", "blink"),
+    ("rabbit", "listen"),
+)
+SPECIES_ROLE_VISUAL_GATE_IDENTITY_FRAME_SHA256 = {
+    "axolotl": "4a46febde51aa1612632b5a2251a8f23eff02bb99e52597a48d073c2b373ac41",
+    "rabbit": "8392e03d7b99b633ead2185d579c7f860e483eb46299d7d642890cf8059616e4",
+}
+SPECIES_ROLE_VISUAL_GATE_ENTRY_SHA256 = {
+    ("axolotl", "idle"): (
+        "cbccb33f1196708f6439fb1c630e8c59989bbe5beb360826c3d7ffa7a552b357"
+    ),
+    ("axolotl", "blink"): (
+        "1bfb1e5003cd8f652b5462e033e91634b42cea23926f1fd6d08517aef387580f"
+    ),
+    ("axolotl", "pet"): (
+        "abaa54c620357d05d86a63c0d6f70cb2edd9fa3ec387f7439f6226ac37ccabea"
+    ),
+    ("rabbit", "idle"): (
+        "f55167effe20e2de5c75f67ce0f8b00b7072e3e62967c167b18c17cd3b50848b"
+    ),
+    ("rabbit", "blink"): (
+        "e1c2c7d9c400393b58f790f1e39243e561a484efd58d4fd324a8732fef55ce36"
+    ),
+    ("rabbit", "listen"): (
+        "94ba9d8a9c453025647a4f93d65adfae90e340bb18ef4ef2bf1e2fbff86544b6"
+    ),
+}
+SPECIES_ROLE_VISUAL_GATE_KIND_SETS = {
+    ("axolotl", "idle"): {
+        "required_8_connected_anchors",
+        "phase_delta_locality",
+        "loop_seam",
+    },
+    ("axolotl", "blink"): {
+        "required_8_connected_anchors",
+        "pupil_only",
+        "per_eye_occupancy",
+    },
+    ("axolotl", "pet"): {
+        "required_8_connected_anchors",
+        "localized_redraw",
+        "rigid_pupil_translation",
+        "gill_base_shared_transform",
+    },
+    ("rabbit", "idle"): {
+        "phase_delta_locality",
+        "split_nose_topology",
+        "cadence",
+    },
+    ("rabbit", "blink"): {"eye_sequence"},
+    ("rabbit", "listen"): {
+        "skull_freeze",
+        "ear_base_freeze",
+        "local_scale_ink",
+    },
+}
+SPECIES_ROLE_VISUAL_GATE_REASON_CODES = {
+    ("axolotl", "idle", "required_8_connected_anchors"): [
+        "AX_REQUIRED_LANDMARK_DISCONNECTED"
+    ],
+    ("axolotl", "idle", "phase_delta_locality"): [
+        "AX_IDLE_GILL_PHASE_LOCALITY"
+    ],
+    ("axolotl", "idle", "loop_seam"): ["AX_IDLE_LOOP_SEAM"],
+    ("axolotl", "blink", "required_8_connected_anchors"): [
+        "AX_REQUIRED_LANDMARK_DISCONNECTED"
+    ],
+    ("axolotl", "blink", "pupil_only"): ["AX_BLINK_PUPIL_ONLY"],
+    ("axolotl", "blink", "per_eye_occupancy"): [
+        "AX_BLINK_PER_EYE_OCCUPANCY"
+    ],
+    ("axolotl", "pet", "required_8_connected_anchors"): [
+        "AX_REQUIRED_LANDMARK_DISCONNECTED"
+    ],
+    ("axolotl", "pet", "localized_redraw"): ["AX_PET_REDRAW_BUDGET"],
+    ("axolotl", "pet", "rigid_pupil_translation"): [
+        "AX_PET_NONRIGID_PUPIL_TRANSFORM"
+    ],
+    ("axolotl", "pet", "gill_base_shared_transform"): [
+        "AX_PET_GILL_BASE_DRIFT"
+    ],
+    ("rabbit", "idle", "phase_delta_locality"): [
+        "RABBIT_IDLE_PHASE_RESIDUAL"
+    ],
+    ("rabbit", "idle", "split_nose_topology"): [
+        "RABBIT_IDLE_SPLIT_NOSE_TOPOLOGY"
+    ],
+    ("rabbit", "idle", "cadence"): ["RABBIT_IDLE_CADENCE"],
+    ("rabbit", "blink", "eye_sequence"): [
+        "RABBIT_BLINK_EYE_MASS_SEQUENCE",
+        "RABBIT_BLINK_LID_GEOMETRY",
+        "RABBIT_BLINK_EYE_CENTROID_DRIFT",
+    ],
+    ("rabbit", "listen", "skull_freeze"): [
+        "RABBIT_LISTEN_SKULL_FREEZE"
+    ],
+    ("rabbit", "listen", "ear_base_freeze"): [
+        "RABBIT_LISTEN_EAR_BASE_FREEZE"
+    ],
+    ("rabbit", "listen", "local_scale_ink"): [
+        "RABBIT_LISTEN_LOCAL_SCALE_INK"
+    ],
+}
 GENERATED_PHASE_PREAUTHORIZATION_SCHEMA = (
     "kitsu-wild-generated-phase-preauthorization-v2"
 )
@@ -134,6 +252,20 @@ REQUIRED_ANIMATION_CONTRACT_VALUES = {
     "native_grid_reference_zero_registration_exact_copy_only": True,
     "native_grid_reference_derivation": NATIVE_GRID_REFERENCE_DERIVATION,
 }
+VISUAL_GATE_REQUIRED_ANIMATION_CONTRACT_VALUES = {
+    **REQUIRED_ANIMATION_CONTRACT_VALUES,
+    "species_role_visual_gate_policy_schema": (
+        SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA
+    ),
+    "species_role_visual_gate_evidence_schema": (
+        SPECIES_ROLE_VISUAL_GATE_EVIDENCE_SCHEMA
+    ),
+    "species_role_visual_gate_policy_relative_path": (
+        SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH
+    ),
+    "species_role_visual_gate_connectivity": 8,
+    "species_role_visual_gate_allowlisted_only": True,
+}
 
 FIRMWARE_RELATIVE_PATH = Path("src/wild_creature_catalog.cpp")
 ANDROID_RELATIVE_PATH = Path(
@@ -157,6 +289,17 @@ class PortraitRecord:
     display_name: str
     bitmap: bytes
     bitmap_base64: str
+
+
+@dataclass(frozen=True)
+class SpeciesRoleVisualGatePolicy:
+    """Independently authenticated policy provenance used by sync."""
+
+    source_sha256: str
+    identity_frame_sha256: dict[str, str]
+    entries: dict[tuple[str, str], dict[str, object]]
+    entry_sha256: dict[tuple[str, str], str]
+    provenance_record: dict[str, object]
 
 
 def parse_args() -> argparse.Namespace:
@@ -194,11 +337,148 @@ def require_list(value: object, label: str) -> list[object]:
     return value
 
 
-def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
-    manifest_schema = manifest.get("schema")
-    if manifest_schema not in {LEGACY_MANIFEST_SCHEMA, MANIFEST_SCHEMA}:
+def canonical_json_sha256(value: object) -> str:
+    try:
+        payload = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeEncodeError) as error:
+        raise ValueError(f"value is not canonical ASCII JSON: {error}") from error
+    return hashlib.sha256(payload).hexdigest()
+
+
+def reject_duplicate_json_pairs(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"visual gate policy duplicates JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def require_exact_keys(
+    value: object, expected: set[str], label: str
+) -> dict[str, object]:
+    record = require_mapping(value, label)
+    if set(record) != expected:
         raise ValueError(
-            f"manifest schema must be {LEGACY_MANIFEST_SCHEMA} or {MANIFEST_SCHEMA}"
+            f"{label} must contain exact fields; "
+            f"missing={sorted(expected - set(record))} "
+            f"unexpected={sorted(set(record) - expected)}"
+        )
+    return record
+
+
+def load_species_role_visual_gate_policy(
+    project_root: Path,
+) -> SpeciesRoleVisualGatePolicy:
+    """Authenticate the repository policy independently of build evidence."""
+
+    root = project_root.resolve()
+    policy_path = (root / SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH).resolve()
+    if root != policy_path and root not in policy_path.parents:
+        raise ValueError("visual gate policy path escapes project root")
+    try:
+        source_bytes = policy_path.read_bytes()
+        payload = json.loads(
+            source_bytes.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_json_pairs,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read canonical visual gate policy: {error}") from error
+    policy = require_exact_keys(
+        payload,
+        {"canvas", "connectivity", "entries", "identity_frame_sha256", "schema"},
+        "visual gate policy",
+    )
+    if (
+        policy.get("schema") != SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA
+        or policy.get("canvas") != [64, 80]
+        or policy.get("connectivity") != 8
+    ):
+        raise ValueError("canonical visual gate policy header drifted")
+    identity_hashes = require_exact_keys(
+        policy.get("identity_frame_sha256"),
+        {"axolotl", "rabbit"},
+        "visual gate policy.identity_frame_sha256",
+    )
+    if identity_hashes != SPECIES_ROLE_VISUAL_GATE_IDENTITY_FRAME_SHA256:
+        raise ValueError("canonical visual gate identity coordinate basis drifted")
+
+    raw_entries = require_list(policy.get("entries"), "visual gate policy.entries")
+    if len(raw_entries) != len(SPECIES_ROLE_VISUAL_GATE_KEYS):
+        raise ValueError("visual gate policy must contain exactly six entries")
+    entries: dict[tuple[str, str], dict[str, object]] = {}
+    entry_hashes: dict[tuple[str, str], str] = {}
+    for index, expected_key in enumerate(SPECIES_ROLE_VISUAL_GATE_KEYS):
+        entry = require_exact_keys(
+            raw_entries[index],
+            {"gates", "identity_key", "role"},
+            f"visual gate policy.entries[{index}]",
+        )
+        actual_key = (entry.get("identity_key"), entry.get("role"))
+        if actual_key != expected_key:
+            raise ValueError(
+                "visual gate policy entries differ from the exact ordered allow-list"
+            )
+        gates = require_mapping(
+            entry.get("gates"),
+            f"visual gate policy.entries[{index}].gates",
+        )
+        if set(gates) != SPECIES_ROLE_VISUAL_GATE_KIND_SETS[expected_key] or any(
+            not isinstance(gate, dict) for gate in gates.values()
+        ):
+            raise ValueError(
+                f"visual gate policy {expected_key[0]}/{expected_key[1]} gate set drifted"
+            )
+        entry_hash = canonical_json_sha256(entry)
+        if entry_hash != SPECIES_ROLE_VISUAL_GATE_ENTRY_SHA256[expected_key]:
+            raise ValueError(
+                f"visual gate policy {expected_key[0]}/{expected_key[1]} content drifted"
+            )
+        entries[expected_key] = entry
+        entry_hashes[expected_key] = entry_hash
+
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    provenance_record = {
+        "configured_species_roles": [
+            f"{identity_key}/{role}"
+            for identity_key, role in SPECIES_ROLE_VISUAL_GATE_KEYS
+        ],
+        "identity_frame_sha256": dict(identity_hashes),
+        "relative_path": SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH,
+        "schema": SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA,
+        "sha256": source_sha256,
+    }
+    return SpeciesRoleVisualGatePolicy(
+        source_sha256=source_sha256,
+        identity_frame_sha256=dict(identity_hashes),
+        entries=entries,
+        entry_sha256=entry_hashes,
+        provenance_record=provenance_record,
+    )
+
+
+def require_fail_closed_manifest(
+    manifest: dict[str, object],
+    project_root: Path | None = None,
+) -> SpeciesRoleVisualGatePolicy | None:
+    manifest_schema = manifest.get("schema")
+    if manifest_schema not in {
+        LEGACY_MANIFEST_SCHEMA,
+        MANIFEST_SCHEMA,
+        VISUAL_GATE_MANIFEST_SCHEMA,
+    }:
+        raise ValueError(
+            "manifest schema must be one of "
+            f"{LEGACY_MANIFEST_SCHEMA}, {MANIFEST_SCHEMA}, or "
+            f"{VISUAL_GATE_MANIFEST_SCHEMA}"
         )
     if manifest.get("complete_roster") is not True:
         raise ValueError("manifest must declare complete_roster=true")
@@ -209,33 +489,207 @@ def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
     )
     if raster_contract != EXPECTED_RASTER_CONTRACT:
         raise ValueError(
-            "manifest raster_contract is not the fail-closed v6/v7 contract"
+            "manifest raster_contract is not the fail-closed v6/v7/v8 contract"
         )
     animation_contract = require_mapping(
         manifest.get("animation_contract"), "animation_contract"
     )
-    required_animation_values = (
-        LEGACY_REQUIRED_ANIMATION_CONTRACT_VALUES
-        if manifest_schema == LEGACY_MANIFEST_SCHEMA
-        else REQUIRED_ANIMATION_CONTRACT_VALUES
-    )
+    if manifest_schema == LEGACY_MANIFEST_SCHEMA:
+        required_animation_values = LEGACY_REQUIRED_ANIMATION_CONTRACT_VALUES
+    elif manifest_schema == MANIFEST_SCHEMA:
+        required_animation_values = REQUIRED_ANIMATION_CONTRACT_VALUES
+    else:
+        required_animation_values = VISUAL_GATE_REQUIRED_ANIMATION_CONTRACT_VALUES
     for field, expected in required_animation_values.items():
         if animation_contract.get(field) != expected:
             raise ValueError(
                 f"manifest animation_contract.{field} is not fail-closed for "
                 f"{manifest_schema}"
             )
+    if manifest_schema in {LEGACY_MANIFEST_SCHEMA, MANIFEST_SCHEMA}:
+        reserved_animation_fields = (
+            set(VISUAL_GATE_REQUIRED_ANIMATION_CONTRACT_VALUES)
+            - set(REQUIRED_ANIMATION_CONTRACT_VALUES)
+        )
+        if "species_role_visual_gate_policy" in manifest or any(
+            field in animation_contract for field in reserved_animation_fields
+        ):
+            raise ValueError(
+                f"{manifest_schema} cannot contain reserved v8 visual-gate fields"
+            )
     allowed_lock_schemas = {DIRECT_LOCK_SCHEMA, LEGACY_IMAGEGEN_LOCK_SCHEMA}
-    if manifest_schema == MANIFEST_SCHEMA:
+    if manifest_schema in {MANIFEST_SCHEMA, VISUAL_GATE_MANIFEST_SCHEMA}:
         allowed_lock_schemas.add(IMAGEGEN_LOCK_SCHEMA)
     if manifest.get("identity_lock_schema") not in allowed_lock_schemas:
         raise ValueError("manifest uses an unsupported or legacy identity lock")
+    if manifest_schema != VISUAL_GATE_MANIFEST_SCHEMA:
+        return None
+
+    policy = load_species_role_visual_gate_policy(
+        Path(__file__).resolve().parents[1]
+        if project_root is None
+        else project_root
+    )
+    manifest_policy = require_exact_keys(
+        manifest.get("species_role_visual_gate_policy"),
+        {
+            "configured_species_roles",
+            "identity_frame_sha256",
+            "relative_path",
+            "schema",
+            "sha256",
+        },
+        "species_role_visual_gate_policy",
+    )
+    if manifest_policy != policy.provenance_record:
+        raise ValueError(
+            "manifest visual gate policy provenance differs from the canonical file"
+        )
+    return policy
 
 
 def require_sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
         raise ValueError(f"{label} must be a lowercase SHA-256")
     return value
+
+
+def require_species_role_visual_gate_evidence(
+    manifest_schema: object,
+    identity_key: str,
+    role_record: dict[str, object],
+    identity_lock: dict[str, object],
+    policy: SpeciesRoleVisualGatePolicy | None,
+) -> None:
+    """Verify the v8 handoff without replaying private raster pixels."""
+
+    role = role_record.get("role")
+    label = f"{identity_key}.{role}.species_role_visual_gate"
+    has_evidence = "species_role_visual_gate" in role_record
+    has_evidence_hash = "species_role_visual_gate_sha256" in role_record
+    if manifest_schema != VISUAL_GATE_MANIFEST_SCHEMA:
+        if has_evidence or has_evidence_hash:
+            raise ValueError(
+                f"{identity_key}.{role}: v6/v7 cannot contain reserved v8 visual evidence"
+            )
+        return
+    if policy is None:
+        raise ValueError("v8 visual gate policy was not authenticated")
+
+    key = (identity_key, role)
+    entry = policy.entries.get(key)
+    if entry is None:
+        if has_evidence or has_evidence_hash:
+            raise ValueError(
+                f"{identity_key}.{role}: visual evidence is forbidden for an unconfigured role"
+            )
+        return
+    if not has_evidence or not has_evidence_hash:
+        raise ValueError(f"{label} and its SHA-256 are required")
+
+    evidence = require_exact_keys(
+        role_record.get("species_role_visual_gate"),
+        {
+            "durations_ms",
+            "frame_sha256",
+            "gate_results",
+            "identity_frame_sha256",
+            "identity_key",
+            "policy_entry_sha256",
+            "policy_relative_path",
+            "policy_schema",
+            "policy_sha256",
+            "role",
+            "schema",
+            "status",
+        },
+        label,
+    )
+    evidence_hash = require_sha256(
+        role_record.get("species_role_visual_gate_sha256"),
+        f"{label}_sha256",
+    )
+    if canonical_json_sha256(evidence) != evidence_hash:
+        raise ValueError(f"{label} SHA-256 does not match its canonical record")
+
+    identity_frame_hash = require_sha256(
+        identity_lock.get("identity_frame_sha256"),
+        f"{identity_key}.identity_lock.identity_frame_sha256",
+    )
+    if (
+        evidence.get("schema") != SPECIES_ROLE_VISUAL_GATE_EVIDENCE_SCHEMA
+        or evidence.get("status") != "pass"
+        or evidence.get("identity_key") != identity_key
+        or evidence.get("role") != role
+        or evidence.get("policy_schema")
+        != SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA
+        or evidence.get("policy_relative_path")
+        != SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH
+        or evidence.get("policy_sha256") != policy.source_sha256
+        or evidence.get("policy_entry_sha256") != policy.entry_sha256[key]
+        or evidence.get("identity_frame_sha256")
+        != policy.identity_frame_sha256[identity_key]
+        or evidence.get("identity_frame_sha256") != identity_frame_hash
+    ):
+        raise ValueError(f"{label} provenance or identity binding drifted")
+
+    role_hashes = require_list(
+        role_record.get("frame_sha256"),
+        f"{identity_key}.{role}.frame_sha256",
+    )
+    evidence_hashes = require_list(
+        evidence.get("frame_sha256"), f"{label}.frame_sha256"
+    )
+    if len(evidence_hashes) != 4:
+        raise ValueError(f"{label}.frame_sha256 must bind exact P0..P3")
+    for phase, digest in enumerate(evidence_hashes):
+        require_sha256(digest, f"{label}.frame_sha256[{phase}]")
+    if evidence_hashes != role_hashes:
+        raise ValueError(f"{label} frame hashes differ from the containing role")
+
+    role_durations = require_list(
+        role_record.get("durations_ms"), f"{identity_key}.{role}.durations_ms"
+    )
+    evidence_durations = require_list(
+        evidence.get("durations_ms"), f"{label}.durations_ms"
+    )
+    for durations_label, durations in (
+        (f"{identity_key}.{role}.durations_ms", role_durations),
+        (f"{label}.durations_ms", evidence_durations),
+    ):
+        if len(durations) != 4 or any(
+            type(value) is not int or value <= 0 for value in durations
+        ):
+            raise ValueError(f"{durations_label} must contain four positive integers")
+    if evidence_durations != role_durations:
+        raise ValueError(f"{label} cadence differs from the containing role")
+    gates = require_mapping(entry.get("gates"), f"{label}.policy_entry.gates")
+    cadence = gates.get("cadence")
+    if cadence is not None:
+        required_durations = require_mapping(
+            cadence, f"{label}.policy_entry.gates.cadence"
+        ).get("required_durations_ms")
+        if evidence_durations != required_durations:
+            raise ValueError(f"{label} cadence differs from the canonical RoleSpec")
+
+    gate_results = require_mapping(
+        evidence.get("gate_results"), f"{label}.gate_results"
+    )
+    if set(gate_results) != set(gates):
+        raise ValueError(f"{label} gate result set differs from the policy entry")
+    for kind in gates:
+        result = require_exact_keys(
+            gate_results.get(kind),
+            {"measurements", "possible_failure_reason_codes", "status"},
+            f"{label}.gate_results.{kind}",
+        )
+        if (
+            result.get("status") != "pass"
+            or result.get("possible_failure_reason_codes")
+            != SPECIES_ROLE_VISUAL_GATE_REASON_CODES[(identity_key, role, kind)]
+        ):
+            raise ValueError(f"{label}.{kind} is not a canonical passing result")
+        require_mapping(result.get("measurements"), f"{label}.{kind}.measurements")
 
 
 def require_imagegen_transform(raw: object, identity_key: str) -> dict[str, object]:
@@ -816,7 +1270,11 @@ def require_generated_semantic_evidence(
         raise ValueError(f"{label} contains orphan Image 3 proof evidence")
 
 
-def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
+def load_records(
+    manifest_path: Path,
+    *,
+    project_root: Path | None = None,
+) -> dict[str, PortraitRecord]:
     try:
         manifest = require_mapping(
             json.loads(manifest_path.read_text(encoding="utf-8")), "manifest"
@@ -824,7 +1282,10 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read private manifest: {error}") from error
 
-    require_fail_closed_manifest(manifest)
+    visual_gate_policy = require_fail_closed_manifest(
+        manifest,
+        project_root=project_root,
+    )
 
     identity_keys = require_list(manifest.get("identity_keys"), "identity_keys")
     packs = require_list(manifest.get("packs"), "packs")
@@ -962,6 +1423,13 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
                         f"{identity_key}.{role_record.get('role')}.{field} "
                         "must pin four independent frames"
                     )
+            require_species_role_visual_gate_evidence(
+                manifest.get("schema"),
+                identity_key,
+                role_record,
+                pack_identity_lock,
+                visual_gate_policy,
+            )
             if pack.get("raster_transform") == IMAGEGEN_RASTER_TRANSFORM:
                 require_generated_semantic_evidence(
                     identity_key,
@@ -1175,7 +1643,7 @@ def main() -> int:
     firmware_path = project_root / FIRMWARE_RELATIVE_PATH
     android_path = project_root / ANDROID_RELATIVE_PATH
 
-    records = load_records(manifest_path)
+    records = load_records(manifest_path, project_root=project_root)
     firmware_source = firmware_path.read_text(encoding="utf-8")
     android_source = android_path.read_text(encoding="utf-8")
     catalog = parse_firmware_catalog(firmware_source)

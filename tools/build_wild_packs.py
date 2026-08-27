@@ -67,6 +67,7 @@ WILD_FLOOR_Y = 77
 WILD_PACK_REVISION = 3
 LEGACY_PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
 PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v7"
+VISUAL_GATE_PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v8"
 DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
 IMAGEGEN_RASTER_TRANSFORM = (
     "rgba-over-white-box-area-fixed-role-registration-bounded-native-composite-v1"
@@ -166,7 +167,18 @@ def build_species(
         | raster_contract.ImageGenImportLock
     ),
     source_kind: str,
+    visual_gate_policy: (
+        raster_contract.SpeciesRoleVisualGatePolicy | None
+    ) = None,
 ) -> dict[str, object]:
+    if visual_gate_policy is None:
+        policy_path = (
+            Path(__file__).resolve().parents[1]
+            / raster_contract.SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH
+        )
+        visual_gate_policy = (
+            raster_contract.load_species_role_visual_gate_policy(policy_path)
+        )
     definition = WILD_SPECIES[species]
     if source_kind == "direct-exact-target":
         if not isinstance(identity_lock, raster_contract.HighResIdentityLock):
@@ -284,6 +296,23 @@ def build_species(
         role_record["source_sha256"] = [
             frame.source_sha256 for frame in role_rasters
         ]
+        visual_gate_evidence = (
+            raster_contract.validate_species_role_visual_gates(
+                visual_gate_policy,
+                species,
+                base.sha256_bytes(raster.identity.packed),
+                role,
+                role_rasters,
+                role.durations_ms,
+            )
+        )
+        if visual_gate_evidence is not None:
+            role_record["species_role_visual_gate"] = visual_gate_evidence
+            role_record["species_role_visual_gate_sha256"] = (
+                raster_contract.species_role_visual_gate_evidence_sha256(
+                    visual_gate_evidence
+                )
+            )
         if source_kind == "imagegen-locked-import":
             if raster.generated_semantic_evidence is None:
                 raise ValueError(
@@ -581,6 +610,10 @@ def main() -> int:
     source_kind, identity_lock_schema, identity_locks = (
         load_release_identity_locks(identity_lock_path, selected)
     )
+    visual_gate_policy = raster_contract.load_species_role_visual_gate_policy(
+        project_root
+        / raster_contract.SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH
+    )
     if args.imagegen_source_layout == "one-action-sheets":
         raise ValueError(
             "ImageGen import v4/v5 forbids one-action sheets; author four "
@@ -599,6 +632,7 @@ def main() -> int:
                 species,
                 identity_locks[species],
                 source_kind,
+                visual_gate_policy,
             )
             snapshot = snapshot_species_sources(
                 source_dir,
@@ -618,7 +652,7 @@ def main() -> int:
                 args.visual_acceptance, results, project_root
             )
         manifest = {
-            "schema": PRIVATE_MANIFEST_SCHEMA,
+            "schema": VISUAL_GATE_PRIVATE_MANIFEST_SCHEMA,
             "identity_keys": selected,
             "complete_roster": selected == list(WILD_SPECIES),
             "public_static_assets_only": True,
@@ -627,6 +661,11 @@ def main() -> int:
             "format_security": "ordinary K868PK1 structural checks and CRC32",
             "identity_lock_schema": identity_lock_schema,
             "identity_lock_sha256": base.sha256_file(identity_lock_path),
+            "species_role_visual_gate_policy": (
+                raster_contract.species_role_visual_gate_policy_record(
+                    visual_gate_policy
+                )
+            ),
             "non_destructive_build": True,
             "display_contract": {
                 "device": "Heltec WiFi LoRa 32 V3/V3.2",
@@ -693,6 +732,17 @@ def main() -> int:
                 "native_grid_reference_derivation": (
                     raster_contract.NATIVE_GRID_REFERENCE_DERIVATION
                 ),
+                "species_role_visual_gate_policy_schema": (
+                    raster_contract.SPECIES_ROLE_VISUAL_GATE_POLICY_SCHEMA
+                ),
+                "species_role_visual_gate_evidence_schema": (
+                    raster_contract.SPECIES_ROLE_VISUAL_GATE_EVIDENCE_SCHEMA
+                ),
+                "species_role_visual_gate_policy_relative_path": (
+                    raster_contract.SPECIES_ROLE_VISUAL_GATE_POLICY_RELATIVE_PATH
+                ),
+                "species_role_visual_gate_connectivity": 8,
+                "species_role_visual_gate_allowlisted_only": True,
                 "generated_phase_chaining": False,
                 "identity_anchored_later_phases_use_role_p0_edit_target": True,
                 "role_phase_0_generation_target": "approved-identity",

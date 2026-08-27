@@ -15,6 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 PACK_DIR = ROOT / "assets" / "packs"
 SOURCE_DIR = ROOT / "assets" / "companion-sources"
 EVIDENCE_DIR = ROOT / "assets" / "pack-evidence"
+VISUAL_GATE_POLICY_PATH = (
+    SOURCE_DIR / "species-role-visual-gates-v1.json"
+)
+VISUAL_GATE_POLICY_SHA256 = (
+    "3e936f655b7e29e116d7842b04788e368c6ee9c49c33a512d0812c7193a7e3bf"
+)
 MAGIC = b"K868PK1\0"
 APPROVED_PACKS = {
     "cat": {
@@ -222,6 +228,23 @@ def test_release_boundary() -> None:
     require(
         starter_asset_tree_sha256(paths) == APPROVED_STARTER_ASSET_TREE_SHA256,
         "immutable Cat/Fox/Dog starter asset baseline was modified",
+    )
+    # Audit repository metadata separately so the wild visual policy cannot be
+    # hidden in, or accidentally added to, the immutable starter-art baseline.
+    # Neither metadata file is a default-pack builder input or catalog payload.
+    source_metadata = {
+        path
+        for path in SOURCE_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() != ".png"
+    }
+    require(
+        source_metadata
+        == {SOURCE_DIR / "README.md", VISUAL_GATE_POLICY_PATH},
+        "companion source metadata inventory contains an unapproved file",
+    )
+    require(
+        sha256(VISUAL_GATE_POLICY_PATH) == VISUAL_GATE_POLICY_SHA256,
+        "wild visual-gate policy raw file hash changed",
     )
 
 
