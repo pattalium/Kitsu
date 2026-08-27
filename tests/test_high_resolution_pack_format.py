@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -28,7 +29,9 @@ from test_companion_raster_contract import (  # noqa: E402
     imagegen_logical_outline,
     refresh_test_generated_semantic_lock,
     write_imagegen_action_sheet,
+    write_imagegen_raw,
     write_valid_imagegen_action_sheet_sources,
+    write_valid_imagegen_sources,
 )
 from install_pack import PackValidationError, validate_pack  # noqa: E402
 
@@ -306,6 +309,126 @@ class HighResolutionPackFormatTests(unittest.TestCase):
                 }
             )
 
+    def test_independent_imagegen_frames_allow_shared_identity_offset(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            output = root / "output"
+            lock = write_valid_imagegen_sources(source, "red_panda")
+            equal_transform = replace(
+                lock.transform,
+                output_offset=(0, 17),
+                action_output_offset=(0, 17),
+            )
+            species_dir = source / "red_panda"
+
+            def red_panda_source_placement(
+                mask: set[tuple[int, int]],
+            ) -> set[tuple[int, int]]:
+                return {(x, y + 10) for x, y in mask}
+
+            write_imagegen_raw(
+                species_dir / "identity.png",
+                equal_transform,
+                red_panda_source_placement(imagegen_logical_outline()),
+            )
+            for role in builder.ROLE_SPECS:
+                for phase in range(4):
+                    write_imagegen_raw(
+                        species_dir / role.name / f"{phase:02d}.png",
+                        equal_transform,
+                        red_panda_source_placement(
+                            imagegen_logical_outline(phase)
+                        ),
+                    )
+            identity = raster_contract.load_imagegen_import_frame(
+                species_dir / "identity.png",
+                "identity",
+                -1,
+                equal_transform,
+            )
+            lock = replace(
+                lock,
+                identity_source_sha256=raster_contract.sha256_file(
+                    species_dir / "identity.png"
+                ),
+                identity_frame_sha256=hashlib.sha256(
+                    identity.packed
+                ).hexdigest(),
+                transform=equal_transform,
+                transform_sha256=(
+                    raster_contract.imagegen_import_transform_sha256(
+                        equal_transform
+                    )
+                ),
+            )
+            lock = refresh_test_generated_semantic_lock(
+                source,
+                "red_panda",
+                lock,
+                builder.ROLE_SPECS,
+                source_layout="independent-frame",
+            )
+
+            result = wild_builder.build_species(
+                source,
+                output,
+                "red_panda",
+                lock,
+                "imagegen-locked-import",
+            )
+            result["source_snapshot"] = {
+                "byte_exact_sha256": dict(result["source_sha256"])
+            }
+
+        self.assertEqual(
+            result["identity_lock"]["transform"]["action_output_offset"],
+            result["identity_lock"]["transform"]["output_offset"],
+        )
+        self.assertEqual(
+            result["identity_lock"]["transform"]["output_offset"],
+            [0, 17],
+        )
+        self.assertNotIn("action_output_offset", result)
+        self.assertNotIn("action_source_layout", result)
+        self.assertNotIn("action_source_layout_sha256", result)
+        self.assertTrue(
+            all("action_output_offset" not in role for role in result["roles"])
+        )
+        portrait_sync.require_pack_raster_provenance(result, "red_panda")
+
+    def test_action_sheet_imagegen_frames_require_distinct_action_offset(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            output = root / "output"
+            lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
+            equal_transform = replace(
+                lock.transform,
+                action_output_offset=lock.transform.output_offset,
+            )
+            lock = replace(
+                lock,
+                transform=equal_transform,
+                transform_sha256=(
+                    raster_contract.imagegen_import_transform_sha256(
+                        equal_transform
+                    )
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                r"action-sheet output offset must be explicitly pinned.*distinct",
+            ):
+                wild_builder.build_species(
+                    source,
+                    output,
+                    "ferret",
+                    lock,
+                    "imagegen-one-action-sheets",
+                )
+
     def test_wild_builder_accepts_only_explicit_fixed_action_sheets(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -509,8 +632,33 @@ class HighResolutionPackFormatTests(unittest.TestCase):
         equal_offsets["identity_lock"]["transform_sha256"] = hashlib.sha256(
             canonical
         ).hexdigest()
-        with self.assertRaisesRegex(ValueError, "changes the fixed viewport"):
-            portrait_sync.require_pack_raster_provenance(equal_offsets, "ferret")
+        self.assertNotIn("action_output_offset", equal_offsets)
+        portrait_sync.require_pack_raster_provenance(equal_offsets, "ferret")
+
+        equal_sheet_offsets = json.loads(json.dumps(action_sheet))
+        equal_sheet_offsets["identity_lock"]["transform"][
+            "action_output_offset"
+        ] = list(
+            equal_sheet_offsets["identity_lock"]["transform"]["output_offset"]
+        )
+        canonical = json.dumps(
+            equal_sheet_offsets["identity_lock"]["transform"],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+        equal_sheet_offsets["identity_lock"]["transform_sha256"] = (
+            hashlib.sha256(canonical).hexdigest()
+        )
+        equal_sheet_offsets["action_output_offset"] = list(
+            equal_sheet_offsets["identity_lock"]["transform"][
+                "action_output_offset"
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "must be distinct"):
+            portrait_sync.require_pack_raster_provenance(
+                equal_sheet_offsets, "ferret"
+            )
 
 
 if __name__ == "__main__":

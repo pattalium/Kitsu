@@ -222,7 +222,6 @@ def require_imagegen_transform(raw: object, identity_key: str) -> dict[str, obje
         or abs(offset[1]) >= 80
         or abs(action_offset[0]) >= 64
         or abs(action_offset[1]) >= 80
-        or action_offset == offset
     ):
         raise ValueError(f"{identity_key} ImageGen transform changes the fixed viewport")
     return transform
@@ -358,6 +357,13 @@ def require_pack_raster_provenance(
         ):
             raise ValueError(f"{identity_key} ImageGen fixed scale does not match its lock")
         if action_sheet:
+            # A 560x700 cell has a different viewport from the 1120x1400
+            # identity crop, so only this layout requires separate calibration.
+            if transform["action_output_offset"] == transform["output_offset"]:
+                raise ValueError(
+                    f"{identity_key} action-sheet output offset must be distinct "
+                    "from its identity output offset"
+                )
             if pack.get("source_kind") != "imagegen-one-action-sheets":
                 raise ValueError(f"{identity_key} action-sheet source kind is invalid")
             layout = require_mapping(

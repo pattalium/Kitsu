@@ -189,14 +189,9 @@ def build_species(
             raise ValueError(
                 f"{species}: ImageGen build requires an ImageGen import lock"
             )
-        if (
-            identity_lock.transform.action_output_offset
-            == identity_lock.transform.output_offset
-        ):
-            raise ValueError(
-                f"{species}: ImageGen action output offset must be explicitly "
-                "pinned and distinct from the identity output offset"
-            )
+        # Independent full-canvas frames use output_offset for identity and
+        # actions alike. The action-sheet-only calibration field may therefore
+        # equal it without claiming a second, unused viewport.
         raster = raster_contract.load_high_res_generated_species(
             source_dir, species, identity_lock
         )
