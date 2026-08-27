@@ -27,7 +27,12 @@ import build_default_packs as base
 
 IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v1"
 HIGH_RES_IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
-IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v2"
+IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v3"
+GENERATED_ACTION_SEMANTIC_SCHEMA = (
+    "kitsu-wild-generated-action-semantic-locality-v1"
+)
+NATIVE_REGION_MASK_SCHEMA = "kitsu-native-region-mask-64x80-v1"
+NATIVE_REGION_MASK_ENCODING = "lsb0-row-major-hex"
 PROTECTED_STARTERS = frozenset({"cat", "dog", "fox"})
 SOURCE_THRESHOLD = 170
 SOURCE_EDGE_GUARD = 1
@@ -91,6 +96,70 @@ IMAGEGEN_ACTION_SHEET_GUTTER_RECTS = (
     (0, 700, 1122, 702),
 )
 IMAGEGEN_ACTION_SHEET_CELL_SAFE_GUARD_PIXELS = SOURCE_EDGE_GUARD + 1
+GENERATED_MAX_OUT_OF_REGION_PIXELS = 0
+GENERATED_MIN_MOTION_LANDMARK_PIXELS = 4
+GENERATED_MIN_FROZEN_LANDMARK_PIXELS = 4
+GENERATED_SOURCE_LAYOUTS = frozenset(
+    {"independent-frame", "one-action-sheet-region"}
+)
+GENERATED_ROLE_BASELINE_POLICY: dict[str, str] = {
+    "idle": "identity-anchored",
+    "blink": "identity-anchored",
+    "pet": "immutable-role-phase-0",
+    "sleep": "immutable-role-phase-0",
+    "listen": "identity-anchored",
+    "surprise": "immutable-role-phase-0",
+    "play": "immutable-role-phase-0",
+    "tired": "immutable-role-phase-0",
+    "feed": "immutable-role-phase-0",
+    "wake": "immutable-role-phase-0",
+    "meet": "immutable-role-phase-0",
+    "evolve": "immutable-role-phase-0",
+}
+GENERATED_ROLE_CONTACT_POLICY_DEFAULTS: dict[str, str] = {
+    "idle": "planted-identity",
+    "blink": "planted-identity",
+    "pet": "planted-role-base",
+    "sleep": "planted-role-base",
+    "listen": "planted-identity",
+    "surprise": "planted-role-base",
+    "play": "bounded-approved-gait-lift",
+    "tired": "planted-role-base",
+    "feed": "planted-role-base",
+    "wake": "bounded-approved-pose-change",
+    "meet": "bounded-approved-gait-lift",
+    "evolve": "bounded-approved-pose-change",
+}
+GENERATED_ROLE_CONTACT_POLICY_CAPABILITIES: dict[str, frozenset[str]] = {
+    "idle": frozenset({"planted-identity"}),
+    "blink": frozenset({"planted-identity"}),
+    "pet": frozenset({"planted-role-base", "bounded-approved-gait-lift"}),
+    "sleep": frozenset(
+        {"planted-role-base", "bounded-approved-pose-change"}
+    ),
+    "listen": frozenset({"planted-identity"}),
+    "surprise": frozenset(
+        {"planted-role-base", "bounded-approved-pose-change"}
+    ),
+    "play": frozenset({"planted-role-base", "bounded-approved-gait-lift"}),
+    "tired": frozenset(
+        {"planted-role-base", "bounded-approved-pose-change"}
+    ),
+    "feed": frozenset({"planted-role-base", "bounded-approved-gait-lift"}),
+    "wake": frozenset(
+        {"planted-role-base", "bounded-approved-pose-change"}
+    ),
+    "meet": frozenset({"planted-role-base", "bounded-approved-gait-lift"}),
+    "evolve": frozenset(
+        {"planted-role-base", "bounded-approved-pose-change"}
+    ),
+}
+GENERATED_CONTACT_POLICY_MAXIMUMS = {
+    "planted-identity": 0,
+    "planted-role-base": 0,
+    "bounded-approved-gait-lift": 16,
+    "bounded-approved-pose-change": 32,
+}
 
 # Direct-at-target art has no builder scale knob.  These are fail-closed
 # plausibility gates for camera/identity pops, not permission to rescale a
@@ -267,6 +336,8 @@ class HighResSpeciesRaster:
     frames: tuple[HighResFrame, ...]
     source_sha256: dict[str, str]
     fixed_action_scale: float = 1.0
+    generated_semantic_evidence: dict[str, dict[str, object]] | None = None
+    generated_action_semantic_contract_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -289,7 +360,89 @@ class ImageGenImportLock:
     identity_frame_sha256: str
     transform_sha256: str
     transform: ImageGenImportTransform
+    action_semantic_contract_sha256: str
+    action_semantic_contract: GeneratedActionSemanticContract
     approved: bool
+
+
+@dataclass(frozen=True)
+class NativeRegionMaskLock:
+    """One exact 64x80 region; set bits select coordinates, not artwork ink."""
+
+    mask: frozenset[tuple[int, int]]
+    packed_sha256: str
+
+
+@dataclass(frozen=True)
+class ImmutableIdentityReference:
+    kind: str
+    relative_path: str
+    identity_key: str
+    source_sha256: str
+    frame_sha256: str
+
+
+@dataclass(frozen=True)
+class GeneratedPhaseAsset:
+    layout: str
+    relative_path: str
+    source_sha256: str
+    source_region_sha256: str
+
+
+@dataclass(frozen=True)
+class FrozenSemanticRegion:
+    kind: str
+    name: str
+    region: NativeRegionMaskLock
+    maximum_changed_pixels: int
+
+
+@dataclass(frozen=True)
+class GeneratedPhaseSemanticLock:
+    phase: int
+    semantic_baseline: str
+    identity_reference: ImmutableIdentityReference
+    generated_asset: GeneratedPhaseAsset
+    allowed_change_region: NativeRegionMaskLock
+    maximum_out_of_region_changed_pixels: int
+    frozen_regions: tuple[FrozenSemanticRegion, ...]
+
+
+@dataclass(frozen=True)
+class MotionLandmarkLock:
+    name: str
+    region: NativeRegionMaskLock
+    minimum_changed_pixels: int
+
+
+@dataclass(frozen=True)
+class RolePoseIdentityLandmarkLock:
+    name: str
+    identity_region: NativeRegionMaskLock
+    role_pose_region: NativeRegionMaskLock
+    minimum_ink_pixels: int
+    minimum_ink_retention_per_mille: int
+    maximum_component_count_delta: int
+
+
+@dataclass(frozen=True)
+class GeneratedRoleSemanticLock:
+    role: str
+    baseline_policy: str
+    contact_policy: str
+    role_pose_baseline_frame_sha256: str
+    maximum_role_pose_component_count_delta: int
+    maximum_contact_changed_pixels_per_phase: int
+    role_pose_identity_landmarks: tuple[RolePoseIdentityLandmarkLock, ...]
+    phases: tuple[GeneratedPhaseSemanticLock, ...]
+    motion_landmarks: tuple[MotionLandmarkLock, ...]
+
+
+@dataclass(frozen=True)
+class GeneratedActionSemanticContract:
+    schema: str
+    roles: tuple[GeneratedRoleSemanticLock, ...]
 
 
 def sha256_file(path: Path) -> str:
@@ -810,6 +963,697 @@ def high_res_frame_bytes(mask: set[tuple[int, int]]) -> bytes:
     return bytes(packed)
 
 
+def _is_lower_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _require_lower_sha256(value: object, label: str) -> str:
+    if not _is_lower_sha256(value):
+        raise RasterContractError(f"{label}: invalid lowercase SHA-256")
+    return value
+
+
+def _require_semantic_name(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 64
+        or value[0] not in "abcdefghijklmnopqrstuvwxyz"
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789-"
+            for character in value
+        )
+    ):
+        raise RasterContractError(
+            f"{label}: semantic name must be lowercase kebab-case"
+        )
+    return value
+
+
+def _require_canonical_relative_path(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise RasterContractError(f"{label}: relative path must be a string")
+    relative = Path(value)
+    if (
+        relative.is_absolute()
+        or value != relative.as_posix()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise RasterContractError(f"{label}: path is not canonical and relative")
+    return value
+
+
+def native_region_mask_lock(
+    mask: set[tuple[int, int]] | frozenset[tuple[int, int]],
+) -> NativeRegionMaskLock:
+    """Create a byte-exact region record without inferring a semantic region."""
+
+    points = set(mask)
+    packed = high_res_frame_bytes(points)
+    return NativeRegionMaskLock(
+        mask=frozenset(points),
+        packed_sha256=hashlib.sha256(packed).hexdigest(),
+    )
+
+
+def native_region_mask_record(region: NativeRegionMaskLock) -> dict[str, object]:
+    packed = high_res_frame_bytes(set(region.mask))
+    actual_hash = hashlib.sha256(packed).hexdigest()
+    if region.packed_sha256 != actual_hash:
+        raise RasterContractError(
+            "native semantic region mask differs from its pinned SHA-256"
+        )
+    return {
+        "canvas": [HIGH_RES_FRAME_WIDTH, HIGH_RES_FRAME_HEIGHT],
+        "encoding": NATIVE_REGION_MASK_ENCODING,
+        "packed_hex": packed.hex(),
+        "packed_sha256": actual_hash,
+        "schema": NATIVE_REGION_MASK_SCHEMA,
+    }
+
+
+def _parse_native_region_mask(raw: object, label: str) -> NativeRegionMaskLock:
+    expected = {
+        "canvas",
+        "encoding",
+        "packed_hex",
+        "packed_sha256",
+        "schema",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        missing = sorted(expected - set(raw)) if isinstance(raw, dict) else sorted(expected)
+        unexpected = sorted(set(raw) - expected) if isinstance(raw, dict) else []
+        raise RasterContractError(
+            f"{label}: exact native region mask is required; "
+            f"missing={missing} unexpected={unexpected}"
+        )
+    if raw["schema"] != NATIVE_REGION_MASK_SCHEMA:
+        raise RasterContractError(
+            f"{label}: native region mask schema must be {NATIVE_REGION_MASK_SCHEMA}"
+        )
+    if raw["canvas"] != [HIGH_RES_FRAME_WIDTH, HIGH_RES_FRAME_HEIGHT]:
+        raise RasterContractError(f"{label}: native region mask canvas drifted")
+    if raw["encoding"] != NATIVE_REGION_MASK_ENCODING:
+        raise RasterContractError(f"{label}: native region mask encoding drifted")
+    packed_hex = raw["packed_hex"]
+    if (
+        not isinstance(packed_hex, str)
+        or len(packed_hex) != HIGH_RES_FRAME_BYTES * 2
+        or packed_hex != packed_hex.lower()
+        or any(character not in "0123456789abcdef" for character in packed_hex)
+    ):
+        raise RasterContractError(f"{label}: malformed exact native mask bytes")
+    packed = bytes.fromhex(packed_hex)
+    expected_hash = _require_lower_sha256(
+        raw["packed_sha256"], f"{label}/packed_sha256"
+    )
+    actual_hash = hashlib.sha256(packed).hexdigest()
+    if actual_hash != expected_hash:
+        raise RasterContractError(
+            f"{label}: native semantic region mask SHA-256 drifted"
+        )
+    return NativeRegionMaskLock(
+        mask=frozenset(decode_high_res_frame_bytes(packed)),
+        packed_sha256=actual_hash,
+    )
+
+
+def _identity_reference_record(
+    reference: ImmutableIdentityReference,
+) -> dict[str, object]:
+    return {
+        "frame_sha256": reference.frame_sha256,
+        "identity_key": reference.identity_key,
+        "kind": reference.kind,
+        "relative_path": reference.relative_path,
+        "source_sha256": reference.source_sha256,
+    }
+
+
+def _generated_asset_record(asset: GeneratedPhaseAsset) -> dict[str, object]:
+    return {
+        "layout": asset.layout,
+        "relative_path": asset.relative_path,
+        "source_region_sha256": asset.source_region_sha256,
+        "source_sha256": asset.source_sha256,
+    }
+
+
+def _frozen_region_record(region: FrozenSemanticRegion) -> dict[str, object]:
+    return {
+        "kind": region.kind,
+        "maximum_changed_pixels": region.maximum_changed_pixels,
+        "name": region.name,
+        "region": native_region_mask_record(region.region),
+    }
+
+
+def _phase_semantic_record(
+    phase: GeneratedPhaseSemanticLock,
+) -> dict[str, object]:
+    return {
+        "allowed_change_region": native_region_mask_record(
+            phase.allowed_change_region
+        ),
+        "frozen_regions": [
+            _frozen_region_record(region) for region in phase.frozen_regions
+        ],
+        "generated_asset": _generated_asset_record(phase.generated_asset),
+        "identity_reference": _identity_reference_record(
+            phase.identity_reference
+        ),
+        "maximum_out_of_region_changed_pixels": (
+            phase.maximum_out_of_region_changed_pixels
+        ),
+        "phase": phase.phase,
+        "semantic_baseline": phase.semantic_baseline,
+    }
+
+
+def _motion_landmark_record(landmark: MotionLandmarkLock) -> dict[str, object]:
+    return {
+        "minimum_changed_pixels": landmark.minimum_changed_pixels,
+        "name": landmark.name,
+        "region": native_region_mask_record(landmark.region),
+    }
+
+
+def _role_pose_identity_landmark_record(
+    landmark: RolePoseIdentityLandmarkLock,
+) -> dict[str, object]:
+    return {
+        "identity_region": native_region_mask_record(landmark.identity_region),
+        "maximum_component_count_delta": landmark.maximum_component_count_delta,
+        "minimum_ink_pixels": landmark.minimum_ink_pixels,
+        "minimum_ink_retention_per_mille": (
+            landmark.minimum_ink_retention_per_mille
+        ),
+        "name": landmark.name,
+        "role_pose_region": native_region_mask_record(landmark.role_pose_region),
+    }
+
+
+def generated_action_semantic_contract_record(
+    contract: GeneratedActionSemanticContract,
+) -> dict[str, object]:
+    return {
+        "roles": [
+            {
+                "baseline_policy": role.baseline_policy,
+                "contact_policy": role.contact_policy,
+                "maximum_contact_changed_pixels_per_phase": (
+                    role.maximum_contact_changed_pixels_per_phase
+                ),
+                "maximum_role_pose_component_count_delta": (
+                    role.maximum_role_pose_component_count_delta
+                ),
+                "motion_landmarks": [
+                    _motion_landmark_record(landmark)
+                    for landmark in role.motion_landmarks
+                ],
+                "phases": [_phase_semantic_record(phase) for phase in role.phases],
+                "role": role.role,
+                "role_pose_baseline_frame_sha256": (
+                    role.role_pose_baseline_frame_sha256
+                ),
+                "role_pose_identity_landmarks": [
+                    _role_pose_identity_landmark_record(landmark)
+                    for landmark in role.role_pose_identity_landmarks
+                ],
+            }
+            for role in contract.roles
+        ],
+        "schema": contract.schema,
+    }
+
+
+def generated_action_semantic_contract_sha256(
+    contract: GeneratedActionSemanticContract,
+) -> str:
+    payload = json.dumps(
+        generated_action_semantic_contract_record(contract),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _parse_identity_reference(
+    raw: object,
+    label: str,
+    identity_key: str,
+    identity_source_sha256: str,
+    identity_frame_sha256: str,
+) -> ImmutableIdentityReference:
+    expected = {
+        "frame_sha256",
+        "identity_key",
+        "kind",
+        "relative_path",
+        "source_sha256",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise RasterContractError(
+            f"{label}: every phase must pin exactly one immutable identity reference"
+        )
+    if raw["kind"] != "immutable-approved-identity-source":
+        raise RasterContractError(
+            f"{label}: generated-phase chaining is forbidden; the only generation "
+            "reference is the immutable approved identity source"
+        )
+    relative_path = _require_canonical_relative_path(
+        raw["relative_path"], f"{label}/relative_path"
+    )
+    if relative_path != "identity.png":
+        raise RasterContractError(
+            f"{label}: generated-phase chaining is forbidden; reference path must "
+            "be identity.png"
+        )
+    source_hash = _require_lower_sha256(
+        raw["source_sha256"], f"{label}/source_sha256"
+    )
+    frame_hash = _require_lower_sha256(
+        raw["frame_sha256"], f"{label}/frame_sha256"
+    )
+    if (
+        raw["identity_key"] != identity_key
+        or source_hash != identity_source_sha256
+        or frame_hash != identity_frame_sha256
+    ):
+        raise RasterContractError(
+            f"{label}: immutable identity reference differs from the approved lock"
+        )
+    return ImmutableIdentityReference(
+        kind="immutable-approved-identity-source",
+        relative_path="identity.png",
+        identity_key=identity_key,
+        source_sha256=source_hash,
+        frame_sha256=frame_hash,
+    )
+
+
+def _parse_generated_asset(
+    raw: object, label: str, role: str, phase: int
+) -> GeneratedPhaseAsset:
+    expected = {
+        "layout",
+        "relative_path",
+        "source_region_sha256",
+        "source_sha256",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise RasterContractError(f"{label}: generated asset pin is missing or malformed")
+    layout = raw["layout"]
+    if layout not in GENERATED_SOURCE_LAYOUTS:
+        raise RasterContractError(f"{label}: unsupported generated source layout")
+    relative_path = _require_canonical_relative_path(
+        raw["relative_path"], f"{label}/relative_path"
+    )
+    expected_path = (
+        f"{role}/{phase:02d}.png"
+        if layout == "independent-frame"
+        else f"{role}.png"
+    )
+    if relative_path != expected_path:
+        raise RasterContractError(
+            f"{label}: generated asset path must be {expected_path!r}; phase "
+            "aliasing/chaining is forbidden"
+        )
+    return GeneratedPhaseAsset(
+        layout=layout,
+        relative_path=relative_path,
+        source_sha256=_require_lower_sha256(
+            raw["source_sha256"], f"{label}/source_sha256"
+        ),
+        source_region_sha256=_require_lower_sha256(
+            raw["source_region_sha256"], f"{label}/source_region_sha256"
+        ),
+    )
+
+
+def _parse_frozen_region(raw: object, label: str) -> FrozenSemanticRegion:
+    expected = {"kind", "maximum_changed_pixels", "name", "region"}
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise RasterContractError(f"{label}: exact frozen semantic region is required")
+    kind = raw["kind"]
+    if kind not in {"planted-contact", "protected-identity-landmark"}:
+        raise RasterContractError(f"{label}: unsupported frozen region kind")
+    if raw["maximum_changed_pixels"] != 0:
+        raise RasterContractError(
+            f"{label}: planted contacts and hard anatomy have zero pixel budget"
+        )
+    region = _parse_native_region_mask(raw["region"], f"{label}/region")
+    minimum = (
+        1
+        if kind == "planted-contact"
+        else GENERATED_MIN_FROZEN_LANDMARK_PIXELS
+    )
+    if len(region.mask) < minimum:
+        raise RasterContractError(f"{label}: frozen region is empty or trivial")
+    return FrozenSemanticRegion(
+        kind=kind,
+        name=_require_semantic_name(raw["name"], f"{label}/name"),
+        region=region,
+        maximum_changed_pixels=0,
+    )
+
+
+def _parse_phase_semantic(
+    raw: object,
+    label: str,
+    role: str,
+    phase: int,
+    baseline_policy: str,
+    identity_key: str,
+    identity_source_sha256: str,
+    identity_frame_sha256: str,
+) -> GeneratedPhaseSemanticLock:
+    expected = {
+        "allowed_change_region",
+        "frozen_regions",
+        "generated_asset",
+        "identity_reference",
+        "maximum_out_of_region_changed_pixels",
+        "phase",
+        "semantic_baseline",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected or raw.get("phase") != phase:
+        raise RasterContractError(f"{label}: exact phase semantic lock is required")
+    allowed = _parse_native_region_mask(
+        raw["allowed_change_region"], f"{label}/allowed-change"
+    )
+    if not allowed.mask:
+        raise RasterContractError(f"{label}: allowed-change region cannot be empty")
+    if any(y in HIGH_RES_BOTTOM_GUARD_ROWS for _x, y in allowed.mask):
+        raise RasterContractError(
+            f"{label}: allowed-change region enters blank format-v2 guard rows"
+        )
+    budget = raw["maximum_out_of_region_changed_pixels"]
+    if budget != GENERATED_MAX_OUT_OF_REGION_PIXELS:
+        raise RasterContractError(
+            f"{label}: production out-of-region budget must be exactly zero"
+        )
+    expected_baseline = (
+        "approved-identity"
+        if baseline_policy == "identity-anchored"
+        else (
+            "approved-identity-pose-gate"
+            if phase == 0
+            else "immutable-role-phase-0"
+        )
+    )
+    if raw["semantic_baseline"] != expected_baseline:
+        raise RasterContractError(
+            f"{label}: semantic baseline must be {expected_baseline}; role phase 0 "
+            "is validation-only and never a generation reference"
+        )
+    frozen_raw = raw["frozen_regions"]
+    if not isinstance(frozen_raw, list):
+        raise RasterContractError(f"{label}: frozen regions must be a list")
+    frozen = tuple(
+        _parse_frozen_region(record, f"{label}/frozen/{index}")
+        for index, record in enumerate(frozen_raw)
+    )
+    kinds = {region.kind for region in frozen}
+    names = [region.name for region in frozen]
+    if kinds != {"planted-contact", "protected-identity-landmark"}:
+        raise RasterContractError(
+            f"{label}: both planted-contact and protected-identity-landmark "
+            "frozen masks are required"
+        )
+    if len(names) != len(set(names)):
+        raise RasterContractError(f"{label}: frozen region names must be unique")
+    return GeneratedPhaseSemanticLock(
+        phase=phase,
+        semantic_baseline=expected_baseline,
+        identity_reference=_parse_identity_reference(
+            raw["identity_reference"],
+            f"{label}/identity-reference",
+            identity_key,
+            identity_source_sha256,
+            identity_frame_sha256,
+        ),
+        generated_asset=_parse_generated_asset(
+            raw["generated_asset"], f"{label}/generated-asset", role, phase
+        ),
+        allowed_change_region=allowed,
+        maximum_out_of_region_changed_pixels=budget,
+        frozen_regions=frozen,
+    )
+
+
+def _parse_motion_landmark(raw: object, label: str) -> MotionLandmarkLock:
+    expected = {"minimum_changed_pixels", "name", "region"}
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise RasterContractError(f"{label}: exact motion landmark is required")
+    region = _parse_native_region_mask(raw["region"], f"{label}/region")
+    minimum = raw["minimum_changed_pixels"]
+    if (
+        not isinstance(minimum, int)
+        or isinstance(minimum, bool)
+        or minimum < GENERATED_MIN_MOTION_LANDMARK_PIXELS
+        or minimum > len(region.mask)
+    ):
+        raise RasterContractError(
+            f"{label}: motion changed-pixel minimum must be at least "
+            f"{GENERATED_MIN_MOTION_LANDMARK_PIXELS} and fit its exact mask"
+        )
+    return MotionLandmarkLock(
+        name=_require_semantic_name(raw["name"], f"{label}/name"),
+        region=region,
+        minimum_changed_pixels=minimum,
+    )
+
+
+def _parse_role_pose_identity_landmark(
+    raw: object, label: str
+) -> RolePoseIdentityLandmarkLock:
+    expected = {
+        "identity_region",
+        "maximum_component_count_delta",
+        "minimum_ink_pixels",
+        "minimum_ink_retention_per_mille",
+        "name",
+        "role_pose_region",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise RasterContractError(
+            f"{label}: exact identity-to-role-pose landmark is required"
+        )
+    identity_region = _parse_native_region_mask(
+        raw["identity_region"], f"{label}/identity-region"
+    )
+    role_pose_region = _parse_native_region_mask(
+        raw["role_pose_region"], f"{label}/role-pose-region"
+    )
+    if (
+        len(identity_region.mask) < GENERATED_MIN_FROZEN_LANDMARK_PIXELS
+        or len(role_pose_region.mask) < GENERATED_MIN_FROZEN_LANDMARK_PIXELS
+    ):
+        raise RasterContractError(f"{label}: pose landmark regions are trivial")
+    minimum_ink = raw["minimum_ink_pixels"]
+    if (
+        not isinstance(minimum_ink, int)
+        or isinstance(minimum_ink, bool)
+        or minimum_ink < GENERATED_MIN_FROZEN_LANDMARK_PIXELS
+        or minimum_ink > min(len(identity_region.mask), len(role_pose_region.mask))
+    ):
+        raise RasterContractError(f"{label}: invalid pose-landmark ink minimum")
+    retention = raw["minimum_ink_retention_per_mille"]
+    if (
+        not isinstance(retention, int)
+        or isinstance(retention, bool)
+        or not 500 <= retention <= 1000
+    ):
+        raise RasterContractError(
+            f"{label}: pose-landmark ink retention must be 500..1000 per mille"
+        )
+    component_delta = raw["maximum_component_count_delta"]
+    if (
+        not isinstance(component_delta, int)
+        or isinstance(component_delta, bool)
+        or not 0 <= component_delta <= 2
+    ):
+        raise RasterContractError(
+            f"{label}: pose-landmark component delta must be 0..2"
+        )
+    return RolePoseIdentityLandmarkLock(
+        name=_require_semantic_name(raw["name"], f"{label}/name"),
+        identity_region=identity_region,
+        role_pose_region=role_pose_region,
+        minimum_ink_pixels=minimum_ink,
+        minimum_ink_retention_per_mille=retention,
+        maximum_component_count_delta=component_delta,
+    )
+
+
+def _parse_generated_action_semantic_contract(
+    raw: object,
+    identity_key: str,
+    identity_source_sha256: str,
+    identity_frame_sha256: str,
+) -> GeneratedActionSemanticContract:
+    expected = {"roles", "schema"}
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise RasterContractError(
+            f"{identity_key}: generated action semantic contract is missing or malformed"
+        )
+    if raw["schema"] != GENERATED_ACTION_SEMANTIC_SCHEMA:
+        raise RasterContractError(
+            f"{identity_key}: generated action semantic schema must be "
+            f"{GENERATED_ACTION_SEMANTIC_SCHEMA}"
+        )
+    records = raw["roles"]
+    if not isinstance(records, list) or not records:
+        raise RasterContractError(f"{identity_key}: semantic roles cannot be empty")
+    canonical_role_order = {role.name: index for index, role in enumerate(base.ROLE_SPECS)}
+    roles: list[GeneratedRoleSemanticLock] = []
+    for raw_role in records:
+        if not isinstance(raw_role, dict) or set(raw_role) != {
+            "baseline_policy",
+            "contact_policy",
+            "maximum_contact_changed_pixels_per_phase",
+            "maximum_role_pose_component_count_delta",
+            "motion_landmarks",
+            "phases",
+            "role",
+            "role_pose_baseline_frame_sha256",
+            "role_pose_identity_landmarks",
+        }:
+            raise RasterContractError(
+                f"{identity_key}: malformed generated role semantic lock"
+            )
+        role = raw_role["role"]
+        if not isinstance(role, str) or role not in canonical_role_order:
+            raise RasterContractError(f"{identity_key}: unknown semantic action role")
+        baseline_policy = raw_role["baseline_policy"]
+        expected_baseline_policy = GENERATED_ROLE_BASELINE_POLICY[role]
+        if baseline_policy != expected_baseline_policy:
+            raise RasterContractError(
+                f"{identity_key}/{role}: baseline policy must be "
+                f"{expected_baseline_policy}"
+            )
+        contact_policy = raw_role["contact_policy"]
+        if contact_policy not in GENERATED_ROLE_CONTACT_POLICY_CAPABILITIES[role]:
+            raise RasterContractError(
+                f"{identity_key}/{role}: contact policy {contact_policy!r} is not "
+                "an authorized storyboard capability for this action"
+            )
+        maximum_contact_changes = raw_role[
+            "maximum_contact_changed_pixels_per_phase"
+        ]
+        contact_ceiling = GENERATED_CONTACT_POLICY_MAXIMUMS[contact_policy]
+        contact_floor = 0 if contact_ceiling == 0 else 1
+        if (
+            not isinstance(maximum_contact_changes, int)
+            or isinstance(maximum_contact_changes, bool)
+            or not contact_floor <= maximum_contact_changes <= contact_ceiling
+        ):
+            raise RasterContractError(
+                f"{identity_key}/{role}: contact-change maximum for "
+                f"{contact_policy} must be {contact_floor}..{contact_ceiling}"
+            )
+        baseline_frame_hash = _require_lower_sha256(
+            raw_role["role_pose_baseline_frame_sha256"],
+            f"{identity_key}/{role}/role_pose_baseline_frame_sha256",
+        )
+        maximum_role_component_delta = raw_role[
+            "maximum_role_pose_component_count_delta"
+        ]
+        if (
+            not isinstance(maximum_role_component_delta, int)
+            or isinstance(maximum_role_component_delta, bool)
+            or not 0 <= maximum_role_component_delta <= 2
+        ):
+            raise RasterContractError(
+                f"{identity_key}/{role}: role-pose component delta must be 0..2"
+            )
+        pose_landmarks_raw = raw_role["role_pose_identity_landmarks"]
+        if not isinstance(pose_landmarks_raw, list) or not pose_landmarks_raw:
+            raise RasterContractError(
+                f"{identity_key}/{role}: identity-to-role-pose landmark gates are "
+                "required"
+            )
+        pose_landmarks = tuple(
+            _parse_role_pose_identity_landmark(
+                landmark, f"{identity_key}/{role}/pose-landmark/{index}"
+            )
+            for index, landmark in enumerate(pose_landmarks_raw)
+        )
+        pose_landmark_names = [landmark.name for landmark in pose_landmarks]
+        if len(pose_landmark_names) != len(set(pose_landmark_names)):
+            raise RasterContractError(
+                f"{identity_key}/{role}: pose landmark names must be unique"
+            )
+        phases_raw = raw_role["phases"]
+        if not isinstance(phases_raw, list) or len(phases_raw) != REQUIRED_FRAMES_PER_ROLE:
+            raise RasterContractError(
+                f"{identity_key}/{role}: all four phase semantic locks are required"
+            )
+        phases = tuple(
+            _parse_phase_semantic(
+                phase_raw,
+                f"{identity_key}/{role}/{phase}",
+                role,
+                phase,
+                baseline_policy,
+                identity_key,
+                identity_source_sha256,
+                identity_frame_sha256,
+            )
+            for phase, phase_raw in enumerate(phases_raw)
+        )
+        landmarks_raw = raw_role["motion_landmarks"]
+        if not isinstance(landmarks_raw, list) or not landmarks_raw:
+            raise RasterContractError(
+                f"{identity_key}/{role}: at least one role motion landmark is required"
+            )
+        landmarks = tuple(
+            _parse_motion_landmark(
+                landmark, f"{identity_key}/{role}/motion/{index}"
+            )
+            for index, landmark in enumerate(landmarks_raw)
+        )
+        names = [landmark.name for landmark in landmarks]
+        if len(names) != len(set(names)):
+            raise RasterContractError(
+                f"{identity_key}/{role}: motion landmark names must be unique"
+            )
+        roles.append(
+            GeneratedRoleSemanticLock(
+                role=role,
+                baseline_policy=baseline_policy,
+                contact_policy=contact_policy,
+                role_pose_baseline_frame_sha256=baseline_frame_hash,
+                maximum_role_pose_component_count_delta=(
+                    maximum_role_component_delta
+                ),
+                maximum_contact_changed_pixels_per_phase=(
+                    maximum_contact_changes
+                ),
+                role_pose_identity_landmarks=pose_landmarks,
+                phases=phases,
+                motion_landmarks=landmarks,
+            )
+        )
+    names = [role.role for role in roles]
+    if len(names) != len(set(names)) or names != sorted(
+        names, key=canonical_role_order.__getitem__
+    ):
+        raise RasterContractError(
+            f"{identity_key}: semantic roles must be unique and in canonical order"
+        )
+    return GeneratedActionSemanticContract(
+        schema=GENERATED_ACTION_SEMANTIC_SCHEMA,
+        roles=tuple(roles),
+    )
+
+
 def load_high_res_identity_locks(
     path: Path, selected: list[str]
 ) -> dict[str, HighResIdentityLock]:
@@ -1134,14 +1978,21 @@ def load_imagegen_import_locks(
 
     locks: dict[str, ImageGenImportLock] = {}
     for raw in records:
-        if not isinstance(raw, dict) or set(raw) != {
+        required_fields = {
+            "action_semantic_contract",
+            "action_semantic_contract_sha256",
             "approved",
             "identity_frame_sha256",
             "identity_key",
             "identity_source_sha256",
             "transform",
             "transform_sha256",
-        }:
+        }
+        transform_fields = required_fields - {
+            "action_semantic_contract",
+            "action_semantic_contract_sha256",
+        }
+        if not isinstance(raw, dict) or not transform_fields <= set(raw):
             raise RasterContractError(
                 "ImageGen import lock record has unexpected fields"
             )
@@ -1177,6 +2028,31 @@ def load_imagegen_import_locks(
                 f"{identity_key}: ImageGen transform SHA-256 mismatch; even a "
                 "one-pixel crop, scale, or offset change requires a new approval"
             )
+        if set(raw) != required_fields:
+            raise RasterContractError(
+                f"{identity_key}: generated action semantic contract is mandatory; "
+                f"missing={sorted(required_fields - set(raw))} "
+                f"unexpected={sorted(set(raw) - required_fields)}"
+            )
+        action_contract_hash = _require_lower_sha256(
+            raw["action_semantic_contract_sha256"],
+            f"{identity_key}/action_semantic_contract_sha256",
+        )
+        action_contract = _parse_generated_action_semantic_contract(
+            raw["action_semantic_contract"],
+            identity_key,
+            raw["identity_source_sha256"],
+            raw["identity_frame_sha256"],
+        )
+        actual_action_contract_hash = generated_action_semantic_contract_sha256(
+            action_contract
+        )
+        if actual_action_contract_hash != action_contract_hash:
+            raise RasterContractError(
+                f"{identity_key}: generated action semantic contract SHA-256 "
+                "drifted; mask, lineage, or motion-policy changes require a new "
+                "approval"
+            )
         if raw["approved"] is not True:
             raise RasterContractError(
                 f"{identity_key}: ImageGen import lock is not approved"
@@ -1187,6 +2063,8 @@ def load_imagegen_import_locks(
             identity_frame_sha256=raw["identity_frame_sha256"],
             transform_sha256=raw["transform_sha256"],
             transform=transform,
+            action_semantic_contract_sha256=action_contract_hash,
+            action_semantic_contract=action_contract,
             approved=True,
         )
     if set(locks) != set(selected):
@@ -1802,6 +2680,546 @@ def validate_high_res_four_frame_role(
         )
 
 
+def _require_live_region_lock(region: NativeRegionMaskLock, label: str) -> None:
+    try:
+        native_region_mask_record(region)
+    except RasterContractError as error:
+        raise RasterContractError(f"{label}: {error}") from error
+
+
+def validate_generated_action_semantic_role(
+    species: str,
+    identity: HighResFrame,
+    role: base.RoleSpec,
+    frames: list[HighResFrame],
+    semantic: GeneratedRoleSemanticLock,
+    *,
+    identity_source_sha256: str,
+    identity_frame_sha256: str,
+    source_layout: str,
+    role_source_sha256: str | None = None,
+) -> dict[str, object]:
+    """Prove generated lineage, role-pose identity, and local phase motion."""
+
+    label = f"{species}/{role.name}"
+    if semantic.role != role.name:
+        raise RasterContractError(f"{label}: semantic action role drifted")
+    expected_baseline_policy = GENERATED_ROLE_BASELINE_POLICY[role.name]
+    if semantic.baseline_policy != expected_baseline_policy:
+        raise RasterContractError(
+            f"{label}: baseline policy must be {expected_baseline_policy}"
+        )
+    capabilities = GENERATED_ROLE_CONTACT_POLICY_CAPABILITIES[role.name]
+    if semantic.contact_policy not in capabilities:
+        raise RasterContractError(
+            f"{label}: contact policy {semantic.contact_policy!r} is not an "
+            "authorized storyboard capability for this role"
+        )
+    contact_ceiling = GENERATED_CONTACT_POLICY_MAXIMUMS[semantic.contact_policy]
+    contact_floor = 0 if contact_ceiling == 0 else 1
+    maximum_contact_changes = semantic.maximum_contact_changed_pixels_per_phase
+    if (
+        not isinstance(maximum_contact_changes, int)
+        or isinstance(maximum_contact_changes, bool)
+        or not contact_floor <= maximum_contact_changes <= contact_ceiling
+    ):
+        raise RasterContractError(
+            f"{label}: contact-change bound does not match the explicit policy"
+        )
+    if source_layout not in GENERATED_SOURCE_LAYOUTS:
+        raise RasterContractError(f"{label}: unsupported semantic source layout")
+    if len(frames) != REQUIRED_FRAMES_PER_ROLE or [
+        frame.phase for frame in frames
+    ] != list(range(REQUIRED_FRAMES_PER_ROLE)):
+        raise RasterContractError(f"{label}: semantic gate requires phases 0..3")
+    if len(semantic.phases) != REQUIRED_FRAMES_PER_ROLE or [
+        phase.phase for phase in semantic.phases
+    ] != list(range(REQUIRED_FRAMES_PER_ROLE)):
+        raise RasterContractError(
+            f"{label}: all four exact phase semantic locks are required"
+        )
+    if not semantic.motion_landmarks:
+        raise RasterContractError(
+            f"{label}: at least one role-specific motion landmark is required"
+        )
+
+    identity_mask = set(identity.mask)
+    role_pose_mask = set(frames[0].mask)
+    role_pose_hash = hashlib.sha256(frames[0].packed).hexdigest()
+    if role_pose_hash != semantic.role_pose_baseline_frame_sha256:
+        raise RasterContractError(
+            f"{label}: immutable role phase-0 raster differs from its lock"
+        )
+
+    lower_scale, upper_scale = HIGH_RES_ROLE_SCALE_ENVELOPES[role.name]
+    if not lower_scale <= frames[0].apparent_scale_ratio <= upper_scale:
+        raise RasterContractError(
+            f"{label}/0: role-pose scale leaves the identity envelope"
+        )
+    minimum_overlap = ROLE_IDENTITY_JACCARD_MINIMUM[role.name]
+    if frames[0].identity_jaccard < minimum_overlap:
+        raise RasterContractError(
+            f"{label}/0: role-pose identity overlap is below the role floor"
+        )
+    maximum_role_component_delta = (
+        semantic.maximum_role_pose_component_count_delta
+    )
+    if (
+        not isinstance(maximum_role_component_delta, int)
+        or isinstance(maximum_role_component_delta, bool)
+        or not 0 <= maximum_role_component_delta <= 2
+    ):
+        raise RasterContractError(
+            f"{label}: role-pose component-count bound must be 0..2"
+        )
+    role_component_delta = abs(
+        frames[0].metrics.components - identity.metrics.components
+    )
+    if role_component_delta > maximum_role_component_delta:
+        raise RasterContractError(
+            f"{label}/0: role-pose topology changes component count by "
+            f"{role_component_delta} (maximum "
+            f"{maximum_role_component_delta})"
+        )
+
+    if not semantic.role_pose_identity_landmarks:
+        raise RasterContractError(
+            f"{label}: identity-to-role-pose landmark gates are required"
+        )
+    pose_landmark_names: set[str] = set()
+    pose_landmark_evidence: list[dict[str, object]] = []
+    for landmark in semantic.role_pose_identity_landmarks:
+        if landmark.name in pose_landmark_names:
+            raise RasterContractError(
+                f"{label}: role-pose landmark names must be unique"
+            )
+        pose_landmark_names.add(landmark.name)
+        _require_live_region_lock(
+            landmark.identity_region,
+            f"{label}/pose-landmark/{landmark.name}/identity",
+        )
+        _require_live_region_lock(
+            landmark.role_pose_region,
+            f"{label}/pose-landmark/{landmark.name}/role-pose",
+        )
+        identity_ink = identity_mask & set(landmark.identity_region.mask)
+        role_pose_ink = role_pose_mask & set(landmark.role_pose_region.mask)
+        if (
+            len(identity_ink) < landmark.minimum_ink_pixels
+            or len(role_pose_ink) < landmark.minimum_ink_pixels
+        ):
+            raise RasterContractError(
+                f"{label}/{landmark.name}: species marking/anatomy ink is missing "
+                "from identity or role pose"
+            )
+        retention = math.floor(
+            min(len(identity_ink), len(role_pose_ink))
+            * 1000
+            / max(len(identity_ink), len(role_pose_ink))
+        )
+        if retention < landmark.minimum_ink_retention_per_mille:
+            raise RasterContractError(
+                f"{label}/{landmark.name}: species marking/anatomy retention is "
+                f"{retention} per mille (minimum "
+                f"{landmark.minimum_ink_retention_per_mille})"
+            )
+        identity_components = len(base.connected_components(identity_ink))
+        role_pose_components = len(base.connected_components(role_pose_ink))
+        local_component_delta = abs(identity_components - role_pose_components)
+        if local_component_delta > landmark.maximum_component_count_delta:
+            raise RasterContractError(
+                f"{label}/{landmark.name}: local marking/anatomy topology drifted"
+            )
+        pose_landmark_evidence.append(
+            {
+                "name": landmark.name,
+                "identity_region_sha256": landmark.identity_region.packed_sha256,
+                "role_pose_region_sha256": landmark.role_pose_region.packed_sha256,
+                "identity_ink_pixels": len(identity_ink),
+                "role_pose_ink_pixels": len(role_pose_ink),
+                "ink_retention_per_mille": retention,
+                "component_count_delta": local_component_delta,
+            }
+        )
+
+    phase_evidence: list[dict[str, object]] = []
+    frame_masks: list[set[tuple[int, int]]] = []
+    protected_signatures = [
+        tuple(
+            sorted(
+                (frozen.name, frozen.region.packed_sha256)
+                for frozen in phase.frozen_regions
+                if frozen.kind == "protected-identity-landmark"
+            )
+        )
+        for phase in semantic.phases
+    ]
+    if len(set(protected_signatures)) != 1:
+        raise RasterContractError(
+            f"{label}: protected role-baseline landmark masks drift between phases"
+        )
+    if semantic.contact_policy in {"planted-identity", "planted-role-base"}:
+        contact_signatures = [
+            tuple(
+                sorted(
+                    (frozen.name, frozen.region.packed_sha256)
+                    for frozen in phase.frozen_regions
+                    if frozen.kind == "planted-contact"
+                )
+            )
+            for phase in semantic.phases
+        ]
+        if len(set(contact_signatures)) != 1:
+            raise RasterContractError(
+                f"{label}: planted contact masks drift between stationary phases"
+            )
+    for frame, phase_lock in zip(frames, semantic.phases, strict=True):
+        phase_label = f"{label}/{frame.phase}"
+        reference = phase_lock.identity_reference
+        if (
+            reference.kind != "immutable-approved-identity-source"
+            or reference.relative_path != "identity.png"
+            or reference.identity_key != species
+            or reference.source_sha256 != identity_source_sha256
+            or reference.frame_sha256 != identity_frame_sha256
+        ):
+            raise RasterContractError(
+                f"{phase_label}: generated-phase chaining is forbidden; every "
+                "phase must independently reference the immutable approved identity"
+            )
+
+        expected_semantic_baseline = (
+            "approved-identity"
+            if semantic.baseline_policy == "identity-anchored"
+            else (
+                "approved-identity-pose-gate"
+                if frame.phase == 0
+                else "immutable-role-phase-0"
+            )
+        )
+        if phase_lock.semantic_baseline != expected_semantic_baseline:
+            raise RasterContractError(
+                f"{phase_label}: semantic baseline drifted; phase 0 is never a "
+                "generation reference"
+            )
+        semantic_baseline = (
+            identity_mask
+            if expected_semantic_baseline
+            in {"approved-identity", "approved-identity-pose-gate"}
+            else role_pose_mask
+        )
+        frozen_baseline = (
+            identity_mask
+            if semantic.baseline_policy == "identity-anchored"
+            else role_pose_mask
+        )
+
+        asset = phase_lock.generated_asset
+        expected_path = (
+            f"{role.name}/{frame.phase:02d}.png"
+            if source_layout == "independent-frame"
+            else f"{role.name}.png"
+        )
+        expected_source_hash = (
+            frame.source_sha256
+            if source_layout == "independent-frame"
+            else role_source_sha256
+        )
+        if expected_source_hash is None:
+            raise RasterContractError(
+                f"{phase_label}: complete action-sheet source hash is required"
+            )
+        if (
+            asset.layout != source_layout
+            or asset.relative_path != expected_path
+            or asset.source_sha256 != expected_source_hash
+            or asset.source_region_sha256 != frame.source_sha256
+        ):
+            raise RasterContractError(
+                f"{phase_label}: generated source asset pin drifted or aliases "
+                "another phase"
+            )
+
+        _require_live_region_lock(
+            phase_lock.allowed_change_region,
+            f"{phase_label}/allowed-change",
+        )
+        allowed = set(phase_lock.allowed_change_region.mask)
+        if not allowed:
+            raise RasterContractError(
+                f"{phase_label}: allowed-change region cannot be empty"
+            )
+        if phase_lock.maximum_out_of_region_changed_pixels != 0:
+            raise RasterContractError(
+                f"{phase_label}: production out-of-region budget must be zero"
+            )
+
+        frame_mask = set(frame.mask)
+        delta = semantic_baseline ^ frame_mask
+        outside = delta - allowed
+        if outside:
+            raise RasterContractError(
+                f"{phase_label}: {len(outside)} changed pixels are outside the "
+                "exact allowed-change region (maximum 0); scattered head/tail/paw "
+                "edits are rejected"
+            )
+
+        frozen_kinds = {region.kind for region in phase_lock.frozen_regions}
+        if frozen_kinds != {
+            "planted-contact",
+            "protected-identity-landmark",
+        }:
+            raise RasterContractError(
+                f"{phase_label}: planted-contact and protected-identity-landmark "
+                "frozen masks are both required"
+            )
+        frozen_names: set[str] = set()
+        frozen_contact: set[tuple[int, int]] = set()
+        frozen_delta = frozen_baseline ^ frame_mask
+        for frozen in phase_lock.frozen_regions:
+            if frozen.name in frozen_names:
+                raise RasterContractError(
+                    f"{phase_label}: frozen region names must be unique"
+                )
+            frozen_names.add(frozen.name)
+            if (
+                frozen.kind
+                not in {"planted-contact", "protected-identity-landmark"}
+                or frozen.maximum_changed_pixels != 0
+            ):
+                raise RasterContractError(
+                    f"{phase_label}/{frozen.name}: floor contacts and hard "
+                    "anatomy require a zero-pixel frozen budget"
+                )
+            _require_live_region_lock(
+                frozen.region, f"{phase_label}/frozen/{frozen.name}"
+            )
+            region_mask = set(frozen.region.mask)
+            if frozen.kind == "protected-identity-landmark" and (
+                len(region_mask) < GENERATED_MIN_FROZEN_LANDMARK_PIXELS
+                or not region_mask & frozen_baseline
+            ):
+                raise RasterContractError(
+                    f"{phase_label}/{frozen.name}: protected role-baseline "
+                    "landmark is empty, trivial, or does not cover anatomy"
+                )
+            if frozen.kind == "planted-contact":
+                if not region_mask & frozen_baseline:
+                    raise RasterContractError(
+                        f"{phase_label}/{frozen.name}: planted-contact region "
+                        "does not cover a baseline contact"
+                    )
+                frozen_contact.update(region_mask)
+            changed = frozen_delta & region_mask
+            if changed:
+                raise RasterContractError(
+                    f"{phase_label}/{frozen.name}: {len(changed)} pixels shimmer "
+                    "inside a zero-tolerance frozen contact/anatomy region"
+                )
+
+        contact_baseline = (
+            identity_mask
+            if semantic.contact_policy == "planted-identity"
+            else role_pose_mask
+        )
+        contact_floor = {
+            point for point in contact_baseline if point[1] == HIGH_RES_FLOOR_Y
+        }
+        if not contact_floor:
+            raise RasterContractError(f"{phase_label}: contact baseline has no floor")
+        floor_changes = {
+            point
+            for point in contact_baseline ^ frame_mask
+            if point[1] == HIGH_RES_FLOOR_Y
+        }
+        if semantic.contact_policy in {"planted-identity", "planted-role-base"}:
+            if not contact_floor <= frozen_contact:
+                raise RasterContractError(
+                    f"{phase_label}: planted-contact mask does not freeze every "
+                    "baseline floor contact"
+                )
+            if floor_changes:
+                raise RasterContractError(
+                    f"{phase_label}: planted paw/contact shimmer changes "
+                    f"{len(floor_changes)} floor pixels"
+                )
+        else:
+            # The explicit allowed-change mask identifies every floor contact
+            # that the storyboard permits this phase to alter.  All remaining
+            # baseline contacts must be represented in the exact zero-tolerance
+            # frozen mask.  Phase 0 establishes the role baseline, so all of its
+            # contacts are frozen even when its identity-to-pose delta includes
+            # those coordinates.
+            expected_frozen_contact = (
+                contact_floor
+                if frame.phase == 0
+                else contact_floor - allowed
+            )
+            if not expected_frozen_contact <= frozen_contact:
+                raise RasterContractError(
+                    f"{phase_label}: bounded contact policy leaves "
+                    f"{len(expected_frozen_contact - frozen_contact)} unapproved "
+                    "baseline floor contacts outside its exact frozen mask"
+                )
+            if len(floor_changes) > semantic.maximum_contact_changed_pixels_per_phase:
+                raise RasterContractError(
+                    f"{phase_label}: explicit {semantic.contact_policy} changes "
+                    f"{len(floor_changes)} floor pixels (maximum "
+                    f"{semantic.maximum_contact_changed_pixels_per_phase})"
+                )
+            if not floor_changes <= allowed:
+                raise RasterContractError(
+                    f"{phase_label}: approved contact changes leave their exact "
+                    "allowed-change mask"
+                )
+
+        frame_masks.append(frame_mask)
+        phase_evidence.append(
+            {
+                "phase": frame.phase,
+                "semantic_baseline": expected_semantic_baseline,
+                "semantic_baseline_frame_sha256": (
+                    identity_frame_sha256
+                    if expected_semantic_baseline
+                    in {"approved-identity", "approved-identity-pose-gate"}
+                    else semantic.role_pose_baseline_frame_sha256
+                ),
+                "changed_from_semantic_baseline_pixels": len(delta),
+                "outside_allowed_change_pixels": len(outside),
+                "allowed_change_mask_sha256": (
+                    phase_lock.allowed_change_region.packed_sha256
+                ),
+                "frozen_region_mask_sha256": [
+                    frozen.region.packed_sha256
+                    for frozen in phase_lock.frozen_regions
+                ],
+                "reference_source_sha256": reference.source_sha256,
+                "generated_source_sha256": asset.source_sha256,
+                "generated_source_region_sha256": asset.source_region_sha256,
+                "contact_policy": semantic.contact_policy,
+                "floor_contact_changed_pixels": len(floor_changes),
+            }
+        )
+
+    motion_union: set[tuple[int, int]] = set()
+    landmark_evidence: list[dict[str, object]] = []
+    landmark_names: set[str] = set()
+    motion_baseline = (
+        identity_mask
+        if semantic.baseline_policy == "identity-anchored"
+        else role_pose_mask
+    )
+    role_delta = set().union(*(motion_baseline ^ mask for mask in frame_masks))
+    allowed_union = set().union(
+        *(set(phase.allowed_change_region.mask) for phase in semantic.phases)
+    )
+    for landmark in semantic.motion_landmarks:
+        if landmark.name in landmark_names:
+            raise RasterContractError(f"{label}: motion landmark names must be unique")
+        landmark_names.add(landmark.name)
+        _require_live_region_lock(
+            landmark.region, f"{label}/motion/{landmark.name}"
+        )
+        region = set(landmark.region.mask)
+        if not region or not region <= allowed_union:
+            raise RasterContractError(
+                f"{label}/{landmark.name}: motion landmark must be a non-empty "
+                "subset of the role's exact allowed-change regions"
+            )
+        minimum = landmark.minimum_changed_pixels
+        if (
+            not isinstance(minimum, int)
+            or isinstance(minimum, bool)
+            or minimum < GENERATED_MIN_MOTION_LANDMARK_PIXELS
+            or minimum > len(region)
+        ):
+            raise RasterContractError(
+                f"{label}/{landmark.name}: invalid meaningful-motion minimum"
+            )
+        changed = len(role_delta & region)
+        if changed < minimum:
+            raise RasterContractError(
+                f"{label}/{landmark.name}: action changes only {changed} pixels "
+                f"inside its role-specific motion landmark (minimum {minimum}); "
+                "off-role noise cannot prove animation"
+            )
+        motion_union.update(region)
+        landmark_evidence.append(
+            {
+                "name": landmark.name,
+                "mask_sha256": landmark.region.packed_sha256,
+                "changed_pixels": changed,
+                "minimum_changed_pixels": minimum,
+            }
+        )
+
+    motion_states = [frozenset(mask & motion_union) for mask in frame_masks]
+    if len(set(motion_states)) != REQUIRED_FRAMES_PER_ROLE:
+        raise RasterContractError(
+            f"{label}: four unique frames are not four unique role-motion states; "
+            "scattered off-role noise is rejected"
+        )
+    adjacent_motion_changed_pixels: list[int] = []
+    for previous, current in zip(motion_states, motion_states[1:]):
+        changed = len(previous ^ current)
+        adjacent_motion_changed_pixels.append(changed)
+        if changed < GENERATED_MIN_MOTION_LANDMARK_PIXELS:
+            raise RasterContractError(
+                f"{label}: adjacent phases change only {changed} pixels inside "
+                "role-specific motion landmarks (minimum "
+                f"{GENERATED_MIN_MOTION_LANDMARK_PIXELS}); off-role noise cannot "
+                "hide one-pixel landmark shimmer"
+            )
+
+    return {
+        "schema": GENERATED_ACTION_SEMANTIC_SCHEMA,
+        "role": role.name,
+        "baseline_policy": semantic.baseline_policy,
+        "contact_policy": semantic.contact_policy,
+        "maximum_contact_changed_pixels_per_phase": (
+            semantic.maximum_contact_changed_pixels_per_phase
+        ),
+        "role_pose_baseline_frame_sha256": (
+            semantic.role_pose_baseline_frame_sha256
+        ),
+        "role_pose_component_count_delta": role_component_delta,
+        "role_pose_identity_landmarks": pose_landmark_evidence,
+        "source_layout": source_layout,
+        "motion_landmarks": landmark_evidence,
+        "motion_state_sha256": [
+            mask_sha256(state, HIGH_RES_FRAME_WIDTH, HIGH_RES_FRAME_HEIGHT)
+            for state in motion_states
+        ],
+        "adjacent_motion_changed_pixels": adjacent_motion_changed_pixels,
+        "phases": phase_evidence,
+    }
+
+
+def _require_generated_semantic_contract_roles(
+    species: str,
+    lock: ImageGenImportLock,
+    roles: tuple[base.RoleSpec, ...],
+) -> dict[str, GeneratedRoleSemanticLock]:
+    contract = lock.action_semantic_contract
+    if contract.schema != GENERATED_ACTION_SEMANTIC_SCHEMA:
+        raise RasterContractError(
+            f"{species}: unsafe or missing generated action semantic contract"
+        )
+    actual_hash = generated_action_semantic_contract_sha256(contract)
+    if actual_hash != lock.action_semantic_contract_sha256:
+        raise RasterContractError(
+            f"{species}: generated action semantic contract hash drifted"
+        )
+    by_role = {record.role: record for record in contract.roles}
+    expected = [role.name for role in roles]
+    if len(by_role) != len(contract.roles) or list(by_role) != expected:
+        raise RasterContractError(
+            f"{species}: semantic action lock set/order differs from selected roles; "
+            f"expected={expected} actual={list(by_role)}"
+        )
+    return by_role
+
+
 def _high_res_portrait_bytes(mask: set[tuple[int, int]]) -> bytes:
     packed = bytearray(HIGH_RES_PORTRAIT_BYTES)
     for x, y in mask:
@@ -1966,6 +3384,9 @@ def load_high_res_generated_species(
         raise RasterContractError(
             f"{species}: in-memory ImageGen transform differs from locked hash"
         )
+    semantic_by_role = _require_generated_semantic_contract_roles(
+        species, lock, roles
+    )
 
     species_dir = source_dir / species
     expected_top = {"identity.png", "portrait.png", *(role.name for role in roles)}
@@ -2003,6 +3424,7 @@ def load_high_res_generated_species(
         "portrait.png": portrait.source_sha256,
     }
     frames: list[HighResFrame] = []
+    semantic_evidence: dict[str, dict[str, object]] = {}
     for role in roles:
         role_dir = species_dir / role.name
         actual_files = {path.name for path in role_dir.iterdir()}
@@ -2030,6 +3452,16 @@ def load_high_res_generated_species(
             source_hashes[f"{role.name}/{filename}"] = frame.source_sha256
             role_frames.append(frame)
         validate_high_res_four_frame_role(role, role_frames)
+        semantic_evidence[role.name] = validate_generated_action_semantic_role(
+            species,
+            identity,
+            role,
+            role_frames,
+            semantic_by_role[role.name],
+            identity_source_sha256=lock.identity_source_sha256,
+            identity_frame_sha256=lock.identity_frame_sha256,
+            source_layout="independent-frame",
+        )
         frames.extend(role_frames)
 
     crop_width = lock.transform.crop_rect[2] - lock.transform.crop_rect[0]
@@ -2040,6 +3472,10 @@ def load_high_res_generated_species(
         frames=tuple(frames),
         source_sha256=source_hashes,
         fixed_action_scale=fixed_scale,
+        generated_semantic_evidence=semantic_evidence,
+        generated_action_semantic_contract_sha256=(
+            lock.action_semantic_contract_sha256
+        ),
     )
 
 
@@ -2069,6 +3505,9 @@ def load_high_res_generated_action_sheet_species(
         raise RasterContractError(
             f"{species}: in-memory ImageGen transform differs from locked hash"
         )
+    semantic_by_role = _require_generated_semantic_contract_roles(
+        species, lock, roles
+    )
 
     species_dir = source_dir / species
     expected_top = {
@@ -2107,6 +3546,7 @@ def load_high_res_generated_action_sheet_species(
     }
 
     frames: list[HighResFrame] = []
+    semantic_evidence: dict[str, dict[str, object]] = {}
     for role in roles:
         path = species_dir / f"{role.name}.png"
         if not path.is_file():
@@ -2122,7 +3562,19 @@ def load_high_res_generated_action_sheet_species(
         )
         # Nothing is written or returned until every phase of every selected
         # role passes, so a late failure cannot leave a partial extraction.
-        source_hashes[path.name] = sha256_file(path)
+        role_source_sha256 = sha256_file(path)
+        source_hashes[path.name] = role_source_sha256
+        semantic_evidence[role.name] = validate_generated_action_semantic_role(
+            species,
+            identity,
+            role,
+            list(role_frames),
+            semantic_by_role[role.name],
+            identity_source_sha256=lock.identity_source_sha256,
+            identity_frame_sha256=lock.identity_frame_sha256,
+            source_layout="one-action-sheet-region",
+            role_source_sha256=role_source_sha256,
+        )
         frames.extend(role_frames)
 
     return HighResSpeciesRaster(
@@ -2131,4 +3583,8 @@ def load_high_res_generated_action_sheet_species(
         frames=tuple(frames),
         source_sha256=source_hashes,
         fixed_action_scale=HIGH_RES_FRAME_WIDTH / 560,
+        generated_semantic_evidence=semantic_evidence,
+        generated_action_semantic_contract_sha256=(
+            lock.action_semantic_contract_sha256
+        ),
     )

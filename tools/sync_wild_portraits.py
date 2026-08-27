@@ -27,7 +27,10 @@ PORTRAIT_HEIGHT = 18
 PORTRAIT_BYTES = 36
 PORTRAIT_STORAGE = "XBM least-significant-bit first, two bytes per row"
 DIRECT_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
-IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v2"
+IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v3"
+GENERATED_ACTION_SEMANTIC_SCHEMA = (
+    "kitsu-wild-generated-action-semantic-locality-v1"
+)
 DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
 IMAGEGEN_RASTER_TRANSFORM = (
     "rgba-over-white-box-area-black-coverage-then-fixed-offset"
@@ -275,6 +278,8 @@ def require_pack_raster_provenance(
             raise ValueError(f"{identity_key} direct-target build changed scale")
     else:
         if set(identity_lock) != {
+            "action_semantic_contract",
+            "action_semantic_contract_sha256",
             "identity_frame_sha256",
             "identity_source_sha256",
             "schema",
@@ -303,6 +308,39 @@ def require_pack_raster_provenance(
         ).encode("ascii")
         if hashlib.sha256(canonical).hexdigest() != transform_sha256:
             raise ValueError(f"{identity_key} ImageGen transform hash does not match")
+        semantic_contract = require_mapping(
+            identity_lock.get("action_semantic_contract"),
+            f"{identity_key}.action_semantic_contract",
+        )
+        if (
+            set(semantic_contract) != {"roles", "schema"}
+            or semantic_contract.get("schema") != GENERATED_ACTION_SEMANTIC_SCHEMA
+        ):
+            raise ValueError(
+                f"{identity_key} generated semantic contract is missing or unsafe"
+            )
+        semantic_roles = require_list(
+            semantic_contract.get("roles"),
+            f"{identity_key}.action_semantic_contract.roles",
+        )
+        if len(semantic_roles) != 12:
+            raise ValueError(
+                f"{identity_key} generated semantic contract must cover all roles"
+            )
+        semantic_hash = require_sha256(
+            identity_lock.get("action_semantic_contract_sha256"),
+            f"{identity_key}.action_semantic_contract_sha256",
+        )
+        canonical_semantics = json.dumps(
+            semantic_contract,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+        if hashlib.sha256(canonical_semantics).hexdigest() != semantic_hash:
+            raise ValueError(
+                f"{identity_key} generated semantic contract hash does not match"
+            )
         crop = transform["crop_rect"]
         identity_scale = 64 / (crop[2] - crop[0])
         action_sheet = transform_kind == IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
@@ -456,6 +494,31 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
                 )
             if role_record.get("unique_frames") != 4:
                 raise ValueError(f"{identity_key} has a collapsed animation role")
+            if pack.get("raster_transform") != DIRECT_RASTER_TRANSFORM:
+                semantic_locality = require_mapping(
+                    role_record.get("semantic_locality"),
+                    f"{identity_key}.{role_record.get('role')}.semantic_locality",
+                )
+                if (
+                    semantic_locality.get("schema")
+                    != GENERATED_ACTION_SEMANTIC_SCHEMA
+                    or semantic_locality.get("role") != role_record.get("role")
+                    or len(
+                        require_list(
+                            semantic_locality.get("phases"),
+                            f"{identity_key}.{role_record.get('role')}.semantic_phases",
+                        )
+                    )
+                    != 4
+                    or not require_list(
+                        semantic_locality.get("motion_landmarks"),
+                        f"{identity_key}.{role_record.get('role')}.motion_landmarks",
+                    )
+                ):
+                    raise ValueError(
+                        f"{identity_key}.{role_record.get('role')} lacks semantic "
+                        "locality evidence"
+                    )
             phase_hash_fields = ["final_mask_sha256", "frame_sha256"]
             if action_sheet_pack:
                 action_source_sha256 = require_sha256(

@@ -26,6 +26,7 @@ import sync_wild_portraits as portrait_sync  # noqa: E402
 from test_companion_raster_contract import (  # noqa: E402
     imagegen_action_logical_outline,
     imagegen_logical_outline,
+    refresh_test_generated_semantic_lock,
     write_imagegen_action_sheet,
     write_valid_imagegen_action_sheet_sources,
 )
@@ -278,6 +279,20 @@ class HighResolutionPackFormatTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "legacy v1 locks are forbidden"):
                 wild_builder.load_release_identity_locks(path, ["ferret"])
 
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "kitsu-wild-imagegen-import-lock-v2",
+                        "identities": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError, "unsafe ImageGen v2 action locks are forbidden"
+            ):
+                wild_builder.load_release_identity_locks(path, ["ferret"])
+
         with self.assertRaisesRegex(ValueError, "unsupported or legacy identity lock"):
             portrait_sync.require_fail_closed_manifest(
                 {
@@ -309,6 +324,14 @@ class HighResolutionPackFormatTests(unittest.TestCase):
                     species_dir / f"{role.name}.png", masks
                 )
 
+            lock = refresh_test_generated_semantic_lock(
+                source,
+                "ferret",
+                lock,
+                builder.ROLE_SPECS,
+                source_layout="one-action-sheet-region",
+            )
+
             result = wild_builder.build_species(
                 source,
                 output,
@@ -337,12 +360,24 @@ class HighResolutionPackFormatTests(unittest.TestCase):
         )
         self.assertEqual(result["action_source_layout"]["phase_order"], [0, 1, 2, 3])
         self.assertEqual(len(result["source_sha256"]), 14)
+        self.assertEqual(
+            result["identity_lock"]["action_semantic_contract_sha256"],
+            lock.action_semantic_contract_sha256,
+        )
         self.assertTrue(
             all(
                 "action_source_sha256" in role
                 and len(role["source_region_sha256"]) == 4
                 and "source_sha256" not in role
                 and "action_output_offset" not in role
+                and role["semantic_locality"]["baseline_policy"]
+                == raster_contract.GENERATED_ROLE_BASELINE_POLICY[role["role"]]
+                and role["semantic_locality"]["contact_policy"]
+                == raster_contract.GENERATED_ROLE_CONTACT_POLICY_DEFAULTS[
+                    role["role"]
+                ]
+                and len(role["semantic_locality"]["phases"]) == 4
+                and role["semantic_locality"]["motion_landmarks"]
                 for role in result["roles"]
             )
         )
@@ -357,6 +392,16 @@ class HighResolutionPackFormatTests(unittest.TestCase):
             "identity.png": "a" * 64,
             "portrait.png": "b" * 64,
         }
+        semantic_contract = {
+            "schema": raster_contract.GENERATED_ACTION_SEMANTIC_SCHEMA,
+            "roles": [{"role": role.name} for role in builder.ROLE_SPECS],
+        }
+        semantic_payload = json.dumps(
+            semantic_contract,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
         pack = {
             "raster_transform": wild_builder.IMAGEGEN_RASTER_TRANSFORM,
             "source_kind": "imagegen-locked-import",
@@ -366,6 +411,10 @@ class HighResolutionPackFormatTests(unittest.TestCase):
             "pack_bytes": 31_120,
             "identity_lock": {
                 "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                "action_semantic_contract": semantic_contract,
+                "action_semantic_contract_sha256": hashlib.sha256(
+                    semantic_payload
+                ).hexdigest(),
                 "identity_source_sha256": "a" * 64,
                 "identity_frame_sha256": "c" * 64,
                 "transform": transform_record,

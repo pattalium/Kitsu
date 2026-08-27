@@ -222,18 +222,25 @@ approval and requires a new visual review.
 
 ## ImageGen import lock
 
-Generated RGB/RGBA source uses a distinct lock. Version 2 makes the action-cell
-offset mandatory; version 1 is invalid because it cannot distinguish the
-1120x1400 identity viewport from a 560x700 action cell. This is the selected
-Ferret E candidate transform. Its mechanical approval is not acceptance of the
-artwork, action GIFs, pack, publication, or device installation.
+Generated RGB/RGBA source uses a distinct lock. Version 3 retains the mandatory
+action-cell offset from version 2 and adds a mandatory, hash-bound semantic-
+locality contract for every generated role and phase. Versions 1 and 2 are
+invalid release inputs: version 1 cannot distinguish the 1120x1400 identity
+viewport from a 560x700 action cell, and version 2 can prove geometry but not
+generation lineage or action locality. Mechanical approval is not acceptance
+of the artwork, action GIFs, pack, publication, or device installation.
 
 ```json
 {
-  "schema": "kitsu-wild-imagegen-import-lock-v2",
+  "schema": "kitsu-wild-imagegen-import-lock-v3",
   "identities": [
     {
       "approved": true,
+      "action_semantic_contract": {
+        "schema": "kitsu-wild-generated-action-semantic-locality-v1",
+        "roles": ["<twelve complete canonical role records>"]
+      },
+      "action_semantic_contract_sha256": "<lowercase SHA-256 of canonical action_semantic_contract JSON>",
       "identity_key": "ferret",
       "identity_source_sha256": "d3ddf4e7651c8f1e8310feb6b5047e47cb3a550de3264ab567799b8682f88261",
       "identity_frame_sha256": "70cde51efa3500a8d94e6fb6e4379e001e5b8c2a0771e43169dbe1ffde79feeb",
@@ -254,7 +261,82 @@ artwork, action GIFs, pack, publication, or device installation.
 }
 ```
 
-The manifest repeats the complete transform, its hash, the raw identity hash,
+Every role record contains four phase records in canonical order. Every phase
+repeats the immutable `identity.png` source hash and imported identity-frame
+hash as its only generation reference. A path or kind naming another generated
+phase is invalid, so F1 can never become the edit/reference input for F2. Role
+phase 0 can be an immutable **validation baseline**, but it is never a generation
+input. Every generated source must attest that it independently referenced the
+approved identity.
+
+Idle, Blink, and Listen are `identity-anchored`: every phase's exact allowed-
+change, frozen-contact, protected-landmark, and motion comparison uses the
+approved standing identity. All other roles are `immutable-role-phase-0`:
+phase 0 first passes the ordinary identity Jaccard and scale envelopes plus a
+bounded whole-subject component/topology delta and hash-pinned identity-region
+to role-pose-region landmark gates. Those landmark gates require minimum ink,
+ink-count retention, and bounded local component delta so a pose can rotate or
+lie down without discarding species markings/anatomy. Phase 0's full pose change
+must fit its own exact identity-to-pose allowed region. Phases 1..3 then compare
+locality, frozen anatomy, contacts, and role motion to the exact hash-pinned
+phase-0 raster. This permits a real Sleep pose without permitting head, marking,
+or paw shimmer between Sleep phases.
+
+Every role lock explicitly names its per-species contact policy; no policy is
+inferred from a default. The defaults guide storyboarding, while the allowed
+capability set is the hard schema ceiling:
+
+```text
+role      baseline                 default                         allowed capabilities
+idle      identity-anchored        planted-identity                planted-identity
+blink     identity-anchored        planted-identity                planted-identity
+pet       immutable-role-phase-0   planted-role-base               planted-role-base | bounded-approved-gait-lift
+sleep     immutable-role-phase-0   planted-role-base               planted-role-base | bounded-approved-pose-change
+listen    identity-anchored        planted-identity                planted-identity
+surprise  immutable-role-phase-0   planted-role-base               planted-role-base | bounded-approved-pose-change
+play      immutable-role-phase-0   bounded-approved-gait-lift      planted-role-base | bounded-approved-gait-lift
+tired     immutable-role-phase-0   planted-role-base               planted-role-base | bounded-approved-pose-change
+feed      immutable-role-phase-0   planted-role-base               planted-role-base | bounded-approved-gait-lift
+wake      immutable-role-phase-0   bounded-approved-pose-change    planted-role-base | bounded-approved-pose-change
+meet      immutable-role-phase-0   bounded-approved-gait-lift      planted-role-base | bounded-approved-gait-lift
+evolve    immutable-role-phase-0   bounded-approved-pose-change    planted-role-base | bounded-approved-pose-change
+```
+
+Thus a turtle Surprise may explicitly approve a bounded foot retraction, a
+pangolin Sleep may explicitly approve a bounded curl/contact transition, and a
+Pet or Feed may explicitly approve a bounded paw lift. An Idle lock can never
+request any of those capabilities. Gait/lift policies pin a maximum of at most
+16 changed floor pixels per phase; pose-change policies pin at most 32. Every
+actual floor change must also be inside that phase's exact allowed-change mask,
+and the zero-tolerance frozen mask must contain every baseline floor contact
+outside that exact per-phase permission. Phase 0 freezes all contacts in the
+immutable role-pose baseline.
+
+Each phase also pins its generated asset path, complete source hash, fixed-
+region hash, exact allowed-change region, and both required zero-tolerance
+frozen-region kinds: `planted-contact` and
+`protected-identity-landmark`. Production out-of-region budget is exactly zero;
+there is no soft exception through which one-pixel shimmer can pass.
+
+Regions use `kitsu-native-region-mask-64x80-v1`: exactly 640 row-major,
+least-significant-bit-first bytes represented as lowercase hexadecimal, plus
+the SHA-256 of those bytes. Set bits select coordinates where a policy applies;
+they do not mean that the artwork pixel must be black. Missing bytes, a changed
+bit with the old hash, a changed hash with the old enclosing contract hash, an
+alternate canvas/encoding, or a region entering guard rows fails closed.
+
+Every role has at least one named motion-landmark region and a changed-pixel
+minimum of at least four native pixels. Each minimum must be met inside that
+landmark, all four frames must have distinct states inside the union of the
+role's landmarks, and every adjacent phase must change at least four pixels
+inside that union. Role-base motion is measured from phase 0, so the one-time
+standing-to-Sleep pose change cannot masquerade as four meaningful Sleep
+phases. Four packed-frame hashes that differ only through scattered head, tail,
+paw, or background noise—and off-role noise hiding a one-pixel landmark
+shimmer—do not constitute an animation.
+
+The manifest repeats the complete transform, its hash, the semantic-locality
+contract and hash, the raw identity hash,
 the imported 640-byte identity hash, every raw action hash, every final frame
 hash, and the applicable fixed scales. Independent-frame imports record
 `identity_raster_scale=action_cell_raster_scale=64/1120`. One-action-sheet
@@ -302,9 +384,9 @@ The format-v2 validator rejects the complete build when any of these occur:
 - any subject pixel leaves `[2, 2, 61, 77]` or enters rows 78..79;
 - the subject does not land on floor `y=77` or leaves the centered stage;
 - Cat, Dog, or Fox enters the new-art pipeline;
-- a legacy identity lock, ImageGen import lock v1, missing or changed action
-  offset, changed identity hash, changed import-transform hash, or unapproved
-  identity is used;
+- a legacy identity lock, ImageGen import lock v1/v2, missing or changed action
+  offset, changed identity hash, changed import-transform hash, missing or
+  drifted semantic mask/contract hash, or unapproved identity is used;
 - a generated source contains ink in the removed border, the BOX/coverage
   result is threshold-unstable, or either fixed output offset clips its input;
 - one action-sheet cell is shifted, oversized, clipped, duplicated, collapsed,
@@ -314,6 +396,12 @@ The format-v2 validator rejects the complete build when any of these occur:
   debris outside the primary subject;
 - any phase is byte-identical to another phase, an adjacent pair changes fewer
   than four native pixels, or the complete action changes fewer than sixteen;
+- a phase references any generated phase instead of the immutable approved
+  identity, changes a planted contact/protected landmark, exceeds its exact
+  zero-budget allowed-change region, requests a per-species contact capability
+  outside that role's allowed set or over its exact floor-pixel bound, drifts a
+  role-pose identity landmark/topology gate, or proves uniqueness only with
+  pixels outside role motion landmarks;
 - adjacent phase differences indicate a discontinuous identity/pose jump;
 - apparent scale leaves the role-specific identity envelope or pops within an
   action;

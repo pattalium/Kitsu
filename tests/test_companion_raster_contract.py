@@ -209,6 +209,152 @@ def write_imagegen_raw(
     source.save(path)
 
 
+def make_test_generated_semantic_contract(
+    species: str,
+    identity: contract.HighResFrame,
+    frames: list[contract.HighResFrame],
+    *,
+    identity_source_sha256: str,
+    identity_frame_sha256: str,
+    source_layout: str,
+    role_source_sha256: str | None = None,
+    role: base.RoleSpec = IDLE,
+) -> contract.GeneratedActionSemanticContract:
+    identity_mask = set(identity.mask)
+    frame_masks = [set(frame.mask) for frame in frames]
+    baseline_policy = contract.GENERATED_ROLE_BASELINE_POLICY[role.name]
+    role_pose_mask = frame_masks[0]
+    frozen_baseline = (
+        identity_mask if baseline_policy == "identity-anchored" else role_pose_mask
+    )
+    stable_ink = sorted(
+        set.intersection(frozen_baseline, *frame_masks)
+        - {
+            point
+            for point in frozen_baseline
+            if point[1] == contract.HIGH_RES_FLOOR_Y
+        },
+        key=lambda point: (point[1], point[0]),
+    )
+    protected = contract.native_region_mask_lock(set(stable_ink[:8]))
+    planted = contract.native_region_mask_lock(
+        {(x, contract.HIGH_RES_FLOOR_Y) for x in range(contract.HIGH_RES_FRAME_WIDTH)}
+    )
+    reference = contract.ImmutableIdentityReference(
+        kind="immutable-approved-identity-source",
+        relative_path="identity.png",
+        identity_key=species,
+        source_sha256=identity_source_sha256,
+        frame_sha256=identity_frame_sha256,
+    )
+    phase_locks: list[contract.GeneratedPhaseSemanticLock] = []
+    motion: set[tuple[int, int]] = set()
+    for phase, (frame, frame_mask) in enumerate(zip(frames, frame_masks, strict=True)):
+        semantic_baseline = (
+            identity_mask
+            if baseline_policy == "identity-anchored" or phase == 0
+            else role_pose_mask
+        )
+        changed = semantic_baseline ^ frame_mask
+        motion_baseline = (
+            identity_mask if baseline_policy == "identity-anchored" else role_pose_mask
+        )
+        motion.update(motion_baseline ^ frame_mask)
+        source_sha256 = (
+            frame.source_sha256
+            if source_layout == "independent-frame"
+            else role_source_sha256
+        )
+        assert source_sha256 is not None
+        phase_locks.append(
+            contract.GeneratedPhaseSemanticLock(
+                phase=phase,
+                semantic_baseline=(
+                    "approved-identity"
+                    if baseline_policy == "identity-anchored"
+                    else (
+                        "approved-identity-pose-gate"
+                        if phase == 0
+                        else "immutable-role-phase-0"
+                    )
+                ),
+                identity_reference=reference,
+                generated_asset=contract.GeneratedPhaseAsset(
+                    layout=source_layout,
+                    relative_path=(
+                        f"{role.name}/{phase:02d}.png"
+                        if source_layout == "independent-frame"
+                        else f"{role.name}.png"
+                    ),
+                    source_sha256=source_sha256,
+                    source_region_sha256=frame.source_sha256,
+                ),
+                allowed_change_region=contract.native_region_mask_lock(changed),
+                maximum_out_of_region_changed_pixels=0,
+                frozen_regions=(
+                    contract.FrozenSemanticRegion(
+                        kind="planted-contact",
+                        name="floor-contact",
+                        region=planted,
+                        maximum_changed_pixels=0,
+                    ),
+                    contract.FrozenSemanticRegion(
+                        kind="protected-identity-landmark",
+                        name="face-landmark",
+                        region=protected,
+                        maximum_changed_pixels=0,
+                    ),
+                ),
+            )
+        )
+    return contract.GeneratedActionSemanticContract(
+        schema=contract.GENERATED_ACTION_SEMANTIC_SCHEMA,
+        roles=(
+            contract.GeneratedRoleSemanticLock(
+                role=role.name,
+                baseline_policy=baseline_policy,
+                contact_policy=(
+                    contract.GENERATED_ROLE_CONTACT_POLICY_DEFAULTS[role.name]
+                ),
+                role_pose_baseline_frame_sha256=hashlib.sha256(
+                    frames[0].packed
+                ).hexdigest(),
+                maximum_role_pose_component_count_delta=2,
+                maximum_contact_changed_pixels_per_phase=(
+                    contract.GENERATED_CONTACT_POLICY_MAXIMUMS[
+                        contract.GENERATED_ROLE_CONTACT_POLICY_DEFAULTS[role.name]
+                    ]
+                ),
+                role_pose_identity_landmarks=(
+                    contract.RolePoseIdentityLandmarkLock(
+                        name="identity-marking",
+                        identity_region=contract.native_region_mask_lock(
+                            set(stable_ink[:8])
+                        ),
+                        role_pose_region=contract.native_region_mask_lock(
+                            set(stable_ink[:8])
+                        ),
+                        minimum_ink_pixels=4,
+                        minimum_ink_retention_per_mille=800,
+                        maximum_component_count_delta=2,
+                    ),
+                ),
+                phases=tuple(phase_locks),
+                motion_landmarks=(
+                    contract.MotionLandmarkLock(
+                        name="role-motion",
+                        region=contract.native_region_mask_lock(motion),
+                        minimum_changed_pixels=max(
+                            contract.GENERATED_MIN_MOTION_LANDMARK_PIXELS,
+                            min(len(motion), 8),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def write_valid_imagegen_sources(
     root: Path, species: str
 ) -> contract.ImageGenImportLock:
@@ -235,12 +381,36 @@ def write_valid_imagegen_sources(
     identity = contract.load_imagegen_import_frame(
         identity_path, "identity", -1, transform
     )
+    identity_source_sha256 = contract.sha256_file(identity_path)
+    identity_frame_sha256 = hashlib.sha256(identity.packed).hexdigest()
+    frames = [
+        contract.load_imagegen_import_frame(
+            species_dir / "idle" / f"{phase:02d}.png",
+            "idle",
+            phase,
+            transform,
+            identity_mask=set(identity.mask),
+        )
+        for phase in range(4)
+    ]
+    semantic = make_test_generated_semantic_contract(
+        species,
+        identity,
+        frames,
+        identity_source_sha256=identity_source_sha256,
+        identity_frame_sha256=identity_frame_sha256,
+        source_layout="independent-frame",
+    )
     return contract.ImageGenImportLock(
         identity_key=species,
-        identity_source_sha256=contract.sha256_file(identity_path),
-        identity_frame_sha256=hashlib.sha256(identity.packed).hexdigest(),
+        identity_source_sha256=identity_source_sha256,
+        identity_frame_sha256=identity_frame_sha256,
         transform_sha256=contract.imagegen_import_transform_sha256(transform),
         transform=transform,
+        action_semantic_contract_sha256=(
+            contract.generated_action_semantic_contract_sha256(semantic)
+        ),
+        action_semantic_contract=semantic,
         approved=True,
     )
 
@@ -300,13 +470,100 @@ def write_valid_imagegen_action_sheet_sources(
     identity = contract.load_imagegen_import_frame(
         identity_path, "identity", -1, transform
     )
+    identity_source_sha256 = contract.sha256_file(identity_path)
+    identity_frame_sha256 = hashlib.sha256(identity.packed).hexdigest()
+    role_source_sha256 = contract.sha256_file(species_dir / "idle.png")
+    frames = list(
+        contract.load_imagegen_action_sheet_frames(
+            species_dir / "idle.png",
+            species,
+            IDLE,
+            transform,
+            set(identity.mask),
+        )
+    )
+    semantic = make_test_generated_semantic_contract(
+        species,
+        identity,
+        frames,
+        identity_source_sha256=identity_source_sha256,
+        identity_frame_sha256=identity_frame_sha256,
+        source_layout="one-action-sheet-region",
+        role_source_sha256=role_source_sha256,
+    )
     return contract.ImageGenImportLock(
         identity_key=species,
-        identity_source_sha256=contract.sha256_file(identity_path),
-        identity_frame_sha256=hashlib.sha256(identity.packed).hexdigest(),
+        identity_source_sha256=identity_source_sha256,
+        identity_frame_sha256=identity_frame_sha256,
         transform_sha256=contract.imagegen_import_transform_sha256(transform),
         transform=transform,
+        action_semantic_contract_sha256=(
+            contract.generated_action_semantic_contract_sha256(semantic)
+        ),
+        action_semantic_contract=semantic,
         approved=True,
+    )
+
+
+def refresh_test_generated_semantic_lock(
+    root: Path,
+    species: str,
+    lock: contract.ImageGenImportLock,
+    roles: tuple[base.RoleSpec, ...],
+    *,
+    source_layout: str,
+) -> contract.ImageGenImportLock:
+    species_dir = root / species
+    identity = contract.load_imagegen_import_frame(
+        species_dir / "identity.png", "identity", -1, lock.transform
+    )
+    semantic_roles: list[contract.GeneratedRoleSemanticLock] = []
+    for role in roles:
+        if source_layout == "independent-frame":
+            frames = [
+                contract.load_imagegen_import_frame(
+                    species_dir / role.name / f"{phase:02d}.png",
+                    role.name,
+                    phase,
+                    lock.transform,
+                    identity_mask=set(identity.mask),
+                )
+                for phase in range(4)
+            ]
+            role_source_sha256 = None
+        else:
+            role_path = species_dir / f"{role.name}.png"
+            frames = list(
+                contract.load_imagegen_action_sheet_frames(
+                    role_path,
+                    species,
+                    role,
+                    lock.transform,
+                    set(identity.mask),
+                )
+            )
+            role_source_sha256 = contract.sha256_file(role_path)
+        one_role = make_test_generated_semantic_contract(
+            species,
+            identity,
+            frames,
+            identity_source_sha256=lock.identity_source_sha256,
+            identity_frame_sha256=lock.identity_frame_sha256,
+            source_layout=source_layout,
+            role_source_sha256=role_source_sha256,
+            role=role,
+        )
+        semantic_roles.append(one_role.roles[0])
+    semantic = contract.GeneratedActionSemanticContract(
+        schema=contract.GENERATED_ACTION_SEMANTIC_SCHEMA,
+        roles=tuple(semantic_roles),
+    )
+    return replace(
+        lock,
+        action_semantic_contract=semantic,
+        action_semantic_contract_sha256=(
+            contract.generated_action_semantic_contract_sha256(semantic)
+        ),
     )
 
 
@@ -848,6 +1105,14 @@ class CompanionRasterContractTests(unittest.TestCase):
                         "schema": contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
                         "identities": [
                             {
+                                "action_semantic_contract": (
+                                    contract.generated_action_semantic_contract_record(
+                                        lock.action_semantic_contract
+                                    )
+                                ),
+                                "action_semantic_contract_sha256": (
+                                    lock.action_semantic_contract_sha256
+                                ),
                                 "approved": True,
                                 "identity_frame_sha256": (
                                     lock.identity_frame_sha256
@@ -978,6 +1243,13 @@ class CompanionRasterContractTests(unittest.TestCase):
             write_imagegen_action_sheet(
                 source / "ferret" / "blink.png",
                 [imagegen_action_logical_outline(phase) for phase in range(4)],
+            )
+            lock = refresh_test_generated_semantic_lock(
+                source,
+                "ferret",
+                lock,
+                (IDLE, BLINK),
+                source_layout="one-action-sheet-region",
             )
             raster = contract.load_high_res_generated_action_sheet_species(
                 source, "ferret", lock, roles=(IDLE, BLINK)

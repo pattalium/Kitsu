@@ -128,7 +128,8 @@ def load_release_identity_locks(
         )
     raise ValueError(
         "identity lock must use the exact format-v2 direct-target or "
-        "ImageGen import schema; legacy v1 locks are forbidden"
+        "ImageGen import schema; legacy v1 locks are forbidden, and unsafe "
+        "ImageGen v2 action locks are forbidden"
     )
 
 
@@ -211,6 +212,14 @@ def build_species(
         action_output_offset = None
         lock_record = {
             "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+            "action_semantic_contract": (
+                raster_contract.generated_action_semantic_contract_record(
+                    identity_lock.action_semantic_contract
+                )
+            ),
+            "action_semantic_contract_sha256": (
+                identity_lock.action_semantic_contract_sha256
+            ),
             "identity_source_sha256": identity_lock.identity_source_sha256,
             "identity_frame_sha256": identity_lock.identity_frame_sha256,
             "transform": raster_contract.imagegen_import_transform_record(
@@ -250,6 +259,14 @@ def build_species(
         action_output_offset = list(identity_lock.transform.action_output_offset)
         lock_record = {
             "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+            "action_semantic_contract": (
+                raster_contract.generated_action_semantic_contract_record(
+                    identity_lock.action_semantic_contract
+                )
+            ),
+            "action_semantic_contract_sha256": (
+                identity_lock.action_semantic_contract_sha256
+            ),
             "identity_source_sha256": identity_lock.identity_source_sha256,
             "identity_frame_sha256": identity_lock.identity_frame_sha256,
             "transform": raster_contract.imagegen_import_transform_record(
@@ -320,6 +337,17 @@ def build_species(
             role_record["source_sha256"] = [
                 frame.source_sha256 for frame in role_rasters
             ]
+        if source_kind in {
+            "imagegen-locked-import",
+            "imagegen-one-action-sheets",
+        }:
+            if raster.generated_semantic_evidence is None:
+                raise ValueError(
+                    f"{species}/{role.name}: generated semantic evidence is missing"
+                )
+            role_record["semantic_locality"] = (
+                raster.generated_semantic_evidence[role.name]
+            )
         role_evidence.append(role_record)
         base.write_role_gif(
             role_masks,
@@ -560,7 +588,7 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help=(
             "Private kitsu-wild-identity-lock-v2 direct-target file or "
-            "kitsu-wild-imagegen-import-lock-v2 file. The two schemas are "
+            "kitsu-wild-imagegen-import-lock-v3 file. The two schemas are "
             "distinct and are never reinterpreted."
         ),
     )
@@ -696,6 +724,28 @@ def main() -> int:
                     "one-fixed-four-cell-sheet-per-action",
                 ],
                 "independent_final_frame_per_phase": True,
+                "generated_action_semantic_schema": (
+                    raster_contract.GENERATED_ACTION_SEMANTIC_SCHEMA
+                ),
+                "immutable_identity_reference_per_generated_phase": True,
+                "generated_phase_chaining": False,
+                "role_phase_0_is_generation_reference": False,
+                "role_baseline_policy": dict(
+                    raster_contract.GENERATED_ROLE_BASELINE_POLICY
+                ),
+                "role_contact_policy_defaults": dict(
+                    raster_contract.GENERATED_ROLE_CONTACT_POLICY_DEFAULTS
+                ),
+                "role_contact_policy_capabilities": {
+                    role: sorted(capabilities)
+                    for role, capabilities in (
+                        raster_contract.GENERATED_ROLE_CONTACT_POLICY_CAPABILITIES.items()
+                    )
+                },
+                "exact_allowed_change_masks": True,
+                "production_out_of_region_pixel_budget": 0,
+                "zero_tolerance_frozen_contact_and_anatomy_masks": True,
+                "role_motion_landmark_proof": True,
                 "mechanical_validation_is_visual_acceptance": False,
             },
             "visual_acceptance_sha256": visual_acceptance_sha256,
