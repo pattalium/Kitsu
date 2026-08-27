@@ -19,6 +19,7 @@ if str(TOOLS) not in sys.path:
 
 import build_default_packs as base  # noqa: E402
 import companion_raster_contract as contract  # noqa: E402
+import sync_wild_portraits as portrait_sync  # noqa: E402
 
 
 IDLE = base.ROLE_SPECS[0]
@@ -646,6 +647,44 @@ def identity_baseline_role_fixture() -> tuple[
     return identity, frames, replace(semantic, phases=tuple(phases))
 
 
+def identity_anchored_baseline_fixture() -> tuple[
+    contract.HighResFrame,
+    list[contract.HighResFrame],
+    contract.GeneratedRoleSemanticLock,
+]:
+    """Identity-anchored Idle whose no-call P0 is the exact identity bytes."""
+
+    identity = make_identity()
+    edits = localized_belly_edits()
+    masks = [
+        set(identity.mask),
+        set(identity.mask) - edits[0],
+        set(identity.mask) - edits[1],
+        set(identity.mask) - edits[2],
+    ]
+    frames = [
+        make_frame(mask, phase, label="identity-anchored-baseline")
+        for phase, mask in enumerate(masks)
+    ]
+    frames[0] = replace(frames[0], source_sha256=identity.source_sha256)
+    allowed = [set().union(*edits), edits[0], edits[1], edits[2]]
+    semantic = make_semantic_role(
+        identity,
+        frames,
+        allowed_regions=allowed,
+        motion_region=set().union(*edits),
+    )
+    phases = list(semantic.phases)
+    phases[0] = replace(
+        phases[0],
+        generated_asset=replace(
+            phases[0].generated_asset,
+            layout=contract.GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT,
+        ),
+    )
+    return identity, frames, replace(semantic, phases=tuple(phases))
+
+
 def write_rectangle_migration_preauthorization(
     species_dir: Path,
     role: str,
@@ -976,6 +1015,73 @@ class GeneratedActionSemanticLocalityTests(unittest.TestCase):
             .phases[0]
             .generated_asset.layout,
             contract.GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT,
+        )
+
+    def test_identity_anchored_p0_may_be_exact_no_call_identity_copy(self) -> None:
+        identity, frames, semantic = identity_anchored_baseline_fixture()
+
+        evidence = validate(identity, frames, semantic)
+
+        self.assertEqual(
+            evidence["phases"][0]["generated_asset_layout"],
+            contract.GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT,
+        )
+        self.assertEqual(
+            evidence["phases"][0]["generated_source_sha256"],
+            identity.source_sha256,
+        )
+        self.assertEqual(
+            evidence["phases"][0]["composited_frame_sha256"],
+            hashlib.sha256(identity.packed).hexdigest(),
+        )
+
+        record = import_lock_record(semantic, identity)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "imagegen-lock.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                        "identities": [record],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = contract.load_imagegen_import_locks(
+                path, ["red_panda"]
+            )
+        self.assertEqual(
+            loaded["red_panda"]
+            .action_semantic_contract.roles[0]
+            .phases[0]
+            .generated_asset.layout,
+            contract.GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT,
+        )
+
+        source_hashes = {
+            f"idle/{phase:02d}.png": frame.source_sha256
+            for phase, frame in enumerate(frames)
+        }
+        source_hashes.update(
+            {
+                lock.preauthorization_reference.relative_path:
+                    lock.preauthorization_reference.source_sha256
+                for lock in semantic.phases
+            }
+        )
+        portrait_sync.require_generated_semantic_evidence(
+            "red_panda",
+            {
+                "role": "idle",
+                "frame_sha256": [frame_sha256(frame) for frame in frames],
+                "source_sha256": [frame.source_sha256 for frame in frames],
+                "semantic_locality": evidence,
+            },
+            {
+                "identity_source_sha256": identity.source_sha256,
+                "identity_frame_sha256": frame_sha256(identity),
+            },
+            source_hashes,
         )
 
     def test_identity_baseline_copy_cannot_alias_a_later_phase(self) -> None:

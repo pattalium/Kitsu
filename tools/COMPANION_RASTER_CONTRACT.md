@@ -155,15 +155,18 @@ independently target that same accepted phase 0, including Idle, Blink, and
 Listen. Phase 1 is never an input to phase 2, and no phase may target phase 2
 or phase 3.
 
-A role-base phase 0 that is intentionally the unchanged identity needs no
-ImageGen call. It is represented explicitly as
+A phase 0 that is intentionally the unchanged identity needs no ImageGen call,
+including identity-anchored Idle, Blink, or Listen. It is represented
+explicitly as
 `generated_asset.layout=immutable-identity-baseline-copy`: the role's `00.png`
 must be byte-identical to `identity.png`, its imported, registered, and final
 64x80 hashes must equal the identity frame hash, and its one role registration
 must be exactly zero. The ordinary exact P0 preauthorization and bounded
 composition records remain required. Only role P0 can use this provenance;
-identity-anchored roles and phases 1..3 cannot use it. Later role phases still
-reference `<role>/00.png` as the one immutable P0 star base.
+phases 1..3 cannot use it. Later role phases still receive Image 1 as the
+immutable identity and Image 2 as `<role>/00.png`, the byte-identical immutable
+P0 star base. This avoids asking ImageGen to redraw a base pose that is meant to
+remain unchanged while preserving the same two-reference lineage.
 
 Direct 64x80 art remains preferred. A larger ImageGen result may enter the
 separate importer only through one quality-preserving transform approved from

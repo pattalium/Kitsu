@@ -537,8 +537,7 @@ def require_generated_semantic_evidence(
         asset_layout = phase.get("generated_asset_layout")
         if asset_layout == GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT:
             if (
-                expected_baseline != "immutable-role-phase-0"
-                or phase_index != 0
+                phase_index != 0
                 or registration.get("output_offset") != [0, 0]
                 or phase.get("generated_source_sha256")
                 != identity_source_hash

@@ -1702,7 +1702,7 @@ def _parse_phase_semantic(
     )
     if (
         generated_asset.layout == GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT
-        and not (baseline_policy == "immutable-role-phase-0" and phase == 0)
+        and phase != 0
     ):
         raise RasterContractError(
             f"{label}: immutable identity baseline copy is allowed only for a "
@@ -3664,8 +3664,7 @@ def validate_generated_action_semantic_role(
             asset.layout == GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT
         )
         if identity_baseline_copy and (
-            semantic.baseline_policy != "immutable-role-phase-0"
-            or frame.phase != 0
+            frame.phase != 0
             or semantic.role_registration.output_offset != (0, 0)
             or asset.source_sha256 != identity_source_sha256
             or imported_candidate_hash != identity_frame_sha256
