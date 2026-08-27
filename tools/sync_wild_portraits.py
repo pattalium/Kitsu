@@ -20,16 +20,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
+LEGACY_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
+MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v7"
 EXPECTED_CREATURES = 21
 PORTRAIT_WIDTH = 16
 PORTRAIT_HEIGHT = 18
 PORTRAIT_BYTES = 36
 PORTRAIT_STORAGE = "XBM least-significant-bit first, two bytes per row"
 DIRECT_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
-IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v4"
-GENERATED_ACTION_SEMANTIC_SCHEMA = (
+LEGACY_IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v4"
+IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v5"
+LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA = (
     "kitsu-wild-generated-action-semantic-locality-v3"
+)
+GENERATED_ACTION_SEMANTIC_SCHEMA = (
+    "kitsu-wild-generated-action-semantic-locality-v4"
+)
+NATIVE_GRID_REFERENCE_SCHEMA = (
+    "kitsu-wild-native-grid-conditioning-reference-v1"
+)
+NATIVE_GRID_REFERENCE_KIND = "read-only-native-grid-conditioning-reference"
+NATIVE_GRID_REFERENCE_DERIVATION = (
+    "inverse-locked-output-offset-nearest-native-grid-v1"
+)
+P0_GENERATION_REFERENCE_MODE = "two-reference-identity-edit-v1"
+TWO_REFERENCE_GENERATION_MODE = "two-reference-same-p0-star-v1"
+THREE_REFERENCE_GENERATION_MODE = (
+    "three-reference-same-p0-native-grid-star-v1"
 )
 GENERATED_PHASE_PREAUTHORIZATION_SCHEMA = (
     "kitsu-wild-generated-phase-preauthorization-v2"
@@ -63,8 +80,10 @@ EXPECTED_RASTER_CONTRACT = {
     "portrait_source": "independently-authored-exact-16x18",
     "portrait_resampling": "none",
 }
-REQUIRED_ANIMATION_CONTRACT_VALUES = {
-    "generated_action_semantic_schema": GENERATED_ACTION_SEMANTIC_SCHEMA,
+LEGACY_REQUIRED_ANIMATION_CONTRACT_VALUES = {
+    "generated_action_semantic_schema": (
+        LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+    ),
     "preauthorization_schema": GENERATED_PHASE_PREAUTHORIZATION_SCHEMA,
     "phase_mask_frozen_before_generation": True,
     "bounded_composition_mode": GENERATED_COMPOSITION_MODE,
@@ -89,6 +108,31 @@ REQUIRED_ANIMATION_CONTRACT_VALUES = {
     ),
     "role_phase_0_is_generation_reference_for_role_phases_1_to_3": True,
     "production_out_of_region_pixel_budget": 0,
+}
+REQUIRED_ANIMATION_CONTRACT_VALUES = {
+    **{
+        key: value
+        for key, value in LEGACY_REQUIRED_ANIMATION_CONTRACT_VALUES.items()
+        if key != "generated_action_semantic_schema"
+    },
+    "generated_action_semantic_schema": GENERATED_ACTION_SEMANTIC_SCHEMA,
+    "generated_action_semantic_schemas": [
+        LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA,
+        GENERATED_ACTION_SEMANTIC_SCHEMA,
+    ],
+    "generation_reference_modes": [
+        P0_GENERATION_REFERENCE_MODE,
+        TWO_REFERENCE_GENERATION_MODE,
+        THREE_REFERENCE_GENERATION_MODE,
+    ],
+    "native_grid_reference_schema": NATIVE_GRID_REFERENCE_SCHEMA,
+    "native_grid_reference_image_number": 3,
+    "native_grid_reference_prompt_only": True,
+    "native_grid_reference_phase_0": False,
+    "native_grid_reference_per_phase_truthful": True,
+    "native_grid_reference_same_role_p0_for_all_uses": True,
+    "native_grid_reference_zero_registration_exact_copy_only": True,
+    "native_grid_reference_derivation": NATIVE_GRID_REFERENCE_DERIVATION,
 }
 
 FIRMWARE_RELATIVE_PATH = Path("src/wild_creature_catalog.cpp")
@@ -151,8 +195,11 @@ def require_list(value: object, label: str) -> list[object]:
 
 
 def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
-    if manifest.get("schema") != MANIFEST_SCHEMA:
-        raise ValueError(f"manifest schema must be {MANIFEST_SCHEMA}")
+    manifest_schema = manifest.get("schema")
+    if manifest_schema not in {LEGACY_MANIFEST_SCHEMA, MANIFEST_SCHEMA}:
+        raise ValueError(
+            f"manifest schema must be {LEGACY_MANIFEST_SCHEMA} or {MANIFEST_SCHEMA}"
+        )
     if manifest.get("complete_roster") is not True:
         raise ValueError("manifest must declare complete_roster=true")
     if manifest.get("non_destructive_build") is not True:
@@ -161,19 +208,27 @@ def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
         manifest.get("raster_contract"), "raster_contract"
     )
     if raster_contract != EXPECTED_RASTER_CONTRACT:
-        raise ValueError("manifest raster_contract is not the fail-closed v6 contract")
+        raise ValueError(
+            "manifest raster_contract is not the fail-closed v6/v7 contract"
+        )
     animation_contract = require_mapping(
         manifest.get("animation_contract"), "animation_contract"
     )
-    for field, expected in REQUIRED_ANIMATION_CONTRACT_VALUES.items():
+    required_animation_values = (
+        LEGACY_REQUIRED_ANIMATION_CONTRACT_VALUES
+        if manifest_schema == LEGACY_MANIFEST_SCHEMA
+        else REQUIRED_ANIMATION_CONTRACT_VALUES
+    )
+    for field, expected in required_animation_values.items():
         if animation_contract.get(field) != expected:
             raise ValueError(
-                f"manifest animation_contract.{field} is not fail-closed v6"
+                f"manifest animation_contract.{field} is not fail-closed for "
+                f"{manifest_schema}"
             )
-    if manifest.get("identity_lock_schema") not in {
-        DIRECT_LOCK_SCHEMA,
-        IMAGEGEN_LOCK_SCHEMA,
-    }:
+    allowed_lock_schemas = {DIRECT_LOCK_SCHEMA, LEGACY_IMAGEGEN_LOCK_SCHEMA}
+    if manifest_schema == MANIFEST_SCHEMA:
+        allowed_lock_schemas.add(IMAGEGEN_LOCK_SCHEMA)
+    if manifest.get("identity_lock_schema") not in allowed_lock_schemas:
         raise ValueError("manifest uses an unsupported or legacy identity lock")
 
 
@@ -303,7 +358,10 @@ def require_pack_raster_provenance(
             "schema",
             "transform",
             "transform_sha256",
-        } or lock_schema != IMAGEGEN_LOCK_SCHEMA:
+        } or lock_schema not in {
+            LEGACY_IMAGEGEN_LOCK_SCHEMA,
+            IMAGEGEN_LOCK_SCHEMA,
+        }:
             raise ValueError(f"{identity_key} ImageGen identity lock is invalid")
         require_sha256(
             identity_lock.get("identity_source_sha256"),
@@ -330,9 +388,14 @@ def require_pack_raster_provenance(
             identity_lock.get("action_semantic_contract"),
             f"{identity_key}.action_semantic_contract",
         )
+        expected_semantic_schema = (
+            LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+            if lock_schema == LEGACY_IMAGEGEN_LOCK_SCHEMA
+            else GENERATED_ACTION_SEMANTIC_SCHEMA
+        )
         if (
             set(semantic_contract) != {"roles", "schema"}
-            or semantic_contract.get("schema") != GENERATED_ACTION_SEMANTIC_SCHEMA
+            or semantic_contract.get("schema") != expected_semantic_schema
         ):
             raise ValueError(
                 f"{identity_key} generated semantic contract is missing or unsafe"
@@ -401,25 +464,31 @@ def require_generated_semantic_evidence(
     identity_lock: dict[str, object],
     source_hashes: dict[str, object],
 ) -> None:
-    """Verify the v4 bounded-composite evidence consumed by portrait sync."""
+    """Verify v4/v5 bounded-composite evidence consumed by portrait sync."""
 
     role = role_record.get("role")
     if not isinstance(role, str):
         raise ValueError(f"{identity_key} generated role is invalid")
     label = f"{identity_key}.{role}.semantic_locality"
     semantic = require_mapping(role_record.get("semantic_locality"), label)
+    lock_schema = identity_lock.get("schema")
+    semantic_schema = (
+        LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+        if lock_schema == LEGACY_IMAGEGEN_LOCK_SCHEMA
+        else GENERATED_ACTION_SEMANTIC_SCHEMA
+    )
     expected_baseline = (
         "identity-anchored"
         if role in IDENTITY_ANCHORED_ROLES
         else "immutable-role-phase-0"
     )
     if (
-        semantic.get("schema") != GENERATED_ACTION_SEMANTIC_SCHEMA
+        semantic.get("schema") != semantic_schema
         or semantic.get("role") != role
         or semantic.get("source_layout") != "independent-frame"
         or semantic.get("baseline_policy") != expected_baseline
     ):
-        raise ValueError(f"{label} lacks exact v4 role lineage")
+        raise ValueError(f"{label} lacks exact v4/v5 role lineage")
 
     registration = require_mapping(
         semantic.get("role_registration"), f"{label}.role_registration"
@@ -491,11 +560,54 @@ def require_generated_semantic_evidence(
     p0_final_hash = p0.get("composited_frame_sha256")
     if semantic.get("role_pose_baseline_frame_sha256") != p0_final_hash:
         raise ValueError(f"{label} immutable role P0 hash drifted")
+    native_grid_records: list[dict[str, object]] = []
 
     for phase_index, raw_phase in enumerate(phases):
         phase = require_mapping(raw_phase, f"{label}.phases[{phase_index}]")
         if phase.get("phase") != phase_index:
             raise ValueError(f"{label} phases are missing or out of order")
+        mode_present = "generation_reference_mode" in phase
+        native_grid_present = "native_grid_reference" in phase
+        if lock_schema == LEGACY_IMAGEGEN_LOCK_SCHEMA:
+            expected_mode = (
+                P0_GENERATION_REFERENCE_MODE
+                if phase_index == 0
+                else TWO_REFERENCE_GENERATION_MODE
+            )
+            if mode_present or native_grid_present:
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] must retain the exact audited "
+                    "semantic-v3 evidence shape without v5-only reference fields"
+                )
+            generation_reference_mode = expected_mode
+            native_grid = None
+        else:
+            if not mode_present or not native_grid_present:
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] lacks explicit v5 reference "
+                    "provenance"
+                )
+            generation_reference_mode = phase.get("generation_reference_mode")
+            native_grid = phase.get("native_grid_reference")
+            allowed_modes = (
+                {P0_GENERATION_REFERENCE_MODE}
+                if phase_index == 0
+                else {
+                    TWO_REFERENCE_GENERATION_MODE,
+                    THREE_REFERENCE_GENERATION_MODE,
+                }
+            )
+            if generation_reference_mode not in allowed_modes:
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] reference mode is invalid"
+                )
+            if (
+                generation_reference_mode == THREE_REFERENCE_GENERATION_MODE
+            ) != (native_grid is not None):
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] Image 3 presence contradicts "
+                    "its reference mode"
+                )
         for field in (
             "allowed_change_mask_sha256",
             "preauthorization_source_sha256",
@@ -590,6 +702,118 @@ def require_generated_semantic_evidence(
             raise ValueError(
                 f"{label}.phases[{phase_index}] does not target the same immutable P0"
             )
+        if native_grid is not None:
+            grid = require_mapping(
+                native_grid,
+                f"{label}.phases[{phase_index}].native_grid_reference",
+            )
+            if set(grid) != {
+                "derivation",
+                "edit_target",
+                "grid_png_sha256",
+                "grid_relative_path",
+                "image_number",
+                "kind",
+                "p0_packed_sha256",
+                "read_only",
+                "role_registration_sha256",
+                "roundtrip_packed_sha256",
+                "schema",
+                "source_png_sha256",
+                "source_relative_path",
+                "transform_sha256",
+            }:
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] Image 3 record is malformed"
+                )
+            grid_hash = require_sha256(
+                grid.get("grid_png_sha256"),
+                f"{label}.phases[{phase_index}].grid_png_sha256",
+            )
+            if (
+                grid.get("schema") != NATIVE_GRID_REFERENCE_SCHEMA
+                or grid.get("kind") != NATIVE_GRID_REFERENCE_KIND
+                or grid.get("image_number") != 3
+                or grid.get("read_only") is not True
+                or grid.get("edit_target") is not False
+                or grid.get("derivation") != NATIVE_GRID_REFERENCE_DERIVATION
+                or grid.get("source_relative_path") != f"{role}/00.png"
+                or grid.get("source_png_sha256") != p0_source_hash
+                or grid.get("grid_relative_path")
+                != f"native-grid-reference/{role}/00.png"
+                or grid.get("p0_packed_sha256") != p0_final_hash
+                or grid.get("roundtrip_packed_sha256") != p0_final_hash
+                or grid.get("transform_sha256")
+                != identity_lock.get("transform_sha256")
+                or grid.get("role_registration_sha256")
+                != semantic.get("role_registration_sha256")
+                or source_hashes.get(str(grid.get("grid_relative_path")))
+                != grid_hash
+            ):
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] Image 3 does not bind the "
+                    "same immutable exact P0"
+                )
+            native_grid_records.append(grid)
+
+    if native_grid_records:
+        canonical_records = {
+            json.dumps(record, sort_keys=True, separators=(",", ":"))
+            for record in native_grid_records
+        }
+        if len(canonical_records) != 1:
+            raise ValueError(
+                f"{label} three-reference phases do not reuse one exact Image 3"
+            )
+        if (
+            expected_baseline != "identity-anchored"
+            or registration.get("derivation")
+            != "identity-anchored-zero-offset"
+            or registration.get("output_offset") != [0, 0]
+            or p0.get("generated_asset_layout")
+            != GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT
+            or p0_source_hash != identity_source_hash
+            or p0.get("imported_candidate_frame_sha256") != identity_frame_hash
+            or p0_registered_hash != identity_frame_hash
+            or p0_final_hash != identity_frame_hash
+        ):
+            raise ValueError(
+                f"{label} Image 3 v1 is not based on a zero-registration exact-copy P0"
+            )
+        grid_transform = require_imagegen_transform(
+            identity_lock.get("transform"), identity_key
+        )
+        if (
+            grid_transform.get("source_canvas") != [1122, 1402]
+            or grid_transform.get("crop_rect") != [1, 1, 1121, 1401]
+            or grid_transform.get("output_canvas") != [64, 80]
+        ):
+            raise ValueError(
+                f"{label} Image 3 v1 requires the exact 1122x1402 source, "
+                "1120x1400 centered crop, and 64x80 output transform"
+            )
+        proof = require_mapping(
+            semantic.get("native_grid_reference_proof"),
+            f"{label}.native_grid_reference_proof",
+        )
+        reference = native_grid_records[0]
+        if (
+            proof.get("derivation") != NATIVE_GRID_REFERENCE_DERIVATION
+            or proof.get("grid_relative_path")
+            != reference.get("grid_relative_path")
+            or proof.get("grid_png_sha256") != reference.get("grid_png_sha256")
+            or proof.get("p0_packed_sha256") != p0_final_hash
+            or proof.get("canonical_roundtrip_packed_sha256") != p0_final_hash
+            or proof.get("canonical_independent_xor_pixels") != 0
+            or proof.get("independent_roundtrip_packed_sha256") != p0_final_hash
+            or proof.get("independent_threshold_sensitive_pixels_plus_minus_20")
+            != 0
+            or proof.get("transform_sha256")
+            != identity_lock.get("transform_sha256")
+        ):
+            raise ValueError(f"{label} Image 3 BOX proof drifted")
+    elif "native_grid_reference_proof" in semantic:
+        raise ValueError(f"{label} contains orphan Image 3 proof evidence")
 
 
 def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
@@ -652,6 +876,11 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
         source_hashes = require_mapping(
             pack.get("source_sha256"), f"{identity_key}.source_sha256"
         )
+        expected_role_semantic_schema = (
+            LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+            if pack_identity_lock.get("schema") == LEGACY_IMAGEGEN_LOCK_SCHEMA
+            else GENERATED_ACTION_SEMANTIC_SCHEMA
+        )
 
         roles = require_list(pack.get("roles"), f"{identity_key}.roles")
         expected_roles = list((
@@ -696,7 +925,7 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
                 )
                 if (
                     semantic_locality.get("schema")
-                    != GENERATED_ACTION_SEMANTIC_SCHEMA
+                    != expected_role_semantic_schema
                     or semantic_locality.get("role") != role_record.get("role")
                     or len(
                         require_list(

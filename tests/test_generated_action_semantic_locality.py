@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sys
@@ -10,6 +11,8 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -211,6 +214,11 @@ def make_semantic_role(
         phases.append(
             contract.GeneratedPhaseSemanticLock(
                 phase=phase,
+                generation_reference_mode=(
+                    contract.P0_GENERATION_REFERENCE_MODE
+                    if phase == 0
+                    else contract.TWO_REFERENCE_GENERATION_MODE
+                ),
                 semantic_baseline=(
                     "approved-identity"
                     if phase == 0
@@ -299,6 +307,8 @@ def validate(
     semantic: contract.GeneratedRoleSemanticLock,
     *,
     imported_candidates: list[contract.HighResFrame] | None = None,
+    transform_sha256: str | None = None,
+    semantic_schema: str = contract.GENERATED_ACTION_SEMANTIC_SCHEMA,
 ) -> dict[str, object]:
     candidates = frames if imported_candidates is None else imported_candidates
     return contract.validate_generated_action_semantic_role(
@@ -312,6 +322,8 @@ def validate(
         identity_source_sha256=identity.source_sha256,
         identity_frame_sha256=hashlib.sha256(identity.packed).hexdigest(),
         source_layout="independent-frame",
+        transform_sha256=transform_sha256,
+        semantic_schema=semantic_schema,
     )
 
 
@@ -340,6 +352,51 @@ def import_lock_record(
         "transform": contract.imagegen_import_transform_record(transform),
         "transform_sha256": contract.imagegen_import_transform_sha256(transform),
     }
+
+
+def native_grid_reference_transform() -> contract.ImageGenImportTransform:
+    return replace(
+        contract.recommended_imagegen_import_transform(
+            action_output_offset=(0, 17)
+        ),
+        output_offset=(0, 17),
+    )
+
+
+def add_native_grid_reference_modes(
+    semantic: contract.GeneratedRoleSemanticLock,
+    identity: contract.HighResFrame,
+    grid_png_sha256: str,
+    *,
+    phases_with_image3: tuple[int, ...] = (1, 3),
+) -> tuple[contract.GeneratedRoleSemanticLock, contract.ImageGenImportTransform]:
+    transform = native_grid_reference_transform()
+    p0 = semantic.phases[0]
+    p0_hash = frame_sha256(identity)
+    reference = contract.NativeGridConditioningReference(
+        schema=contract.NATIVE_GRID_REFERENCE_SCHEMA,
+        kind=contract.NATIVE_GRID_REFERENCE_KIND,
+        image_number=3,
+        read_only=True,
+        edit_target=False,
+        source_relative_path="idle/00.png",
+        source_png_sha256=p0.generated_asset.source_sha256,
+        grid_relative_path="native-grid-reference/idle/00.png",
+        grid_png_sha256=grid_png_sha256,
+        p0_packed_sha256=p0_hash,
+        roundtrip_packed_sha256=p0_hash,
+        transform_sha256=contract.imagegen_import_transform_sha256(transform),
+        role_registration_sha256=semantic.role_registration_sha256,
+        derivation=contract.NATIVE_GRID_REFERENCE_DERIVATION,
+    )
+    phases = list(semantic.phases)
+    for phase in phases_with_image3:
+        phases[phase] = replace(
+            phases[phase],
+            generation_reference_mode=contract.THREE_REFERENCE_GENERATION_MODE,
+            native_grid_reference=reference,
+        )
+    return replace(semantic, phases=tuple(phases)), transform
 
 
 def make_role_frame(
@@ -435,6 +492,11 @@ def make_role_base_semantic(
         phases.append(
             contract.GeneratedPhaseSemanticLock(
                 phase=phase,
+                generation_reference_mode=(
+                    contract.P0_GENERATION_REFERENCE_MODE
+                    if phase == 0
+                    else contract.TWO_REFERENCE_GENERATION_MODE
+                ),
                 semantic_baseline=(
                     "approved-identity-pose-gate"
                     if phase == 0
@@ -1120,6 +1182,544 @@ class GeneratedActionSemanticLocalityTests(unittest.TestCase):
             },
             source_hashes,
         )
+        three_reference_semantic, _ = add_native_grid_reference_modes(
+            semantic, identity, digest("grid-reference-png")
+        )
+        with self.assertRaisesRegex(
+            contract.RasterContractError,
+            r"legacy semantic-v3 can serialize only truthful two-reference",
+        ):
+            contract.generated_action_semantic_contract_record(
+                contract.GeneratedActionSemanticContract(
+                    schema=contract.LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA,
+                    roles=(three_reference_semantic,),
+                )
+            )
+
+    def test_v5_truthfully_allows_mixed_two_and_three_reference_phases(self) -> None:
+        identity, frames, semantic = identity_anchored_baseline_fixture()
+        semantic, transform = add_native_grid_reference_modes(
+            semantic, identity, digest("grid-reference-png")
+        )
+
+        evidence = validate(
+            identity,
+            frames,
+            semantic,
+            transform_sha256=contract.imagegen_import_transform_sha256(
+                transform
+            ),
+        )
+
+        self.assertEqual(
+            [phase["generation_reference_mode"] for phase in evidence["phases"]],
+            [
+                contract.P0_GENERATION_REFERENCE_MODE,
+                contract.THREE_REFERENCE_GENERATION_MODE,
+                contract.TWO_REFERENCE_GENERATION_MODE,
+                contract.THREE_REFERENCE_GENERATION_MODE,
+            ],
+        )
+        self.assertIsNone(evidence["phases"][0]["native_grid_reference"])
+        self.assertIsNone(evidence["phases"][2]["native_grid_reference"])
+        self.assertEqual(
+            evidence["phases"][1]["native_grid_reference"],
+            evidence["phases"][3]["native_grid_reference"],
+        )
+        self.assertEqual(
+            {
+                phase["edit_target_relative_path"]
+                for phase in evidence["phases"][1:]
+            },
+            {"idle/00.png"},
+        )
+
+    def test_v4_two_reference_lock_round_trips_in_its_exact_old_shape(self) -> None:
+        identity, frames, semantic = identity_anchored_baseline_fixture()
+        legacy_semantic = contract.GeneratedActionSemanticContract(
+            schema=contract.LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA,
+            roles=(semantic,),
+        )
+        legacy_semantic_record = (
+            contract.generated_action_semantic_contract_record(legacy_semantic)
+        )
+        self.assertNotIn(
+            "generation_reference_mode",
+            legacy_semantic_record["roles"][0]["phases"][0],
+        )
+        self.assertNotIn(
+            "native_grid_reference",
+            legacy_semantic_record["roles"][0]["phases"][1],
+        )
+        transform = native_grid_reference_transform()
+        record = {
+            "action_semantic_contract": legacy_semantic_record,
+            "action_semantic_contract_sha256": (
+                contract.generated_action_semantic_contract_sha256(
+                    legacy_semantic
+                )
+            ),
+            "approved": True,
+            "identity_frame_sha256": frame_sha256(identity),
+            "identity_key": "red_panda",
+            "identity_source_sha256": identity.source_sha256,
+            "transform": contract.imagegen_import_transform_record(transform),
+            "transform_sha256": contract.imagegen_import_transform_sha256(
+                transform
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "legacy-v4-lock.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": contract.LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                        "identities": [record],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = contract.load_imagegen_import_locks(
+                path, ["red_panda"]
+            )["red_panda"]
+
+        self.assertEqual(
+            loaded.schema, contract.LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA
+        )
+        self.assertEqual(
+            contract.generated_action_semantic_contract_record(
+                loaded.action_semantic_contract
+            ),
+            legacy_semantic_record,
+        )
+        self.assertEqual(
+            [
+                phase.generation_reference_mode
+                for phase in loaded.action_semantic_contract.roles[0].phases
+            ],
+            [
+                contract.P0_GENERATION_REFERENCE_MODE,
+                contract.TWO_REFERENCE_GENERATION_MODE,
+                contract.TWO_REFERENCE_GENERATION_MODE,
+                contract.TWO_REFERENCE_GENERATION_MODE,
+            ],
+        )
+        self.assertTrue(
+            all(
+                phase.native_grid_reference is None
+                for phase in loaded.action_semantic_contract.roles[0].phases
+            )
+        )
+        legacy_evidence = validate(
+            identity,
+            frames,
+            semantic,
+            semantic_schema=contract.LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA,
+        )
+        self.assertTrue(
+            all(
+                "generation_reference_mode" not in phase
+                and "native_grid_reference" not in phase
+                for phase in legacy_evidence["phases"]
+            )
+        )
+        source_hashes = {
+            f"idle/{phase:02d}.png": frame.source_sha256
+            for phase, frame in enumerate(frames)
+        }
+        source_hashes.update(
+            {
+                phase.preauthorization_reference.relative_path:
+                    phase.preauthorization_reference.source_sha256
+                for phase in semantic.phases
+            }
+        )
+        portrait_sync.require_generated_semantic_evidence(
+            "red_panda",
+            {
+                "role": "idle",
+                "frame_sha256": [frame_sha256(frame) for frame in frames],
+                "source_sha256": [frame.source_sha256 for frame in frames],
+                "semantic_locality": legacy_evidence,
+            },
+            {
+                "schema": contract.LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                "identity_source_sha256": identity.source_sha256,
+                "identity_frame_sha256": frame_sha256(identity),
+            },
+            source_hashes,
+        )
+        relabeled_evidence = copy.deepcopy(legacy_evidence)
+        relabeled_evidence["phases"][1]["generation_reference_mode"] = (
+            contract.TWO_REFERENCE_GENERATION_MODE
+        )
+        relabeled_evidence["phases"][1]["native_grid_reference"] = None
+        with self.assertRaisesRegex(
+            ValueError, r"exact audited semantic-v3 evidence shape"
+        ):
+            portrait_sync.require_generated_semantic_evidence(
+                "red_panda",
+                {
+                    "role": "idle",
+                    "frame_sha256": [frame_sha256(frame) for frame in frames],
+                    "source_sha256": [frame.source_sha256 for frame in frames],
+                    "semantic_locality": relabeled_evidence,
+                },
+                {
+                    "schema": contract.LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                    "identity_source_sha256": identity.source_sha256,
+                    "identity_frame_sha256": frame_sha256(identity),
+                },
+                source_hashes,
+            )
+
+    def test_image3_modes_and_exact_copy_eligibility_fail_closed(self) -> None:
+        identity, frames, semantic = identity_anchored_baseline_fixture()
+        semantic, transform = add_native_grid_reference_modes(
+            semantic, identity, digest("grid-reference-png")
+        )
+        transform_hash = contract.imagegen_import_transform_sha256(transform)
+
+        phases = list(semantic.phases)
+        phases[0] = replace(
+            phases[0],
+            native_grid_reference=phases[1].native_grid_reference,
+        )
+        with self.assertRaisesRegex(
+            contract.RasterContractError, r"role P0 cannot use Image 3"
+        ):
+            validate(
+                identity,
+                frames,
+                replace(semantic, phases=tuple(phases)),
+                transform_sha256=transform_hash,
+            )
+
+        phases = list(semantic.phases)
+        phases[1] = replace(phases[1], native_grid_reference=None)
+        with self.assertRaisesRegex(
+            contract.RasterContractError, r"three-reference phase is missing"
+        ):
+            validate(
+                identity,
+                frames,
+                replace(semantic, phases=tuple(phases)),
+                transform_sha256=transform_hash,
+            )
+
+        phases = list(semantic.phases)
+        phases[3] = replace(
+            phases[3],
+            native_grid_reference=replace(
+                phases[3].native_grid_reference,
+                grid_png_sha256=digest("different-grid"),
+            ),
+        )
+        with self.assertRaisesRegex(
+            contract.RasterContractError,
+            r"all Image 3 phases must reuse one exact",
+        ):
+            validate(
+                identity,
+                frames,
+                replace(semantic, phases=tuple(phases)),
+                transform_sha256=transform_hash,
+            )
+
+        phases = list(semantic.phases)
+        phases[0] = replace(
+            phases[0],
+            generated_asset=replace(
+                phases[0].generated_asset, layout="independent-frame"
+            ),
+        )
+        with self.assertRaisesRegex(
+            contract.RasterContractError,
+            r"zero-registration byte-exact identity-copy P0",
+        ):
+            validate(
+                identity,
+                frames,
+                replace(semantic, phases=tuple(phases)),
+                transform_sha256=transform_hash,
+            )
+
+        with self.assertRaisesRegex(
+            contract.RasterContractError,
+            r"semantic-v3 cannot claim Image 3",
+        ):
+            validate(
+                identity,
+                frames,
+                semantic,
+                transform_sha256=transform_hash,
+                semantic_schema=(
+                    contract.LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+                ),
+            )
+
+        with self.assertRaisesRegex(
+            contract.RasterContractError,
+            r"unsupported generated semantic evidence schema",
+        ):
+            validate(
+                identity,
+                frames,
+                semantic,
+                transform_sha256=transform_hash,
+                semantic_schema="unsupported-semantic-schema",
+            )
+
+    def test_v5_lock_parser_rejects_drifted_or_chained_image3(self) -> None:
+        identity, _frames, semantic = identity_anchored_baseline_fixture()
+        semantic, transform = add_native_grid_reference_modes(
+            semantic, identity, digest("grid-reference-png")
+        )
+        semantic_contract = contract.GeneratedActionSemanticContract(
+            schema=contract.GENERATED_ACTION_SEMANTIC_SCHEMA,
+            roles=(semantic,),
+        )
+        semantic_record = contract.generated_action_semantic_contract_record(
+            semantic_contract
+        )
+        identity_record = {
+            "action_semantic_contract": semantic_record,
+            "action_semantic_contract_sha256": (
+                contract.generated_action_semantic_contract_sha256(
+                    semantic_contract
+                )
+            ),
+            "approved": True,
+            "identity_frame_sha256": frame_sha256(identity),
+            "identity_key": "red_panda",
+            "identity_source_sha256": identity.source_sha256,
+            "transform": contract.imagegen_import_transform_record(transform),
+            "transform_sha256": contract.imagegen_import_transform_sha256(
+                transform
+            ),
+        }
+
+        def load_mutation(
+            mutate,
+        ) -> None:
+            candidate = copy.deepcopy(identity_record)
+            mutate(candidate["action_semantic_contract"]["roles"][0]["phases"])
+            canonical = json.dumps(
+                candidate["action_semantic_contract"],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("ascii")
+            candidate["action_semantic_contract_sha256"] = hashlib.sha256(
+                canonical
+            ).hexdigest()
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "v5-lock.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "schema": contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                            "identities": [candidate],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                contract.load_imagegen_import_locks(path, ["red_panda"])
+
+        def shared_reference_field(field: str, value: object):
+            def mutate(phases: list[dict[str, object]]) -> None:
+                for phase in (1, 3):
+                    phases[phase]["native_grid_reference"][field] = value
+
+            return mutate
+
+        def wrong_p0_packed(phases: list[dict[str, object]]) -> None:
+            wrong_hash = digest("wrong-p0")
+            for phase in (1, 3):
+                reference = phases[phase]["native_grid_reference"]
+                reference["p0_packed_sha256"] = wrong_hash
+                reference["roundtrip_packed_sha256"] = wrong_hash
+
+        cases = (
+            (
+                "image3-on-p0",
+                lambda phases: phases[0].__setitem__(
+                    "native_grid_reference", phases[1]["native_grid_reference"]
+                ),
+                r"Image 3 is forbidden",
+            ),
+            (
+                "phase-chained-grid-source",
+                lambda phases: phases[1]["native_grid_reference"].__setitem__(
+                    "source_relative_path", "idle/01.png"
+                ),
+                r"cannot be phase-specific or chained",
+            ),
+            (
+                "drifted-transform",
+                lambda phases: phases[1]["native_grid_reference"].__setitem__(
+                    "transform_sha256", digest("wrong-transform")
+                ),
+                r"transform differs from the approved lock",
+            ),
+            (
+                "wrong-p0-packed-bytes",
+                wrong_p0_packed,
+                r"zero-registration byte-exact identity-copy P0",
+            ),
+            (
+                "wrong-p0-source-png",
+                shared_reference_field(
+                    "source_png_sha256", digest("wrong-p0-source")
+                ),
+                r"zero-registration byte-exact identity-copy P0",
+            ),
+            (
+                "drifted-role-registration",
+                shared_reference_field(
+                    "role_registration_sha256", digest("wrong-registration")
+                ),
+                r"role registration differs from its role lock",
+            ),
+            (
+                "missing-grid",
+                lambda phases: phases[1].__setitem__(
+                    "native_grid_reference", None
+                ),
+                r"requires one exact native-grid",
+            ),
+            (
+                "different-per-phase-grid",
+                lambda phases: phases[3]["native_grid_reference"].__setitem__(
+                    "grid_png_sha256", digest("other-grid")
+                ),
+                r"all Image 3 phases must reuse one exact",
+            ),
+        )
+        for name, mutate, pattern in cases:
+            with self.subTest(name=name), self.assertRaisesRegex(
+                contract.RasterContractError, pattern
+            ):
+                load_mutation(mutate)
+
+    def test_native_grid_pixels_and_two_box_roundtrips_are_exact(self) -> None:
+        identity, _frames, semantic = identity_anchored_baseline_fixture()
+        transform = native_grid_reference_transform()
+        clipping_transform = replace(
+            transform,
+            output_offset=(0, 1),
+            action_output_offset=(0, 1),
+        )
+        with self.assertRaisesRegex(
+            contract.RasterContractError, r"inverse locked output offset"
+        ):
+            contract.native_grid_reference_image(
+                {(20, 0)},
+                clipping_transform,
+                label="red_panda/idle/clipping-test",
+            )
+        with tempfile.TemporaryDirectory() as temporary:
+            species_dir = Path(temporary) / "red_panda"
+            grid_path = species_dir / "native-grid-reference" / "idle" / "00.png"
+            grid_path.parent.mkdir(parents=True)
+            contract.native_grid_reference_image(
+                identity.mask, transform, label="red_panda/idle/test"
+            ).save(grid_path, format="PNG", compress_level=9)
+            semantic, _transform = add_native_grid_reference_modes(
+                semantic, identity, contract.sha256_file(grid_path)
+            )
+            reference = semantic.phases[1].native_grid_reference
+            self.assertIsNotNone(reference)
+
+            proof = contract.validate_native_grid_conditioning_reference(
+                species_dir,
+                "red_panda",
+                "idle",
+                reference,
+                transform,
+                identity,
+            )
+
+            self.assertEqual(
+                proof["canonical_roundtrip_packed_sha256"],
+                frame_sha256(identity),
+            )
+            self.assertEqual(
+                proof["independent_roundtrip_packed_sha256"],
+                frame_sha256(identity),
+            )
+            self.assertEqual(
+                proof["independent_threshold_sensitive_pixels_plus_minus_20"],
+                0,
+            )
+            self.assertEqual(proof["canonical_independent_xor_pixels"], 0)
+
+            with Image.open(grid_path) as opened:
+                canonical = opened.copy()
+            shifted = Image.new("RGB", canonical.size, "white")
+            shifted.paste(
+                canonical.crop((0, 0, canonical.width - 1, canonical.height)),
+                (1, 0),
+            )
+            shifted.save(grid_path, format="PNG", compress_level=9)
+            shifted_reference = replace(
+                reference, grid_png_sha256=contract.sha256_file(grid_path)
+            )
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"not the exact nearest native-grid projection",
+            ):
+                contract.validate_native_grid_conditioning_reference(
+                    species_dir,
+                    "red_panda",
+                    "idle",
+                    shifted_reference,
+                    transform,
+                    identity,
+                )
+
+            for name, resampling in (
+                ("bilinear", Image.Resampling.BILINEAR),
+                ("lanczos", Image.Resampling.LANCZOS),
+            ):
+                with self.subTest(resampling=name):
+                    filtered = canonical.resize(
+                        (canonical.width // 2, canonical.height // 2),
+                        resampling,
+                    ).resize(canonical.size, resampling)
+                    filtered.save(grid_path, format="PNG", compress_level=9)
+                    filtered_reference = replace(
+                        reference,
+                        grid_png_sha256=contract.sha256_file(grid_path),
+                    )
+                    with self.assertRaisesRegex(
+                        contract.RasterContractError,
+                        r"black and white|exact nearest native-grid projection",
+                    ):
+                        contract.validate_native_grid_conditioning_reference(
+                            species_dir,
+                            "red_panda",
+                            "idle",
+                            filtered_reference,
+                            transform,
+                            identity,
+                        )
+
+            canonical.convert("L").save(grid_path, format="PNG")
+            mode_reference = replace(
+                reference, grid_png_sha256=contract.sha256_file(grid_path)
+            )
+            with self.assertRaisesRegex(
+                contract.RasterContractError, r"exact RGB 1122x1402 PNG"
+            ):
+                contract.validate_native_grid_conditioning_reference(
+                    species_dir,
+                    "red_panda",
+                    "idle",
+                    mode_reference,
+                    transform,
+                    identity,
+                )
 
     def test_generated_p0_cannot_use_exact_copy_landmark_comparison(self) -> None:
         identity, frames, semantic = identity_anchored_baseline_fixture()

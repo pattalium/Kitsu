@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image, ImageDraw
 
@@ -30,6 +31,7 @@ from test_companion_raster_contract import (  # noqa: E402
     refresh_test_generated_semantic_lock,
     write_imagegen_action_sheet,
     write_imagegen_raw,
+    write_valid_image3_sources,
     write_valid_imagegen_action_sheet_sources,
     write_valid_imagegen_sources,
 )
@@ -256,6 +258,22 @@ class HighResolutionPackFormatTests(unittest.TestCase):
                     },
                 }
             )
+            portrait_sync.require_fail_closed_manifest(
+                {
+                    "schema": wild_builder.LEGACY_PRIVATE_MANIFEST_SCHEMA,
+                    "complete_roster": True,
+                    "non_destructive_build": True,
+                    "identity_lock_schema": (
+                        raster_contract.HIGH_RES_IDENTITY_LOCK_SCHEMA
+                    ),
+                    "animation_contract": dict(
+                        portrait_sync.LEGACY_REQUIRED_ANIMATION_CONTRACT_VALUES
+                    ),
+                    "raster_contract": dict(
+                        portrait_sync.EXPECTED_RASTER_CONTRACT
+                    ),
+                }
+            )
 
     def test_wild_builder_rejects_legacy_identity_lock_schema(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -385,6 +403,30 @@ class HighResolutionPackFormatTests(unittest.TestCase):
             result["source_snapshot"] = {
                 "byte_exact_sha256": dict(result["source_sha256"])
             }
+            legacy_semantic_contract = replace(
+                lock.action_semantic_contract,
+                schema=raster_contract.LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA,
+            )
+            legacy_source_lock = replace(
+                lock,
+                schema=raster_contract.LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA,
+                action_semantic_contract=legacy_semantic_contract,
+                action_semantic_contract_sha256=(
+                    raster_contract.generated_action_semantic_contract_sha256(
+                        legacy_semantic_contract
+                    )
+                ),
+            )
+            legacy_result = wild_builder.build_species(
+                source,
+                root / "legacy-output",
+                "red_panda",
+                legacy_source_lock,
+                "imagegen-locked-import",
+            )
+            legacy_result["source_snapshot"] = {
+                "byte_exact_sha256": dict(legacy_result["source_sha256"])
+            }
 
         self.assertEqual(
             result["identity_lock"]["transform"]["action_output_offset"],
@@ -421,6 +463,37 @@ class HighResolutionPackFormatTests(unittest.TestCase):
                 result["source_sha256"],
             )
 
+        self.assertTrue(
+            all(
+                "generation_reference_mode" not in phase
+                and "native_grid_reference" not in phase
+                for role in legacy_result["roles"]
+                for phase in role["semantic_locality"]["phases"]
+            )
+        )
+        legacy_manifest = {
+            "schema": wild_builder.LEGACY_PRIVATE_MANIFEST_SCHEMA,
+            "identity_keys": ["red_panda"],
+            "complete_roster": True,
+            "non_destructive_build": True,
+            "identity_lock_schema": (
+                raster_contract.LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA
+            ),
+            "raster_contract": dict(portrait_sync.EXPECTED_RASTER_CONTRACT),
+            "animation_contract": dict(
+                portrait_sync.LEGACY_REQUIRED_ANIMATION_CONTRACT_VALUES
+            ),
+            "packs": [legacy_result],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest_path = Path(temporary) / "legacy-v6-imagegen.json"
+            manifest_path.write_text(
+                json.dumps(legacy_manifest), encoding="utf-8"
+            )
+            with mock.patch.object(portrait_sync, "EXPECTED_CREATURES", 1):
+                records = portrait_sync.load_records(manifest_path)
+        self.assertEqual(len(records), 1)
+
     def test_action_sheet_imagegen_source_kind_is_rejected_by_v4(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -443,7 +516,7 @@ class HighResolutionPackFormatTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 ValueError,
-                r"v4 forbids one-action sheets.*independent full-canvas",
+                r"v4/v5 forbids one-action sheets.*independent full-canvas",
             ):
                 wild_builder.build_species(
                     source,
@@ -461,7 +534,7 @@ class HighResolutionPackFormatTests(unittest.TestCase):
             lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
             with self.assertRaisesRegex(
                 ValueError,
-                r"v4 forbids one-action sheets.*independent full-canvas",
+                r"v4/v5 forbids one-action sheets.*independent full-canvas",
             ):
                 wild_builder.build_species(
                     source,
@@ -575,6 +648,67 @@ class HighResolutionPackFormatTests(unittest.TestCase):
         ).hexdigest()
         self.assertNotIn("action_output_offset", equal_offsets)
         portrait_sync.require_pack_raster_provenance(equal_offsets, "ferret")
+
+    def test_portrait_sync_validates_v5_mixed_reference_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_image3_sources(source, "ferret")
+            raster = raster_contract.load_high_res_generated_species(
+                source, "ferret", lock, roles=(builder.ROLE_SPECS[0],)
+            )
+
+        frames = list(raster.frames)
+        identity_lock = {
+            "schema": lock.schema,
+            "identity_source_sha256": lock.identity_source_sha256,
+            "identity_frame_sha256": lock.identity_frame_sha256,
+            "transform": raster_contract.imagegen_import_transform_record(
+                lock.transform
+            ),
+            "transform_sha256": lock.transform_sha256,
+        }
+        role_record = {
+            "role": "idle",
+            "frame_sha256": [
+                hashlib.sha256(frame.packed).hexdigest() for frame in frames
+            ],
+            "source_sha256": [frame.source_sha256 for frame in frames],
+            "semantic_locality": raster.generated_semantic_evidence["idle"],
+        }
+        portrait_sync.require_generated_semantic_evidence(
+            "ferret",
+            role_record,
+            identity_lock,
+            raster.source_sha256,
+        )
+        self.assertEqual(
+            role_record["semantic_locality"]["native_grid_reference_proof"][
+                "canonical_independent_xor_pixels"
+            ],
+            0,
+        )
+
+        wrong_grid_transform = json.loads(json.dumps(identity_lock))
+        wrong_grid_transform["transform"]["source_canvas"] = [1120, 1400]
+        wrong_grid_transform["transform"]["crop_rect"] = [0, 0, 1120, 1400]
+        with self.assertRaisesRegex(ValueError, r"exact 1122x1402 source"):
+            portrait_sync.require_generated_semantic_evidence(
+                "ferret",
+                role_record,
+                wrong_grid_transform,
+                raster.source_sha256,
+            )
+
+        drifted = json.loads(json.dumps(role_record))
+        drifted["semantic_locality"]["phases"][3][
+            "native_grid_reference"
+        ]["grid_png_sha256"] = "f" * 64
+        with self.assertRaisesRegex(
+            ValueError, r"does not bind the same immutable exact P0"
+        ):
+            portrait_sync.require_generated_semantic_evidence(
+                "ferret", drifted, identity_lock, raster.source_sha256
+            )
 
 if __name__ == "__main__":
     unittest.main()

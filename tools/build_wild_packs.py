@@ -65,7 +65,8 @@ WILD_FRAME_HEIGHT = 80
 WILD_FRAME_BYTES = WILD_FRAME_WIDTH * WILD_FRAME_HEIGHT // 8
 WILD_FLOOR_Y = 77
 WILD_PACK_REVISION = 3
-PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
+LEGACY_PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
+PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v7"
 DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
 IMAGEGEN_RASTER_TRANSFORM = (
     "rgba-over-white-box-area-fixed-role-registration-bounded-native-composite-v1"
@@ -118,7 +119,10 @@ def load_release_identity_locks(
             schema,
             raster_contract.load_high_res_identity_locks(path, selected),
         )
-    if schema == raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA:
+    if schema in {
+        raster_contract.LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA,
+        raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+    }:
         return (
             "imagegen-locked-import",
             schema,
@@ -189,7 +193,7 @@ def build_species(
             )
         # Independent full-canvas frames use output_offset for identity and
         # actions alike. The legacy-reserved action_output_offset field is
-        # hash-bound but never consumed by the v4 builder.
+        # hash-bound but never consumed by the v4/v5 builder.
         raster = raster_contract.load_high_res_generated_species(
             source_dir, species, identity_lock
         )
@@ -204,7 +208,7 @@ def build_species(
         action_source_layout_sha256 = None
         action_output_offset = None
         lock_record = {
-            "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
+            "schema": identity_lock.schema,
             "action_semantic_contract": (
                 raster_contract.generated_action_semantic_contract_record(
                     identity_lock.action_semantic_contract
@@ -222,7 +226,7 @@ def build_species(
         }
     elif source_kind == "imagegen-one-action-sheets":
         raise ValueError(
-            f"{species}: ImageGen import v4 forbids one-action sheets; four "
+            f"{species}: ImageGen import v4/v5 forbids one-action sheets; four "
             "independent full-canvas phase edits are required"
         )
     else:
@@ -528,8 +532,9 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help=(
             "Private kitsu-wild-identity-lock-v2 direct-target file or "
-            "kitsu-wild-imagegen-import-lock-v4 file. The two schemas are "
-            "distinct and are never reinterpreted."
+            "kitsu-wild-imagegen-import-lock-v4/v5 file. The schemas are "
+            "distinct; audited v4 remains two-reference and v5 records each "
+            "optional Image 3 explicitly."
         ),
     )
     parser.add_argument(
@@ -543,7 +548,7 @@ def parse_args() -> argparse.Namespace:
         choices=("independent-frames", "one-action-sheets"),
         default="independent-frames",
         help=(
-            "Explicit ImageGen source tree. v4 accepts four independent "
+            "Explicit ImageGen source tree. v4/v5 accepts four independent "
             "full-canvas files per action; the legacy sheet choice is retained "
             "only so it can fail with an explicit migration diagnostic."
         ),
@@ -578,7 +583,7 @@ def main() -> int:
     )
     if args.imagegen_source_layout == "one-action-sheets":
         raise ValueError(
-            "ImageGen import v4 forbids one-action sheets; author four "
+            "ImageGen import v4/v5 forbids one-action sheets; author four "
             "independent full-canvas edits with frozen per-phase masks"
         )
     private_output.parent.mkdir(parents=True, exist_ok=True)
@@ -663,10 +668,31 @@ def main() -> int:
                 "generated_action_semantic_schema": (
                     raster_contract.GENERATED_ACTION_SEMANTIC_SCHEMA
                 ),
+                "generated_action_semantic_schemas": [
+                    raster_contract.LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA,
+                    raster_contract.GENERATED_ACTION_SEMANTIC_SCHEMA,
+                ],
                 "immutable_identity_reference_per_generated_phase": True,
                 "identity_reference_image_number": 1,
                 "immutable_edit_target_reference_per_generated_phase": True,
                 "edit_target_reference_image_number": 2,
+                "generation_reference_modes": [
+                    raster_contract.P0_GENERATION_REFERENCE_MODE,
+                    raster_contract.TWO_REFERENCE_GENERATION_MODE,
+                    raster_contract.THREE_REFERENCE_GENERATION_MODE,
+                ],
+                "native_grid_reference_schema": (
+                    raster_contract.NATIVE_GRID_REFERENCE_SCHEMA
+                ),
+                "native_grid_reference_image_number": 3,
+                "native_grid_reference_prompt_only": True,
+                "native_grid_reference_phase_0": False,
+                "native_grid_reference_per_phase_truthful": True,
+                "native_grid_reference_same_role_p0_for_all_uses": True,
+                "native_grid_reference_zero_registration_exact_copy_only": True,
+                "native_grid_reference_derivation": (
+                    raster_contract.NATIVE_GRID_REFERENCE_DERIVATION
+                ),
                 "generated_phase_chaining": False,
                 "identity_anchored_later_phases_use_role_p0_edit_target": True,
                 "role_phase_0_generation_target": "approved-identity",

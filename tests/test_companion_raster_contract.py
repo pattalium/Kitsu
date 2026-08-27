@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -253,7 +254,12 @@ def make_test_generated_semantic_contract(
             else final_frames[0]
         )
         delta = set(baseline.mask) ^ set(candidate.mask)
-        allowed = contract.native_region_mask_lock(delta)
+        allowed_mask = delta or {
+            (x, y)
+            for later in imported_candidates[1:]
+            for x, y in set(identity.mask) ^ set(later.mask)
+        }
+        allowed = contract.native_region_mask_lock(allowed_mask)
         allowed_regions.append(allowed)
         final_frames.append(
             contract.compose_bounded_generated_frame(
@@ -385,6 +391,11 @@ def make_test_generated_semantic_contract(
         phase_locks.append(
             contract.GeneratedPhaseSemanticLock(
                 phase=phase,
+                generation_reference_mode=(
+                    contract.P0_GENERATION_REFERENCE_MODE
+                    if phase == 0
+                    else contract.TWO_REFERENCE_GENERATION_MODE
+                ),
                 semantic_baseline=(
                     (
                         "approved-identity"
@@ -411,7 +422,20 @@ def make_test_generated_semantic_contract(
                     )
                 ),
                 generated_asset=contract.GeneratedPhaseAsset(
-                    layout="independent-frame",
+                    layout=(
+                        contract.GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT
+                        if phase == 0
+                        and registration.output_offset == (0, 0)
+                        and imported_candidate.source_sha256
+                        == identity_source_sha256
+                        and hashlib.sha256(imported_candidate.packed).hexdigest()
+                        == identity_frame_sha256
+                        and hashlib.sha256(registered_candidate.packed).hexdigest()
+                        == identity_frame_sha256
+                        and hashlib.sha256(frame.packed).hexdigest()
+                        == identity_frame_sha256
+                        else "independent-frame"
+                    ),
                     relative_path=f"{role.name}/{phase:02d}.png",
                     source_sha256=imported_candidate.source_sha256,
                     imported_candidate_frame_sha256=hashlib.sha256(
@@ -543,6 +567,7 @@ def write_valid_imagegen_sources(
         identity_frame_sha256=identity_frame_sha256,
     )
     return contract.ImageGenImportLock(
+        schema=contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
         identity_key=species,
         identity_source_sha256=identity_source_sha256,
         identity_frame_sha256=identity_frame_sha256,
@@ -553,6 +578,95 @@ def write_valid_imagegen_sources(
         ),
         action_semantic_contract=semantic,
         approved=True,
+    )
+
+
+def write_valid_image3_sources(
+    root: Path, species: str
+) -> contract.ImageGenImportLock:
+    lock = write_valid_imagegen_sources(root, species)
+    species_dir = root / species
+    shutil.copyfile(
+        species_dir / "identity.png", species_dir / "idle" / "00.png"
+    )
+    for phase in range(1, 4):
+        logical = imagegen_logical_outline()
+        left = 14 + phase * 10
+        logical.update(
+            (left + dx, 31 + dy)
+            for dx in range(3)
+            for dy in range(2)
+        )
+        write_imagegen_raw(
+            species_dir / "idle" / f"{phase:02d}.png",
+            lock.transform,
+            logical,
+        )
+    identity = contract.load_imagegen_import_frame(
+        species_dir / "identity.png", "identity", -1, lock.transform
+    )
+    candidates = [
+        contract.load_imagegen_import_frame(
+            species_dir / "idle" / f"{phase:02d}.png",
+            "idle",
+            phase,
+            lock.transform,
+            identity_mask=set(identity.mask),
+        )
+        for phase in range(4)
+    ]
+    semantic_contract = make_test_generated_semantic_contract(
+        species_dir,
+        species,
+        identity,
+        candidates,
+        identity_source_sha256=lock.identity_source_sha256,
+        identity_frame_sha256=lock.identity_frame_sha256,
+    )
+    semantic = semantic_contract.roles[0]
+    p0_hash = hashlib.sha256(identity.packed).hexdigest()
+    grid_path = species_dir / "native-grid-reference" / "idle" / "00.png"
+    grid_path.parent.mkdir(parents=True)
+    contract.native_grid_reference_image(
+        identity.mask, lock.transform, label=f"{species}/idle/test-fixture"
+    ).save(grid_path, format="PNG", compress_level=9)
+    reference = contract.NativeGridConditioningReference(
+        schema=contract.NATIVE_GRID_REFERENCE_SCHEMA,
+        kind=contract.NATIVE_GRID_REFERENCE_KIND,
+        image_number=3,
+        read_only=True,
+        edit_target=False,
+        source_relative_path="idle/00.png",
+        source_png_sha256=contract.sha256_file(
+            species_dir / "idle" / "00.png"
+        ),
+        grid_relative_path="native-grid-reference/idle/00.png",
+        grid_png_sha256=contract.sha256_file(grid_path),
+        p0_packed_sha256=p0_hash,
+        roundtrip_packed_sha256=p0_hash,
+        transform_sha256=lock.transform_sha256,
+        role_registration_sha256=semantic.role_registration_sha256,
+        derivation=contract.NATIVE_GRID_REFERENCE_DERIVATION,
+    )
+    phases = list(semantic.phases)
+    for phase in (1, 3):
+        phases[phase] = replace(
+            phases[phase],
+            generation_reference_mode=contract.THREE_REFERENCE_GENERATION_MODE,
+            native_grid_reference=reference,
+        )
+    semantic_contract = replace(
+        semantic_contract,
+        roles=(replace(semantic, phases=tuple(phases)),),
+    )
+    return replace(
+        lock,
+        action_semantic_contract=semantic_contract,
+        action_semantic_contract_sha256=(
+            contract.generated_action_semantic_contract_sha256(
+                semantic_contract
+            )
+        ),
     )
 
 
@@ -618,6 +732,7 @@ def write_valid_imagegen_action_sheet_sources(
         roles=(),
     )
     return contract.ImageGenImportLock(
+        schema=contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
         identity_key=species,
         identity_source_sha256=identity_source_sha256,
         identity_frame_sha256=identity_frame_sha256,
@@ -1357,6 +1472,76 @@ class CompanionRasterContractTests(unittest.TestCase):
         )
         self.assertEqual(len({frame.packed for frame in raster.frames}), 4)
 
+    def test_v5_native_grid_reference_is_prompt_only_and_snapshotted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_image3_sources(source, "ferret")
+            raster = contract.load_high_res_generated_species(
+                source, "ferret", lock, roles=(IDLE,)
+            )
+
+        semantic = raster.generated_semantic_evidence["idle"]
+        self.assertEqual(
+            [phase["generation_reference_mode"] for phase in semantic["phases"]],
+            [
+                contract.P0_GENERATION_REFERENCE_MODE,
+                contract.THREE_REFERENCE_GENERATION_MODE,
+                contract.TWO_REFERENCE_GENERATION_MODE,
+                contract.THREE_REFERENCE_GENERATION_MODE,
+            ],
+        )
+        self.assertIn(
+            "native-grid-reference/idle/00.png", raster.source_sha256
+        )
+        proof = semantic["native_grid_reference_proof"]
+        self.assertEqual(
+            proof["canonical_roundtrip_packed_sha256"],
+            proof["independent_roundtrip_packed_sha256"],
+        )
+        self.assertEqual(
+            proof["independent_threshold_sensitive_pixels_plus_minus_20"], 0
+        )
+        self.assertEqual(proof["canonical_independent_xor_pixels"], 0)
+
+    def test_generated_species_rejects_missing_or_orphan_image3_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_image3_sources(source, "ferret")
+            (
+                source
+                / "ferret"
+                / "native-grid-reference"
+                / "idle"
+                / "00.png"
+            ).unlink()
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"native-grid Image 3 files differ|missing",
+            ):
+                contract.load_high_res_generated_species(
+                    source, "ferret", lock, roles=(IDLE,)
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_sources(source, "ferret")
+            orphan = (
+                source
+                / "ferret"
+                / "native-grid-reference"
+                / "idle"
+                / "00.png"
+            )
+            orphan.parent.mkdir(parents=True)
+            Image.new("RGB", (1122, 1402), "white").save(orphan)
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"exact generated source tree required",
+            ):
+                contract.load_high_res_generated_species(
+                    source, "ferret", lock, roles=(IDLE,)
+                )
+
     def test_imagegen_generated_species_rejects_orphan_freeze_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
@@ -1444,7 +1629,7 @@ class CompanionRasterContractTests(unittest.TestCase):
             lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"v4 forbids one-action sheets.*independent star edits",
+                r"v4/v5 forbids one-action sheets.*independent star edits",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "ferret", lock, roles=(IDLE,)
@@ -1456,7 +1641,7 @@ class CompanionRasterContractTests(unittest.TestCase):
             lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"v4 forbids one-action sheets",
+                r"v4/v5 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "ferret", lock, roles=(IDLE, BLINK)
@@ -1474,7 +1659,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"v4 forbids one-action sheets",
+                r"v4/v5 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "ferret", lock, roles=(IDLE,)
@@ -1493,7 +1678,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"v4 forbids one-action sheets",
+                r"v4/v5 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "rabbit", lock, roles=(IDLE,)
@@ -1518,7 +1703,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"v4 forbids one-action sheets",
+                r"v4/v5 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "raccoon", lock, roles=(IDLE,)
@@ -1536,7 +1721,7 @@ class CompanionRasterContractTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"v4 forbids one-action sheets",
+                r"v4/v5 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "capybara", lock, roles=(IDLE,)
@@ -1558,7 +1743,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"v4 forbids one-action sheets",
+                r"v4/v5 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "otter", lock, roles=(IDLE,)

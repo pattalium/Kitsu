@@ -28,9 +28,13 @@ import build_default_packs as base
 
 IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v1"
 HIGH_RES_IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
-IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v4"
-GENERATED_ACTION_SEMANTIC_SCHEMA = (
+LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v4"
+IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v5"
+LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA = (
     "kitsu-wild-generated-action-semantic-locality-v3"
+)
+GENERATED_ACTION_SEMANTIC_SCHEMA = (
+    "kitsu-wild-generated-action-semantic-locality-v4"
 )
 GENERATED_PHASE_PREAUTHORIZATION_SCHEMA = (
     "kitsu-wild-generated-phase-preauthorization-v2"
@@ -55,6 +59,19 @@ GENERATED_ROLE_REGISTRATION_SCHEMA = (
 )
 GENERATED_COMPOSITION_MODE = (
     "immutable-baseline-outside-mask-imported-candidate-inside-mask"
+)
+NATIVE_GRID_REFERENCE_SCHEMA = (
+    "kitsu-wild-native-grid-conditioning-reference-v1"
+)
+NATIVE_GRID_REFERENCE_KIND = "read-only-native-grid-conditioning-reference"
+NATIVE_GRID_REFERENCE_DIRECTORY = "native-grid-reference"
+NATIVE_GRID_REFERENCE_DERIVATION = (
+    "inverse-locked-output-offset-nearest-native-grid-v1"
+)
+P0_GENERATION_REFERENCE_MODE = "two-reference-identity-edit-v1"
+TWO_REFERENCE_GENERATION_MODE = "two-reference-same-p0-star-v1"
+THREE_REFERENCE_GENERATION_MODE = (
+    "three-reference-same-p0-native-grid-star-v1"
 )
 NATIVE_REGION_MASK_SCHEMA = "kitsu-native-region-mask-64x80-v1"
 NATIVE_REGION_MASK_ENCODING = "lsb0-row-major-hex"
@@ -383,6 +400,7 @@ class ImageGenImportTransform:
 
 @dataclass(frozen=True)
 class ImageGenImportLock:
+    schema: str
     identity_key: str
     identity_source_sha256: str
     identity_frame_sha256: str
@@ -420,6 +438,24 @@ class ImmutableEditTargetReference:
     source_sha256: str
     registered_frame_sha256: str
     accepted_composited_frame_sha256: str
+
+
+@dataclass(frozen=True)
+class NativeGridConditioningReference:
+    schema: str
+    kind: str
+    image_number: int
+    read_only: bool
+    edit_target: bool
+    source_relative_path: str
+    source_png_sha256: str
+    grid_relative_path: str
+    grid_png_sha256: str
+    p0_packed_sha256: str
+    roundtrip_packed_sha256: str
+    transform_sha256: str
+    role_registration_sha256: str
+    derivation: str
 
 
 @dataclass(frozen=True)
@@ -471,6 +507,8 @@ class GeneratedPhaseSemanticLock:
     composited_frame_sha256: str
     maximum_out_of_region_changed_pixels: int
     frozen_regions: tuple[FrozenSemanticRegion, ...]
+    generation_reference_mode: str = TWO_REFERENCE_GENERATION_MODE
+    native_grid_reference: NativeGridConditioningReference | None = None
 
 
 @dataclass(frozen=True)
@@ -1177,6 +1215,27 @@ def _edit_target_reference_record(
     }
 
 
+def _native_grid_reference_record(
+    reference: NativeGridConditioningReference,
+) -> dict[str, object]:
+    return {
+        "derivation": reference.derivation,
+        "edit_target": reference.edit_target,
+        "grid_png_sha256": reference.grid_png_sha256,
+        "grid_relative_path": reference.grid_relative_path,
+        "image_number": reference.image_number,
+        "kind": reference.kind,
+        "p0_packed_sha256": reference.p0_packed_sha256,
+        "read_only": reference.read_only,
+        "role_registration_sha256": reference.role_registration_sha256,
+        "roundtrip_packed_sha256": reference.roundtrip_packed_sha256,
+        "schema": reference.schema,
+        "source_png_sha256": reference.source_png_sha256,
+        "source_relative_path": reference.source_relative_path,
+        "transform_sha256": reference.transform_sha256,
+    }
+
+
 def _preauthorization_reference_record(
     reference: FrozenPhasePreauthorizationReference,
 ) -> dict[str, object]:
@@ -1240,8 +1299,9 @@ def _frozen_region_record(region: FrozenSemanticRegion) -> dict[str, object]:
 
 def _phase_semantic_record(
     phase: GeneratedPhaseSemanticLock,
+    schema: str,
 ) -> dict[str, object]:
-    return {
+    record = {
         "allowed_change_region": native_region_mask_record(
             phase.allowed_change_region
         ),
@@ -1269,6 +1329,32 @@ def _phase_semantic_record(
         ),
         "semantic_baseline": phase.semantic_baseline,
     }
+    if schema == GENERATED_ACTION_SEMANTIC_SCHEMA:
+        record["generation_reference_mode"] = phase.generation_reference_mode
+        record["native_grid_reference"] = (
+            None
+            if phase.native_grid_reference is None
+            else _native_grid_reference_record(phase.native_grid_reference)
+        )
+    elif schema == LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA:
+        expected_legacy_mode = (
+            P0_GENERATION_REFERENCE_MODE
+            if phase.phase == 0
+            else TWO_REFERENCE_GENERATION_MODE
+        )
+        if (
+            phase.generation_reference_mode != expected_legacy_mode
+            or phase.native_grid_reference is not None
+        ):
+            raise RasterContractError(
+                "legacy semantic-v3 can serialize only truthful two-reference "
+                "lineage; Image 3 requires semantic-v4"
+            )
+    else:
+        raise RasterContractError(
+            f"unsupported generated action semantic schema {schema!r}"
+        )
+    return record
 
 
 def _motion_landmark_record(landmark: MotionLandmarkLock) -> dict[str, object]:
@@ -1312,7 +1398,10 @@ def generated_action_semantic_contract_record(
                     _motion_landmark_record(landmark)
                     for landmark in role.motion_landmarks
                 ],
-                "phases": [_phase_semantic_record(phase) for phase in role.phases],
+                "phases": [
+                    _phase_semantic_record(phase, contract.schema)
+                    for phase in role.phases
+                ],
                 "role": role.role,
                 "role_registration": generated_role_registration_record(
                     role.role_registration
@@ -1532,6 +1621,125 @@ def _parse_edit_target_reference(
     )
 
 
+def _parse_native_grid_reference(
+    raw: object,
+    label: str,
+    role: str,
+    phase: int,
+    generation_reference_mode: str,
+    transform_sha256: str,
+    role_registration_sha256: str,
+) -> NativeGridConditioningReference | None:
+    if phase == 0:
+        if generation_reference_mode != P0_GENERATION_REFERENCE_MODE or raw is not None:
+            raise RasterContractError(
+                f"{label}: role P0 must use exactly two identity/edit references; "
+                "Image 3 is forbidden"
+            )
+        return None
+    if generation_reference_mode == TWO_REFERENCE_GENERATION_MODE:
+        if raw is not None:
+            raise RasterContractError(
+                f"{label}: two-reference phase cannot claim an Image 3"
+            )
+        return None
+    if generation_reference_mode != THREE_REFERENCE_GENERATION_MODE:
+        raise RasterContractError(
+            f"{label}: unsupported generation-reference mode"
+        )
+    expected = {
+        "derivation",
+        "edit_target",
+        "grid_png_sha256",
+        "grid_relative_path",
+        "image_number",
+        "kind",
+        "p0_packed_sha256",
+        "read_only",
+        "role_registration_sha256",
+        "roundtrip_packed_sha256",
+        "schema",
+        "source_png_sha256",
+        "source_relative_path",
+        "transform_sha256",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise RasterContractError(
+            f"{label}: three-reference phase requires one exact native-grid "
+            "conditioning reference"
+        )
+    if (
+        raw["schema"] != NATIVE_GRID_REFERENCE_SCHEMA
+        or raw["kind"] != NATIVE_GRID_REFERENCE_KIND
+        or raw["image_number"] != 3
+        or raw["read_only"] is not True
+        or raw["edit_target"] is not False
+        or raw["derivation"] != NATIVE_GRID_REFERENCE_DERIVATION
+    ):
+        raise RasterContractError(
+            f"{label}: Image 3 must be the read-only deterministic native-grid "
+            "conditioning reference"
+        )
+    source_path = _require_canonical_relative_path(
+        raw["source_relative_path"], f"{label}/source_relative_path"
+    )
+    grid_path = _require_canonical_relative_path(
+        raw["grid_relative_path"], f"{label}/grid_relative_path"
+    )
+    if source_path != f"{role}/00.png" or grid_path != (
+        f"{NATIVE_GRID_REFERENCE_DIRECTORY}/{role}/00.png"
+    ):
+        raise RasterContractError(
+            f"{label}: Image 3 must derive from the same role P0 and cannot be "
+            "phase-specific or chained"
+        )
+    reference_transform_hash = _require_lower_sha256(
+        raw["transform_sha256"], f"{label}/transform_sha256"
+    )
+    reference_registration_hash = _require_lower_sha256(
+        raw["role_registration_sha256"],
+        f"{label}/role_registration_sha256",
+    )
+    if reference_transform_hash != transform_sha256:
+        raise RasterContractError(
+            f"{label}: Image 3 import transform differs from the approved lock"
+        )
+    if reference_registration_hash != role_registration_sha256:
+        raise RasterContractError(
+            f"{label}: Image 3 role registration differs from its role lock"
+        )
+    p0_hash = _require_lower_sha256(
+        raw["p0_packed_sha256"], f"{label}/p0_packed_sha256"
+    )
+    roundtrip_hash = _require_lower_sha256(
+        raw["roundtrip_packed_sha256"], f"{label}/roundtrip_packed_sha256"
+    )
+    if roundtrip_hash != p0_hash:
+        raise RasterContractError(
+            f"{label}: Image 3 BOX round trip must equal the exact accepted P0"
+        )
+    return NativeGridConditioningReference(
+        schema=NATIVE_GRID_REFERENCE_SCHEMA,
+        kind=NATIVE_GRID_REFERENCE_KIND,
+        image_number=3,
+        read_only=True,
+        edit_target=False,
+        source_relative_path=source_path,
+        source_png_sha256=_require_lower_sha256(
+            raw["source_png_sha256"], f"{label}/source_png_sha256"
+        ),
+        grid_relative_path=grid_path,
+        grid_png_sha256=_require_lower_sha256(
+            raw["grid_png_sha256"], f"{label}/grid_png_sha256"
+        ),
+        p0_packed_sha256=p0_hash,
+        roundtrip_packed_sha256=roundtrip_hash,
+        transform_sha256=reference_transform_hash,
+        role_registration_sha256=reference_registration_hash,
+        derivation=NATIVE_GRID_REFERENCE_DERIVATION,
+    )
+
+
 def _parse_preauthorization_reference(
     raw: object,
     label: str,
@@ -1622,6 +1830,9 @@ def _parse_phase_semantic(
     identity_key: str,
     identity_source_sha256: str,
     identity_frame_sha256: str,
+    semantic_schema: str,
+    transform_sha256: str,
+    role_registration_sha256: str,
 ) -> GeneratedPhaseSemanticLock:
     expected = {
         "allowed_change_region",
@@ -1637,8 +1848,30 @@ def _parse_phase_semantic(
         "preauthorization_reference",
         "semantic_baseline",
     }
+    if semantic_schema == GENERATED_ACTION_SEMANTIC_SCHEMA:
+        expected |= {"generation_reference_mode", "native_grid_reference"}
+    elif semantic_schema != LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA:
+        raise RasterContractError(f"{label}: unsupported semantic schema")
     if not isinstance(raw, dict) or set(raw) != expected or raw.get("phase") != phase:
         raise RasterContractError(f"{label}: exact phase semantic lock is required")
+    generation_reference_mode = (
+        raw["generation_reference_mode"]
+        if semantic_schema == GENERATED_ACTION_SEMANTIC_SCHEMA
+        else (
+            P0_GENERATION_REFERENCE_MODE
+            if phase == 0
+            else TWO_REFERENCE_GENERATION_MODE
+        )
+    )
+    native_grid_reference = _parse_native_grid_reference(
+        raw.get("native_grid_reference"),
+        f"{label}/native-grid-reference",
+        role,
+        phase,
+        generation_reference_mode,
+        transform_sha256,
+        role_registration_sha256,
+    )
     allowed = _parse_native_region_mask(
         raw["allowed_change_region"], f"{label}/allowed-change"
     )
@@ -1740,6 +1973,8 @@ def _parse_phase_semantic(
         ),
         maximum_out_of_region_changed_pixels=budget,
         frozen_regions=frozen,
+        generation_reference_mode=generation_reference_mode,
+        native_grid_reference=native_grid_reference,
     )
 
 
@@ -1903,16 +2138,18 @@ def _parse_generated_action_semantic_contract(
     identity_key: str,
     identity_source_sha256: str,
     identity_frame_sha256: str,
+    expected_schema: str,
+    transform_sha256: str,
 ) -> GeneratedActionSemanticContract:
     expected = {"roles", "schema"}
     if not isinstance(raw, dict) or set(raw) != expected:
         raise RasterContractError(
             f"{identity_key}: generated action semantic contract is missing or malformed"
         )
-    if raw["schema"] != GENERATED_ACTION_SEMANTIC_SCHEMA:
+    if raw["schema"] != expected_schema:
         raise RasterContractError(
             f"{identity_key}: generated action semantic schema must be "
-            f"{GENERATED_ACTION_SEMANTIC_SCHEMA}"
+            f"{expected_schema}"
         )
     records = raw["roles"]
     if not isinstance(records, list) or not records:
@@ -2019,6 +2256,9 @@ def _parse_generated_action_semantic_contract(
                 identity_key,
                 identity_source_sha256,
                 identity_frame_sha256,
+                expected_schema,
+                transform_sha256,
+                registration_hash,
             )
             for phase, phase_raw in enumerate(phases_raw)
         )
@@ -2028,6 +2268,16 @@ def _parse_generated_action_semantic_contract(
                 "bounded-composite phase-0 frame"
             )
         p0_asset = phases[0].generated_asset
+        three_reference_records = [
+            phase_lock.native_grid_reference
+            for phase_lock in phases[1:]
+            if phase_lock.native_grid_reference is not None
+        ]
+        if three_reference_records and len(set(three_reference_records)) != 1:
+            raise RasterContractError(
+                f"{identity_key}/{role}: all Image 3 phases must reuse one exact "
+                "immutable role-P0 native-grid reference"
+            )
         for phase_lock in phases:
             expected_composition_baseline = (
                 identity_frame_sha256
@@ -2054,6 +2304,28 @@ def _parse_generated_action_semantic_contract(
                     raise RasterContractError(
                         f"{identity_key}/{role}/{phase_lock.phase}: P1/P2/P3 "
                         "must independently reference the same accepted immutable P0"
+                    )
+                native_grid_reference = phase_lock.native_grid_reference
+                if native_grid_reference is not None and (
+                    registration.derivation != "identity-anchored-zero-offset"
+                    or registration.output_offset != (0, 0)
+                    or p0_asset.layout != GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT
+                    or p0_asset.source_sha256 != identity_source_sha256
+                    or p0_asset.imported_candidate_frame_sha256
+                    != identity_frame_sha256
+                    or p0_asset.registered_candidate_frame_sha256
+                    != identity_frame_sha256
+                    or baseline_frame_hash != identity_frame_sha256
+                    or native_grid_reference.source_png_sha256
+                    != p0_asset.source_sha256
+                    or native_grid_reference.p0_packed_sha256
+                    != baseline_frame_hash
+                    or native_grid_reference.roundtrip_packed_sha256
+                    != baseline_frame_hash
+                ):
+                    raise RasterContractError(
+                        f"{identity_key}/{role}/{phase_lock.phase}: Image 3 v1 "
+                        "requires a zero-registration byte-exact identity-copy P0"
                     )
         landmarks_raw = raw_role["motion_landmarks"]
         if not isinstance(landmarks_raw, list) or not landmarks_raw:
@@ -2098,7 +2370,7 @@ def _parse_generated_action_semantic_contract(
             f"{identity_key}: semantic roles must be unique and in canonical order"
         )
     return GeneratedActionSemanticContract(
-        schema=GENERATED_ACTION_SEMANTIC_SCHEMA,
+        schema=expected_schema,
         roles=tuple(roles),
     )
 
@@ -2182,7 +2454,7 @@ def recommended_imagegen_import_transform(
     """Build the fixed full-canvas transform with an explicit reserved field.
 
     ``action_output_offset`` remains mandatory in canonical transform records
-    so legacy values cannot be silently dropped or reinterpreted. ImageGen v4
+    so legacy values cannot be silently dropped or reinterpreted. ImageGen v4/v5
     independent-frame import never consumes it; new locks normally set it to
     the same value as ``output_offset``.
     """
@@ -2418,10 +2690,20 @@ def load_imagegen_import_locks(
         raise RasterContractError(
             "ImageGen import lock must contain exactly schema and identities"
         )
-    if payload["schema"] != IMAGEGEN_IMPORT_LOCK_SCHEMA:
+    lock_schema = payload["schema"]
+    if lock_schema not in {
+        LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA,
+        IMAGEGEN_IMPORT_LOCK_SCHEMA,
+    }:
         raise RasterContractError(
-            f"ImageGen import lock schema must be {IMAGEGEN_IMPORT_LOCK_SCHEMA}"
+            "ImageGen import lock schema must be "
+            f"{LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA} or {IMAGEGEN_IMPORT_LOCK_SCHEMA}"
         )
+    semantic_schema = (
+        LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+        if lock_schema == LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA
+        else GENERATED_ACTION_SEMANTIC_SCHEMA
+    )
     records = payload["identities"]
     if not isinstance(records, list):
         raise RasterContractError("ImageGen import lock identities must be a list")
@@ -2493,6 +2775,8 @@ def load_imagegen_import_locks(
             identity_key,
             raw["identity_source_sha256"],
             raw["identity_frame_sha256"],
+            semantic_schema,
+            raw["transform_sha256"],
         )
         actual_action_contract_hash = generated_action_semantic_contract_sha256(
             action_contract
@@ -2508,6 +2792,7 @@ def load_imagegen_import_locks(
                 f"{identity_key}: ImageGen import lock is not approved"
             )
         locks[identity_key] = ImageGenImportLock(
+            schema=lock_schema,
             identity_key=identity_key,
             identity_source_sha256=raw["identity_source_sha256"],
             identity_frame_sha256=raw["identity_frame_sha256"],
@@ -2547,7 +2832,7 @@ def _import_imagegen_mask(
 ) -> set[tuple[int, int]]:
     """Apply the one pinned identity transform, without per-frame fitting.
 
-    ``bounded_validation_region`` is only used for a v4 generated candidate.
+    ``bounded_validation_region`` is only used for a v4/v5 generated candidate.
     It is expressed in the candidate's post-transform, pre-registration 64x80
     coordinates.  Coverage ambiguity outside that region is deliberately not
     release-relevant because bounded composition cannot copy those pixels into
@@ -2728,7 +3013,7 @@ def _generated_candidate_metrics(
 ) -> SourceMetrics:
     """Describe an imported candidate without treating discarded pixels as art.
 
-    A v4 candidate is provenance, not a release frame.  Its complete binary
+    A v4/v5 candidate is provenance, not a release frame. Its complete binary
     reduction must remain nonempty, in-canvas, packable, and hashable, but
     semantic stage/debris/identity checks apply to the bounded composite that
     can actually ship.  This keeps off-mask ImageGen redraw noise visible in
@@ -2811,6 +3096,242 @@ def load_imagegen_import_frame(
         identity_jaccard=similarity,
         packed=packed,
     )
+
+
+def native_grid_reference_image(
+    accepted_p0_mask: set[tuple[int, int]] | frozenset[tuple[int, int]],
+    transform: ImageGenImportTransform,
+    *,
+    label: str,
+) -> Image.Image:
+    """Return the one exact RGB prompt projection of an accepted native P0."""
+
+    validate_imagegen_import_transform(transform, f"{label}/transform")
+    if (
+        transform.source_canvas != IMAGEGEN_RECOMMENDED_SOURCE_CANVAS
+        or transform.crop_rect != IMAGEGEN_RECOMMENDED_CROP_RECT
+        or transform.output_canvas != IMAGEGEN_OUTPUT_CANVAS
+    ):
+        raise RasterContractError(
+            f"{label}: native-grid Image 3 v1 requires the exact 1122x1402 "
+            "canvas and 1120x1400 centered crop"
+        )
+    dx, dy = transform.output_offset
+    unshifted = {(x - dx, y - dy) for x, y in accepted_p0_mask}
+    outside = {
+        (x, y)
+        for x, y in unshifted
+        if not (
+            0 <= x < HIGH_RES_FRAME_WIDTH
+            and 0 <= y < HIGH_RES_FRAME_HEIGHT
+        )
+    }
+    if outside:
+        first = min(outside, key=lambda point: (point[1], point[0]))
+        raise RasterContractError(
+            f"{label}: inverse locked output offset would discard accepted P0 "
+            f"pixel {first}"
+        )
+    native = Image.new("1", IMAGEGEN_OUTPUT_CANVAS, 1)
+    pixels = native.load()
+    for x, y in unshifted:
+        pixels[x, y] = 0
+    left, top, right, bottom = transform.crop_rect
+    enlarged = native.convert("RGB").resize(
+        (right - left, bottom - top), Image.Resampling.NEAREST
+    )
+    reference = Image.new(
+        "RGB", transform.source_canvas, transform.alpha_background
+    )
+    reference.paste(enlarged, (left, top))
+    return reference
+
+
+def _independent_box_axis_weights(
+    source_length: int, output_length: int, output_index: int
+) -> tuple[tuple[int, int], ...]:
+    """Return exact source-pixel overlap numerators without Pillow resampling."""
+
+    start = output_index * source_length
+    end = (output_index + 1) * source_length
+    first = start // output_length
+    last = (end + output_length - 1) // output_length
+    return tuple(
+        (
+            source_index,
+            min(end, (source_index + 1) * output_length)
+            - max(start, source_index * output_length),
+        )
+        for source_index in range(first, last)
+        if min(end, (source_index + 1) * output_length)
+        > max(start, source_index * output_length)
+    )
+
+
+def _independent_native_grid_box_mask(
+    reference: Image.Image,
+    transform: ImageGenImportTransform,
+    coverage_per_mille: int,
+    *,
+    label: str,
+) -> set[tuple[int, int]]:
+    """Classify exact RGB black/white cells with rational BOX area weights."""
+
+    crop = reference.crop(transform.crop_rect)
+    crop_width, crop_height = crop.size
+    source_pixels = crop.load()
+    x_weights = tuple(
+        _independent_box_axis_weights(
+            crop_width, HIGH_RES_FRAME_WIDTH, output_x
+        )
+        for output_x in range(HIGH_RES_FRAME_WIDTH)
+    )
+    y_weights = tuple(
+        _independent_box_axis_weights(
+            crop_height, HIGH_RES_FRAME_HEIGHT, output_y
+        )
+        for output_y in range(HIGH_RES_FRAME_HEIGHT)
+    )
+    total_weight = crop_width * crop_height
+    unshifted: set[tuple[int, int]] = set()
+    for output_y, rows in enumerate(y_weights):
+        for output_x, columns in enumerate(x_weights):
+            black_weight = sum(
+                x_weight * y_weight
+                for source_y, y_weight in rows
+                for source_x, x_weight in columns
+                if source_pixels[source_x, source_y] == (0, 0, 0)
+            )
+            if black_weight * 1000 >= total_weight * coverage_per_mille:
+                unshifted.add((output_x, output_y))
+    dx, dy = transform.output_offset
+    shifted = {(x + dx, y + dy) for x, y in unshifted}
+    outside = {
+        (x, y)
+        for x, y in shifted
+        if not (
+            0 <= x < HIGH_RES_FRAME_WIDTH
+            and 0 <= y < HIGH_RES_FRAME_HEIGHT
+        )
+    }
+    if outside:
+        first = min(outside, key=lambda point: (point[1], point[0]))
+        raise RasterContractError(
+            f"{label}: independent BOX proof clips output pixel {first}"
+        )
+    return shifted
+
+
+def validate_native_grid_conditioning_reference(
+    species_dir: Path,
+    species: str,
+    role: str,
+    reference: NativeGridConditioningReference,
+    transform: ImageGenImportTransform,
+    accepted_p0: HighResFrame,
+) -> dict[str, object]:
+    """Authenticate one prompt-only Image 3 and two exact BOX round trips."""
+
+    label = f"{species}/{role}/native-grid-reference"
+    expected_p0_hash = hashlib.sha256(accepted_p0.packed).hexdigest()
+    if (
+        reference.p0_packed_sha256 != expected_p0_hash
+        or reference.roundtrip_packed_sha256 != expected_p0_hash
+        or reference.transform_sha256
+        != imagegen_import_transform_sha256(transform)
+    ):
+        raise RasterContractError(
+            f"{label}: P0 or transform provenance drifted"
+        )
+    path = species_dir / reference.grid_relative_path
+    if not path.is_file() or sha256_file(path) != reference.grid_png_sha256:
+        raise RasterContractError(
+            f"{label}: native-grid PNG is missing or its SHA-256 drifted"
+        )
+    with Image.open(path) as opened:
+        if (
+            opened.format != "PNG"
+            or opened.mode != "RGB"
+            or opened.size != IMAGEGEN_RECOMMENDED_SOURCE_CANVAS
+        ):
+            raise RasterContractError(
+                f"{label}: Image 3 must be an exact RGB 1122x1402 PNG"
+            )
+        candidate = opened.copy()
+    colors = set(_flat_image_values(candidate))
+    if not colors or not colors <= {(0, 0, 0), (255, 255, 255)}:
+        raise RasterContractError(
+            f"{label}: Image 3 must contain only opaque black and white pixels"
+        )
+    expected = native_grid_reference_image(
+        accepted_p0.mask, transform, label=label
+    )
+    if candidate.tobytes() != expected.tobytes():
+        raise RasterContractError(
+            f"{label}: Image 3 is not the exact nearest native-grid projection; "
+            "blur, shifts, fitting, and manual pixels are forbidden"
+        )
+    canonical_mask = _import_imagegen_mask(
+        path, transform, f"{label}/canonical-BOX", require_floor=False
+    )
+    nominal = _independent_native_grid_box_mask(
+        candidate,
+        transform,
+        transform.black_coverage_threshold_per_mille,
+        label=f"{label}/independent-BOX",
+    )
+    low = _independent_native_grid_box_mask(
+        candidate,
+        transform,
+        max(
+            0,
+            transform.black_coverage_threshold_per_mille
+            - IMAGEGEN_COVERAGE_STABILITY_PER_MILLE,
+        ),
+        label=f"{label}/independent-BOX-low",
+    )
+    high = _independent_native_grid_box_mask(
+        candidate,
+        transform,
+        min(
+            1000,
+            transform.black_coverage_threshold_per_mille
+            + IMAGEGEN_COVERAGE_STABILITY_PER_MILLE,
+        ),
+        label=f"{label}/independent-BOX-high",
+    )
+    accepted_mask = set(accepted_p0.mask)
+    if (
+        canonical_mask != accepted_mask
+        or nominal != accepted_mask
+        or low != accepted_mask
+        or high != accepted_mask
+    ):
+        raise RasterContractError(
+            f"{label}: canonical or independent BOX round trip differs from "
+            "the exact accepted P0"
+        )
+    canonical_hash = hashlib.sha256(
+        high_res_frame_bytes(canonical_mask)
+    ).hexdigest()
+    independent_hash = hashlib.sha256(
+        high_res_frame_bytes(nominal)
+    ).hexdigest()
+    if canonical_hash != expected_p0_hash or independent_hash != expected_p0_hash:
+        raise RasterContractError(
+            f"{label}: BOX round-trip packed hash differs from accepted P0"
+        )
+    return {
+        "derivation": reference.derivation,
+        "grid_png_sha256": reference.grid_png_sha256,
+        "grid_relative_path": reference.grid_relative_path,
+        "canonical_roundtrip_packed_sha256": canonical_hash,
+        "canonical_independent_xor_pixels": len(canonical_mask ^ nominal),
+        "independent_roundtrip_packed_sha256": independent_hash,
+        "independent_threshold_sensitive_pixels_plus_minus_20": len(low ^ high),
+        "p0_packed_sha256": expected_p0_hash,
+        "transform_sha256": reference.transform_sha256,
+    }
 
 
 def register_generated_candidate(
@@ -3370,10 +3891,19 @@ def validate_generated_action_semantic_role(
     identity_source_sha256: str,
     identity_frame_sha256: str,
     source_layout: str,
+    transform_sha256: str | None = None,
+    semantic_schema: str = GENERATED_ACTION_SEMANTIC_SCHEMA,
 ) -> dict[str, object]:
-    """Prove bounded composition, two-reference lineage, and local motion."""
+    """Prove bounded composition, truthful reference lineage, and local motion."""
 
     label = f"{species}/{role.name}"
+    if semantic_schema not in {
+        LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA,
+        GENERATED_ACTION_SEMANTIC_SCHEMA,
+    }:
+        raise RasterContractError(
+            f"{label}: unsupported generated semantic evidence schema"
+        )
     if semantic.role != role.name:
         raise RasterContractError(f"{label}: semantic action role drifted")
     expected_baseline_policy = GENERATED_ROLE_BASELINE_POLICY[role.name]
@@ -3493,6 +4023,38 @@ def validate_generated_action_semantic_role(
         raise RasterContractError(
             f"{label}/0: no-call identity baseline is not an exact source, "
             "imported, registered, and final identity copy"
+        )
+    native_grid_references = [
+        phase.native_grid_reference
+        for phase in semantic.phases[1:]
+        if phase.native_grid_reference is not None
+    ]
+    if native_grid_references and len(set(native_grid_references)) != 1:
+        raise RasterContractError(
+            f"{label}: all Image 3 phases must reuse one exact immutable "
+            "role-P0 native-grid reference"
+        )
+    if (
+        semantic_schema == LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+        and native_grid_references
+    ):
+        raise RasterContractError(
+            f"{label}: semantic-v3 cannot claim Image 3 or three-reference "
+            "lineage"
+        )
+    if native_grid_references and (
+        not identity_baseline_copy
+        or semantic.role_registration.derivation
+        != "identity-anchored-zero-offset"
+        or semantic.role_registration.output_offset != (0, 0)
+        or p0_asset.source_sha256 != identity_source_sha256
+        or p0_asset.imported_candidate_frame_sha256 != identity_frame_sha256
+        or p0_asset.registered_candidate_frame_sha256 != identity_frame_sha256
+        or role_pose_hash != identity_frame_sha256
+    ):
+        raise RasterContractError(
+            f"{label}: Image 3 v1 requires a zero-registration byte-exact "
+            "identity-copy P0"
         )
     if abs(base.median_x(role_pose_mask) - base.median_x(identity_mask)) > 4.0:
         raise RasterContractError(
@@ -3639,6 +4201,40 @@ def validate_generated_action_semantic_role(
         strict=True,
     ):
         phase_label = f"{label}/{frame.phase}"
+        expected_reference_modes = (
+            {P0_GENERATION_REFERENCE_MODE}
+            if frame.phase == 0
+            else {
+                TWO_REFERENCE_GENERATION_MODE,
+                THREE_REFERENCE_GENERATION_MODE,
+            }
+        )
+        if phase_lock.generation_reference_mode not in expected_reference_modes:
+            raise RasterContractError(
+                f"{phase_label}: generation-reference mode is invalid for this "
+                "phase"
+            )
+        native_grid_reference = phase_lock.native_grid_reference
+        if frame.phase == 0 and native_grid_reference is not None:
+            raise RasterContractError(
+                f"{phase_label}: role P0 cannot use Image 3"
+            )
+        if (
+            phase_lock.generation_reference_mode
+            == TWO_REFERENCE_GENERATION_MODE
+            and native_grid_reference is not None
+        ):
+            raise RasterContractError(
+                f"{phase_label}: two-reference phase cannot claim Image 3"
+            )
+        if (
+            phase_lock.generation_reference_mode
+            == THREE_REFERENCE_GENERATION_MODE
+            and native_grid_reference is None
+        ):
+            raise RasterContractError(
+                f"{phase_label}: three-reference phase is missing Image 3"
+            )
         reference = phase_lock.identity_reference
         if (
             reference.kind != "immutable-approved-identity-source"
@@ -3817,6 +4413,30 @@ def validate_generated_action_semantic_role(
                 raise RasterContractError(
                     f"{phase_label}: P1/P2/P3 do not share the same immutable P0"
                 )
+        if native_grid_reference is not None and (
+            native_grid_reference.schema != NATIVE_GRID_REFERENCE_SCHEMA
+            or native_grid_reference.kind != NATIVE_GRID_REFERENCE_KIND
+            or native_grid_reference.image_number != 3
+            or native_grid_reference.read_only is not True
+            or native_grid_reference.edit_target is not False
+            or native_grid_reference.source_relative_path
+            != f"{role.name}/00.png"
+            or native_grid_reference.source_png_sha256
+            != semantic.phases[0].generated_asset.source_sha256
+            or native_grid_reference.grid_relative_path
+            != f"{NATIVE_GRID_REFERENCE_DIRECTORY}/{role.name}/00.png"
+            or native_grid_reference.p0_packed_sha256 != role_pose_hash
+            or native_grid_reference.roundtrip_packed_sha256 != role_pose_hash
+            or native_grid_reference.role_registration_sha256
+            != semantic.role_registration_sha256
+            or native_grid_reference.transform_sha256 != transform_sha256
+            or native_grid_reference.derivation
+            != NATIVE_GRID_REFERENCE_DERIVATION
+        ):
+            raise RasterContractError(
+                f"{phase_label}: Image 3 is not the exact read-only projection "
+                "of this role's immutable accepted P0"
+            )
 
         preauthorization = phase_lock.preauthorization_reference
         expected_preauthorization_path = (
@@ -3961,60 +4581,66 @@ def validate_generated_action_semantic_role(
                 )
 
         frame_masks.append(frame_mask)
-        phase_evidence.append(
-            {
-                "phase": frame.phase,
-                "semantic_baseline": expected_semantic_baseline,
-                "semantic_baseline_frame_sha256": (
-                    identity_frame_sha256
-                    if expected_semantic_baseline
-                    in {"approved-identity", "approved-identity-pose-gate"}
-                    else semantic.role_pose_baseline_frame_sha256
-                ),
-                "changed_from_semantic_baseline_pixels": len(delta),
-                "outside_allowed_change_pixels": len(outside),
-                "allowed_change_mask_sha256": (
-                    phase_lock.allowed_change_region.packed_sha256
-                ),
-                "preauthorization_source_sha256": (
-                    phase_lock.preauthorization_reference.source_sha256
-                ),
-                "preauthorization_storyboard_sha256": (
-                    phase_lock.preauthorization_reference.storyboard_sha256
-                ),
-                "frozen_region_mask_sha256": [
-                    frozen.region.packed_sha256
-                    for frozen in phase_lock.frozen_regions
-                ],
-                "identity_reference_source_sha256": reference.source_sha256,
-                "edit_target_kind": target.kind,
-                "edit_target_relative_path": target.relative_path,
-                "edit_target_source_sha256": target.source_sha256,
-                "edit_target_registered_frame_sha256": (
-                    target.registered_frame_sha256
-                ),
-                "edit_target_accepted_composited_frame_sha256": (
-                    target.accepted_composited_frame_sha256
-                ),
-                "generated_source_sha256": asset.source_sha256,
-                "generated_asset_layout": asset.layout,
-                "imported_candidate_frame_sha256": imported_candidate_hash,
-                "registered_candidate_frame_sha256": registered_candidate_hash,
-                "composition_mode": phase_lock.composition_mode,
-                "composition_baseline_frame_sha256": composition_baseline_hash,
-                "composited_frame_sha256": hashlib.sha256(
-                    frame.packed
-                ).hexdigest(),
-                "discarded_candidate_outside_mask_pixels": len(
-                    discarded_candidate_outside
-                ),
-                "candidate_inside_mask_pixels": len(
-                    set(registered_candidate.mask) & allowed
-                ),
-                "contact_policy": semantic.contact_policy,
-                "floor_contact_changed_pixels": len(floor_changes),
-            }
-        )
+        phase_record: dict[str, object] = {
+            "phase": frame.phase,
+            "semantic_baseline": expected_semantic_baseline,
+            "semantic_baseline_frame_sha256": (
+                identity_frame_sha256
+                if expected_semantic_baseline
+                in {"approved-identity", "approved-identity-pose-gate"}
+                else semantic.role_pose_baseline_frame_sha256
+            ),
+            "changed_from_semantic_baseline_pixels": len(delta),
+            "outside_allowed_change_pixels": len(outside),
+            "allowed_change_mask_sha256": (
+                phase_lock.allowed_change_region.packed_sha256
+            ),
+            "preauthorization_source_sha256": (
+                phase_lock.preauthorization_reference.source_sha256
+            ),
+            "preauthorization_storyboard_sha256": (
+                phase_lock.preauthorization_reference.storyboard_sha256
+            ),
+            "frozen_region_mask_sha256": [
+                frozen.region.packed_sha256
+                for frozen in phase_lock.frozen_regions
+            ],
+            "identity_reference_source_sha256": reference.source_sha256,
+            "edit_target_kind": target.kind,
+            "edit_target_relative_path": target.relative_path,
+            "edit_target_source_sha256": target.source_sha256,
+            "edit_target_registered_frame_sha256": (
+                target.registered_frame_sha256
+            ),
+            "edit_target_accepted_composited_frame_sha256": (
+                target.accepted_composited_frame_sha256
+            ),
+            "generated_source_sha256": asset.source_sha256,
+            "generated_asset_layout": asset.layout,
+            "imported_candidate_frame_sha256": imported_candidate_hash,
+            "registered_candidate_frame_sha256": registered_candidate_hash,
+            "composition_mode": phase_lock.composition_mode,
+            "composition_baseline_frame_sha256": composition_baseline_hash,
+            "composited_frame_sha256": hashlib.sha256(frame.packed).hexdigest(),
+            "discarded_candidate_outside_mask_pixels": len(
+                discarded_candidate_outside
+            ),
+            "candidate_inside_mask_pixels": len(
+                set(registered_candidate.mask) & allowed
+            ),
+            "contact_policy": semantic.contact_policy,
+            "floor_contact_changed_pixels": len(floor_changes),
+        }
+        if semantic_schema == GENERATED_ACTION_SEMANTIC_SCHEMA:
+            phase_record["generation_reference_mode"] = (
+                phase_lock.generation_reference_mode
+            )
+            phase_record["native_grid_reference"] = (
+                None
+                if native_grid_reference is None
+                else _native_grid_reference_record(native_grid_reference)
+            )
+        phase_evidence.append(phase_record)
 
     motion_union: set[tuple[int, int]] = set()
     landmark_evidence: list[dict[str, object]] = []
@@ -4087,7 +4713,7 @@ def validate_generated_action_semantic_role(
             )
 
     return {
-        "schema": GENERATED_ACTION_SEMANTIC_SCHEMA,
+        "schema": semantic_schema,
         "role": role.name,
         "baseline_policy": semantic.baseline_policy,
         "contact_policy": semantic.contact_policy,
@@ -4120,7 +4746,12 @@ def _require_generated_semantic_contract_roles(
     roles: tuple[base.RoleSpec, ...],
 ) -> dict[str, GeneratedRoleSemanticLock]:
     contract = lock.action_semantic_contract
-    if contract.schema != GENERATED_ACTION_SEMANTIC_SCHEMA:
+    expected_schema = (
+        LEGACY_GENERATED_ACTION_SEMANTIC_SCHEMA
+        if lock.schema == LEGACY_IMAGEGEN_IMPORT_LOCK_SCHEMA
+        else GENERATED_ACTION_SEMANTIC_SCHEMA
+    )
+    if contract.schema != expected_schema:
         raise RasterContractError(
             f"{species}: unsafe or missing generated action semantic contract"
         )
@@ -4782,7 +5413,7 @@ def load_high_res_generated_species(
     lock: ImageGenImportLock,
     roles: tuple[base.RoleSpec, ...] = base.ROLE_SPECS,
 ) -> HighResSpeciesRaster:
-    """Validate v4 independent edits through deterministic bounded composition."""
+    """Validate v4/v5 edits through deterministic bounded composition."""
 
     if species in PROTECTED_STARTERS:
         raise RasterContractError(
@@ -4800,6 +5431,20 @@ def load_high_res_generated_species(
     semantic_by_role = _require_generated_semantic_contract_roles(
         species, lock, roles
     )
+    native_grid_by_role: dict[str, NativeGridConditioningReference] = {}
+    for role in roles:
+        references = [
+            phase.native_grid_reference
+            for phase in semantic_by_role[role.name].phases[1:]
+            if phase.native_grid_reference is not None
+        ]
+        if references:
+            if len(set(references)) != 1:
+                raise RasterContractError(
+                    f"{species}/{role.name}: Image 3 phases do not share one "
+                    "immutable native-grid reference"
+                )
+            native_grid_by_role[role.name] = references[0]
 
     species_dir = source_dir / species
     expected_top = {
@@ -4808,6 +5453,8 @@ def load_high_res_generated_species(
         "preauthorization",
         *(role.name for role in roles),
     }
+    if native_grid_by_role:
+        expected_top.add(NATIVE_GRID_REFERENCE_DIRECTORY)
     actual_top = {path.name for path in species_dir.iterdir()}
     if actual_top != expected_top:
         raise RasterContractError(
@@ -4817,6 +5464,25 @@ def load_high_res_generated_species(
         )
     if any(not (species_dir / role.name).is_dir() for role in roles):
         raise RasterContractError(f"{species}: every animation must be a directory")
+    if native_grid_by_role:
+        native_grid_dir = species_dir / NATIVE_GRID_REFERENCE_DIRECTORY
+        if not native_grid_dir.is_dir():
+            raise RasterContractError(
+                f"{species}: referenced native-grid Image 3 tree is missing"
+            )
+        actual_native_grid_roles = {
+            path.name for path in native_grid_dir.iterdir()
+        }
+        if actual_native_grid_roles != set(native_grid_by_role) or any(
+            not (native_grid_dir / role / "00.png").is_file()
+            or {path.name for path in (native_grid_dir / role).iterdir()}
+            != {"00.png"}
+            for role in native_grid_by_role
+        ):
+            raise RasterContractError(
+                f"{species}: native-grid Image 3 files differ from exact phase "
+                "references; missing or orphan references are forbidden"
+            )
     preauthorization_dir = species_dir / "preauthorization"
     if not preauthorization_dir.is_dir():
         raise RasterContractError(
@@ -4962,7 +5628,7 @@ def load_high_res_generated_species(
                 )
             )
         validate_high_res_four_frame_role(role, role_frames)
-        semantic_evidence[role.name] = validate_generated_action_semantic_role(
+        role_evidence = validate_generated_action_semantic_role(
             species,
             identity,
             role,
@@ -4973,7 +5639,24 @@ def load_high_res_generated_species(
             identity_source_sha256=lock.identity_source_sha256,
             identity_frame_sha256=lock.identity_frame_sha256,
             source_layout="independent-frame",
+            transform_sha256=lock.transform_sha256,
+            semantic_schema=lock.action_semantic_contract.schema,
         )
+        native_grid_reference = native_grid_by_role.get(role.name)
+        if native_grid_reference is not None:
+            reference_evidence = validate_native_grid_conditioning_reference(
+                species_dir,
+                species,
+                role.name,
+                native_grid_reference,
+                lock.transform,
+                role_frames[0],
+            )
+            source_hashes[native_grid_reference.grid_relative_path] = (
+                native_grid_reference.grid_png_sha256
+            )
+            role_evidence["native_grid_reference_proof"] = reference_evidence
+        semantic_evidence[role.name] = role_evidence
         frames.extend(role_frames)
 
     freeze_source_dir = preauthorization_dir / "_frozen-source"
@@ -5029,9 +5712,9 @@ def load_high_res_generated_action_sheet_species(
     lock: ImageGenImportLock,
     roles: tuple[base.RoleSpec, ...] = base.ROLE_SPECS,
 ) -> HighResSpeciesRaster:
-    """Reject legacy sheets: v4 requires one independently pinned raw per phase."""
+    """Reject legacy sheets: v4/v5 requires one pinned raw per phase."""
 
     raise RasterContractError(
-        f"{species}: ImageGen import v4 forbids one-action sheets because they "
+        f"{species}: ImageGen import v4/v5 forbids one-action sheets because they "
         "cannot prove independent star edits from one immutable role P0"
     )

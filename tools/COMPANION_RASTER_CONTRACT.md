@@ -88,7 +88,14 @@ preauthorization for every role and phase:
     idle/00.json ... 03.json   # frozen before each generation call
     ...
     evolve/00.json ... 03.json
+  native-grid-reference/       # present only for truthfully recorded Image 3 use
+    idle/00.png                # one immutable role-P0 projection, never a frame
 ```
+
+The `native-grid-reference` tree is optional as a capability, but exact when
+used. It contains exactly one `00.png` for each role with at least one later
+phase that records Image 3, and no directory for any other role. A missing,
+extra, or orphan reference fails the source-tree and source-snapshot checks.
 
 Each preauthorization uses
 `kitsu-wild-generated-phase-preauthorization-v2` and pins the frozen
@@ -100,7 +107,7 @@ derive, expand, or explain its own permission mask.
 
 There is one fail-closed migration exception for a role phase 0 that was
 already generated under a hash-pinned pre-call freeze which declared an exact
-inclusive native rectangle but did not serialize the 640-byte mask. Its v4
+inclusive native rectangle but did not serialize the 640-byte mask. Its v4/v5
 wrapper uses
 `mask_authoring_basis=hash-pinned-pre-generation-native-rectangle-migration`
 and an exact `rectangle_migration` record with:
@@ -124,7 +131,7 @@ hash-listed; neither an unpinned inheritance claim nor a role-specific
 rectangle invented after generation is accepted.
 
 The loader authenticates those original bytes, requires their identity-source
-and storyboard hashes to match the v4 lock, requires
+and storyboard hashes to match the v4/v5 lock, requires
 `status=frozen-before-p0-generation`, identity as the edit target, and
 `generated_source_count_at_freeze=0`, and then mechanically materializes the
 declared inclusive rectangle. The result must equal both the wrapper's exact
@@ -137,23 +144,33 @@ missing, drifted, extra, or orphan freeze records fail the build. A legacy
 freeze that already embeds an exact native mask uses the ordinary path, not
 this rectangle-only migration.
 
-ImageGen import v4 explicitly rejects one-action sheets and all other
+ImageGen import v4 and v5 explicitly reject one-action sheets and all other
 multi-phase generated assets. A sheet cannot prove that phases 1, 2, and 3
 were independently edited from the same immutable phase-0 action base; a
 visually coherent sheet is still invalid provenance. The old sheet parsing
-helpers remain diagnostic/legacy utilities only and have no v4 builder path.
+helpers remain diagnostic/legacy utilities only and have no v4/v5 builder path.
 
 ## Image-generation workflow
 
 ImageGen is used for one identity or one phase at a time. Cat, Dog, and Fox may
 be supplied only as immutable style and line-economy references; a real animal
-reference should supply anatomy. Every generated phase receives two explicit
-references: Image 1 is the immutable approved species identity/anatomy source,
-and Image 2 is the immutable edit target. For every role, phase 0 targets the
-identity. After phase 0 is accepted and hash-frozen, phases 1, 2, and 3 each
-independently target that same accepted phase 0, including Idle, Blink, and
-Listen. Phase 1 is never an input to phase 2, and no phase may target phase 2
-or phase 3.
+reference should supply anatomy. Every generated call has Image 1 as the
+immutable approved species identity/anatomy source and Image 2 as the immutable
+edit target. For every role, phase 0 uses exactly those two references and
+targets identity. After phase 0 is accepted and hash-frozen, phases 1, 2, and 3
+each independently target that same accepted phase 0 as Image 2, including
+Idle, Blink, and Listen. Phase 1 is never an input to phase 2, and no phase may
+target phase 2 or phase 3.
+
+Audited v4 records remain truthful two-reference provenance and are still valid.
+The additive v5 schema records each call's exact reference mode. A later phase
+may remain `two-reference-same-p0-star-v1`, or it may use
+`three-reference-same-p0-native-grid-star-v1` and supply Image 3 as a read-only
+native-grid conditioning reference. Mixed later-phase modes are permitted only
+because each phase states what was actually supplied. A two-reference phase
+must store `native_grid_reference=null`; a three-reference phase must store the
+complete Image 3 record. Nothing may retroactively claim that an older call
+used Image 3.
 
 A phase 0 that is intentionally the unchanged identity needs no ImageGen call,
 including identity-anchored Idle, Blink, or Listen. It is represented
@@ -167,6 +184,30 @@ phases 1..3 cannot use it. Later role phases still receive Image 1 as the
 immutable identity and Image 2 as `<role>/00.png`, the byte-identical immutable
 P0 star base. This avoids asking ImageGen to redraw a base pose that is meant to
 remain unchanged while preserving the same two-reference lineage.
+
+Image 3 v1 is deliberately restricted to this exact-copy, zero-registration
+case. Its record uses
+`kitsu-wild-native-grid-conditioning-reference-v1`, pins Image number 3 as
+read-only and not an edit target, and pins all of the following:
+
+- the immutable raw P0 path `<role>/00.png` and its PNG SHA-256;
+- `native-grid-reference/<role>/00.png` and its PNG SHA-256;
+- the accepted P0's exact 640-byte packed SHA-256 and the identical round-trip
+  SHA-256;
+- the complete import-transform SHA-256 and exact zero-registration SHA-256;
+- derivation `inverse-locked-output-offset-nearest-native-grid-v1`.
+
+Construction inverses only the locked identity output offset, rejects any
+pixel that would leave 64x80, renders the unshifted exact P0 black-on-white,
+enlarges 64x80 to the locked 1120x1400 crop with `NEAREST`, and restores the
+one-pixel white border on an opaque RGB 1122x1402 canvas. The loader requires
+the complete RGB pixel buffer to equal that reconstruction, then proves both
+the canonical Pillow `BOX` import and a separate rational-area BOX classifier
+return the exact accepted P0 bytes, zero canonical/independent XOR pixels, and
+zero ±20-threshold-sensitive pixels.
+Image 3 affects prompting only; composition never consumes it. A generated,
+nonzero-registered, or distinct/composited P0 cannot use Image 3 v1 and remains
+valid under truthful two-reference lineage.
 
 For that exact-copy layout only, identity-to-role-P0 landmark evidence compares
 the identity landmark region against the same coordinates in P0. The verifier
@@ -265,24 +306,27 @@ approval and requires a new visual review.
 
 ## ImageGen import lock
 
-Generated RGB/RGBA source uses a distinct hard-break v4 lock. Version 4 adds
-pre-generation mask provenance, two-reference edit-target lineage, imported
-and registered candidate hashes, deterministic bounded-composition baselines
-and results, plus one optional-nonzero role-level registration record. Versions
-1, 2, and 3 are invalid release inputs: none can prove that global ImageGen
-redraw outside a local semantic permission was excluded byte-exactly, and v3
-does not represent an action-specific role-P0 edit target. Mechanical approval
-is not acceptance of the artwork, action GIFs, pack, publication, or device
-installation.
+Generated RGB/RGBA source uses the audited v4 lock for exact two-reference
+calls or the additive v5 lock for explicit per-phase two-/three-reference
+provenance. Version 4 added pre-generation mask provenance, two-reference
+edit-target lineage, imported and registered candidate hashes, deterministic
+bounded-composition baselines and results, plus one optional-nonzero role-level
+registration record. Version 5 retains every v4 gate and adds an exact
+`generation_reference_mode` plus nullable `native_grid_reference` to each
+phase. Versions 1, 2, and 3 are invalid release inputs: none can prove that
+global ImageGen redraw outside a local semantic permission was excluded
+byte-exactly, and v3 does not represent an action-specific role-P0 edit target.
+Mechanical approval is not acceptance of the artwork, action GIFs, pack,
+publication, or device installation.
 
 ```json
 {
-  "schema": "kitsu-wild-imagegen-import-lock-v4",
+  "schema": "kitsu-wild-imagegen-import-lock-v5",
   "identities": [
     {
       "approved": true,
       "action_semantic_contract": {
-        "schema": "kitsu-wild-generated-action-semantic-locality-v3",
+        "schema": "kitsu-wild-generated-action-semantic-locality-v4",
         "roles": ["<twelve complete canonical role records>"]
       },
       "action_semantic_contract_sha256": "<lowercase SHA-256 of canonical action_semantic_contract JSON>",
@@ -307,9 +351,9 @@ installation.
 ```
 
 The transform's `action_output_offset` is retained as an exact legacy-reserved
-field so old transform records cannot be ambiguously reinterpreted; v4
-independent-frame import does not consume it. New v4 records set it equal to
-the identity `output_offset`. Registration is represented only by each role's
+field so old transform records cannot be ambiguously reinterpreted; v4/v5
+independent-frame import does not consume it. New records set it equal to the
+identity `output_offset`. Registration is represented only by each role's
 separate hash-pinned `role_registration` record.
 
 Every role record contains one `role_registration`, its SHA-256, and four phase
@@ -319,7 +363,13 @@ For every role phase 0, the edit target is identity. For every role phase 1..3,
 including Idle, Blink, and Listen, it is exactly `<role>/00.png`, with the raw
 P0 source hash, registered-candidate packed hash, and accepted-composited P0
 packed hash. All three must share the same values. F1 can never become F2's
-input, and no phase can reference P2 or P3.
+input, and no phase can reference P2 or P3. Semantic-v3/v4 serialization
+remains distinct: a v4 lock's semantic-v3 bytes are parsed as implicit truthful
+two-reference calls and serialize back to the same exact shape and hash.
+Semantic-v4 never omits its explicit mode/null fields.
+Conversely, semantic-v3 evidence retains its exact old phase shape: adding even
+truthful-looking v5-only mode or null-reference fields is rejected rather than
+retroactively relabeling an audited call.
 
 Idle, Blink, and Listen are `identity-anchored`: phase 0 composes against the
 approved standing identity; phases 1..3 compose against that accepted P0; all
@@ -375,6 +425,8 @@ immutable role-pose baseline.
 
 Each phase pins all of the following:
 
+- its truthful reference mode; P0 must be two-reference identity-edit, and a
+  later three-reference phase must pin the one shared role Image 3 record;
 - generated raw path and source SHA-256;
 - imported-candidate and registered-candidate 640-byte packed SHA-256 values;
 - immutable identity and edit-target source/packed hashes;
@@ -407,15 +459,18 @@ phases. Four packed-frame hashes that differ only through scattered head, tail,
 paw, or background noise—and off-role noise hiding a one-pixel landmark
 shimmer—do not constitute an animation.
 
-The private release manifest is
-`kitsu-wild-pack-private-release-v6`. It repeats the complete transform and
-hash, semantic-v3 contract and hash, preauthorization-v2 and registration-v1
-schemas, raw identity and imported identity hashes, every preauthorization and
-raw action source hash, every imported/registered/baseline/final packed hash,
-role registrations, and fixed scales. ImageGen imports record
+New private builds use `kitsu-wild-pack-private-release-v7`. It repeats the
+complete transform and hash, accepted semantic-v3/v4 contract and hash,
+preauthorization-v2 and registration-v1 schemas, truthful reference modes,
+raw identity and imported identity hashes, every preauthorization, raw action,
+and referenced Image 3 source hash, every imported/registered/baseline/final
+packed hash, role registrations, and fixed scales. Already-audited v6 manifests
+and v4 locks remain accepted under their exact old two-reference shape; they
+cannot contain or imply Image 3. ImageGen imports record
 `identity_raster_scale=action_cell_raster_scale=64/1120`; the only permitted
 generated source layout is one independent full-canvas file per phase. The
-portrait synchronizer revalidates the star lineage and all of these hashes
+portrait synchronizer revalidates the star lineage, reference-mode truthfulness,
+canonical and independent Image 3 proof when present, and all of these hashes
 before it will consume even the separately authored catalog portraits.
 
 The importer rejects more than 55% mid-tone source ink or excessive coverage
@@ -467,6 +522,15 @@ The format-v2 validator rejects the complete build when any of these occur:
 - a phase omits the immutable identity reference; a role P0 does not target
   identity; any role phase 1..3 does not target the same accepted P0; or
   P1/P2/P3 forms a chain;
+- a v4 phase is relabeled as three-reference; a v5 mode contradicts Image 3
+  presence; P0 claims Image 3; Image 3 names another phase/P0/transform/
+  registration; later Image 3 phases do not reuse one exact record; or its
+  source-tree file is missing, drifted, extra, or orphaned;
+- Image 3 is not exact RGB 1122x1402 black/white nearest-grid pixels, inverse
+  offset loses a P0 pixel, its canonical or independent BOX round trip differs
+  from P0, their XOR or threshold sensitivity is nonzero, the transform is not
+  the exact 1122x1402/1120x1400/64x80 projection transform, or the role is not
+  an exact-copy zero-registration P0;
 - a preauthorization was not frozen before generation, contains dynamic fields,
   changes its storyboard/target/mask hash, or differs from the semantic lock;
 - a deterministic composite differs from baseline outside its mask or from the
@@ -485,7 +549,8 @@ The format-v2 validator rejects the complete build when any of these occur:
 
 Mechanical gates cannot prove that a ferret looks like a ferret or that `meet`
 reads as a greeting. Final acceptance must bind a human-reviewed 1x/8x contact
-sheet, every action GIF, all fifty source PNG hashes (identity, portrait, and
-forty-eight phases), all forty-eight preauthorization JSON hashes, and the exact
-pack SHA-256. Every role must be explicitly accepted; passing metrics alone
-never authorizes integration or publication.
+sheet, every action GIF, all canonical source PNG hashes (identity, portrait,
+forty-eight phases, and every referenced Image 3), all forty-eight
+preauthorization JSON hashes, and the exact pack SHA-256. Every role must be
+explicitly accepted; passing metrics alone never authorizes integration or
+publication.
