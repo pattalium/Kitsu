@@ -91,7 +91,7 @@ preauthorization for every role and phase:
 ```
 
 Each preauthorization uses
-`kitsu-wild-generated-phase-preauthorization-v1` and pins the frozen
+`kitsu-wild-generated-phase-preauthorization-v2` and pins the frozen
 storyboard SHA-256, edit-target kind, and exact native 64x80 allowed-change
 mask. The file must declare `frozen_before_generation=true` and
 `mask_authoring_basis=frozen-storyboard-native-region-before-generation`.
@@ -149,11 +149,11 @@ ImageGen is used for one identity or one phase at a time. Cat, Dog, and Fox may
 be supplied only as immutable style and line-economy references; a real animal
 reference should supply anatomy. Every generated phase receives two explicit
 references: Image 1 is the immutable approved species identity/anatomy source,
-and Image 2 is the immutable edit target. For Idle, Blink, and Listen, the edit
-target is also the approved identity. For every other role, phase 0 targets the
-identity; after phase 0 is accepted and hash-frozen, phases 1, 2, and 3 each
-independently target that same phase 0. Phase 1 is never an input to phase 2,
-and no phase may target phase 2 or phase 3.
+and Image 2 is the immutable edit target. For every role, phase 0 targets the
+identity. After phase 0 is accepted and hash-frozen, phases 1, 2, and 3 each
+independently target that same accepted phase 0, including Idle, Blink, and
+Listen. Phase 1 is never an input to phase 2, and no phase may target phase 2
+or phase 3.
 
 A role-base phase 0 that is intentionally the unchanged identity needs no
 ImageGen call. It is represented explicitly as
@@ -183,8 +183,8 @@ the identity and reused byte-for-byte for all forty-eight frames:
    four candidates. `dy` is exactly `77 - unregistered_P0_floor`; `dx` is
    explicitly approved and root-alignment checked; both are bounded to
    `[-4, 4]`, and no phase can override either value;
-8. choose the immutable composition baseline: identity for identity-anchored
-   phases and every role phase 0, otherwise the accepted composited role P0;
+8. choose the immutable composition baseline: identity for every role phase 0,
+   and the accepted composited role P0 for every phase 1, 2, and 3;
 9. build the release frame exactly as `(baseline - allowed_mask) |
    (registered_candidate & allowed_mask)`;
 10. prove byte-exact baseline pixels outside the mask and candidate pixels
@@ -270,7 +270,7 @@ installation.
     {
       "approved": true,
       "action_semantic_contract": {
-        "schema": "kitsu-wild-generated-action-semantic-locality-v2",
+        "schema": "kitsu-wild-generated-action-semantic-locality-v3",
         "roles": ["<twelve complete canonical role records>"]
       },
       "action_semantic_contract_sha256": "<lowercase SHA-256 of canonical action_semantic_contract JSON>",
@@ -303,15 +303,16 @@ separate hash-pinned `role_registration` record.
 Every role record contains one `role_registration`, its SHA-256, and four phase
 records in canonical order. Every phase pins both references supplied to
 ImageGen: the immutable `identity.png` reference and the immutable edit target.
-For identity-anchored roles and every role phase 0, the edit target is identity.
-For role phases 1..3, it is exactly `<role>/00.png`, with the raw P0 source hash,
-registered-candidate packed hash, and accepted-composited P0 packed hash. All
-three must share the same values. F1 can never become F2's input, and no phase
-can reference P2 or P3.
+For every role phase 0, the edit target is identity. For every role phase 1..3,
+including Idle, Blink, and Listen, it is exactly `<role>/00.png`, with the raw
+P0 source hash, registered-candidate packed hash, and accepted-composited P0
+packed hash. All three must share the same values. F1 can never become F2's
+input, and no phase can reference P2 or P3.
 
-Idle, Blink, and Listen are `identity-anchored`: every phase composes against
-the approved standing identity and requires
-`identity-anchored-zero-offset=[0,0]`. All other roles are
+Idle, Blink, and Listen are `identity-anchored`: phase 0 composes against the
+approved standing identity; phases 1..3 compose against that accepted P0; all
+four remain validated against the identity's protected landmarks and planted
+contacts and require `identity-anchored-zero-offset=[0,0]`. All other roles are
 `immutable-role-phase-0`: phase 0 is independently generated from identity,
 composed against identity through its pre-frozen role-pose mask, then accepted
 and hash-frozen. Phases 1..3 are independent edits of that P0 and compose
@@ -395,8 +396,8 @@ paw, or background noise—and off-role noise hiding a one-pixel landmark
 shimmer—do not constitute an animation.
 
 The private release manifest is
-`kitsu-wild-pack-private-release-v5`. It repeats the complete transform and
-hash, semantic-v2 contract and hash, preauthorization-v1 and registration-v1
+`kitsu-wild-pack-private-release-v6`. It repeats the complete transform and
+hash, semantic-v3 contract and hash, preauthorization-v2 and registration-v1
 schemas, raw identity and imported identity hashes, every preauthorization and
 raw action source hash, every imported/registered/baseline/final packed hash,
 role registrations, and fixed scales. ImageGen imports record
@@ -451,9 +452,9 @@ The format-v2 validator rejects the complete build when any of these occur:
   debris outside the primary subject;
 - any phase is byte-identical to another phase, an adjacent pair changes fewer
   than four native pixels, or the complete action changes fewer than sixteen;
-- a phase omits the immutable identity reference; an identity-anchored phase or
-  role P0 does not target identity; a role phase 1..3 does not target the same
-  accepted P0; or P1/P2/P3 forms a chain;
+- a phase omits the immutable identity reference; a role P0 does not target
+  identity; any role phase 1..3 does not target the same accepted P0; or
+  P1/P2/P3 forms a chain;
 - a preauthorization was not frozen before generation, contains dynamic fields,
   changes its storyboard/target/mask hash, or differs from the semantic lock;
 - a deterministic composite differs from baseline outside its mask or from the

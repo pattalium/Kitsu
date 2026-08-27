@@ -65,7 +65,7 @@ WILD_FRAME_HEIGHT = 80
 WILD_FRAME_BYTES = WILD_FRAME_WIDTH * WILD_FRAME_HEIGHT // 8
 WILD_FLOOR_Y = 77
 WILD_PACK_REVISION = 3
-PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v5"
+PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
 DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
 IMAGEGEN_RASTER_TRANSFORM = (
     "rgba-over-white-box-area-fixed-role-registration-bounded-native-composite-v1"
@@ -668,7 +668,7 @@ def main() -> int:
                 "immutable_edit_target_reference_per_generated_phase": True,
                 "edit_target_reference_image_number": 2,
                 "generated_phase_chaining": False,
-                "identity_anchored_role_uses_identity_edit_target": True,
+                "identity_anchored_later_phases_use_role_p0_edit_target": True,
                 "role_phase_0_generation_target": "approved-identity",
                 "role_phase_0_exact_identity_baseline_copy_without_generation": (
                     True

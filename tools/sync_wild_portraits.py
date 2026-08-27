@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v5"
+MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v6"
 EXPECTED_CREATURES = 21
 PORTRAIT_WIDTH = 16
 PORTRAIT_HEIGHT = 18
@@ -29,10 +29,10 @@ PORTRAIT_STORAGE = "XBM least-significant-bit first, two bytes per row"
 DIRECT_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
 IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v4"
 GENERATED_ACTION_SEMANTIC_SCHEMA = (
-    "kitsu-wild-generated-action-semantic-locality-v2"
+    "kitsu-wild-generated-action-semantic-locality-v3"
 )
 GENERATED_PHASE_PREAUTHORIZATION_SCHEMA = (
-    "kitsu-wild-generated-phase-preauthorization-v1"
+    "kitsu-wild-generated-phase-preauthorization-v2"
 )
 GENERATED_ROLE_REGISTRATION_SCHEMA = (
     "kitsu-wild-generated-role-registration-v1"
@@ -78,7 +78,7 @@ REQUIRED_ANIMATION_CONTRACT_VALUES = {
     "immutable_edit_target_reference_per_generated_phase": True,
     "edit_target_reference_image_number": 2,
     "generated_phase_chaining": False,
-    "identity_anchored_role_uses_identity_edit_target": True,
+    "identity_anchored_later_phases_use_role_p0_edit_target": True,
     "role_phase_0_generation_target": "approved-identity",
     "role_phase_0_exact_identity_baseline_copy_without_generation": True,
     "identity_baseline_copy_requires_byte_exact_source_and_zero_registration": (
@@ -161,14 +161,14 @@ def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
         manifest.get("raster_contract"), "raster_contract"
     )
     if raster_contract != EXPECTED_RASTER_CONTRACT:
-        raise ValueError("manifest raster_contract is not the fail-closed v5 contract")
+        raise ValueError("manifest raster_contract is not the fail-closed v6 contract")
     animation_contract = require_mapping(
         manifest.get("animation_contract"), "animation_contract"
     )
     for field, expected in REQUIRED_ANIMATION_CONTRACT_VALUES.items():
         if animation_contract.get(field) != expected:
             raise ValueError(
-                f"manifest animation_contract.{field} is not fail-closed v5"
+                f"manifest animation_contract.{field} is not fail-closed v6"
             )
     if manifest.get("identity_lock_schema") not in {
         DIRECT_LOCK_SCHEMA,
@@ -558,7 +558,7 @@ def require_generated_semantic_evidence(
                 f"{label}.phases[{phase_index}] generated asset layout drifted"
             )
 
-        identity_target = expected_baseline == "identity-anchored" or phase_index == 0
+        identity_target = phase_index == 0
         expected_baseline_hash = (
             identity_frame_hash if identity_target else p0_final_hash
         )

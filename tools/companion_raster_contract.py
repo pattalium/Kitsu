@@ -30,10 +30,10 @@ IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v1"
 HIGH_RES_IDENTITY_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
 IMAGEGEN_IMPORT_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v4"
 GENERATED_ACTION_SEMANTIC_SCHEMA = (
-    "kitsu-wild-generated-action-semantic-locality-v2"
+    "kitsu-wild-generated-action-semantic-locality-v3"
 )
 GENERATED_PHASE_PREAUTHORIZATION_SCHEMA = (
-    "kitsu-wild-generated-phase-preauthorization-v1"
+    "kitsu-wild-generated-phase-preauthorization-v2"
 )
 GENERATED_PREAUTHORIZATION_NATIVE_MASK_BASIS = (
     "frozen-storyboard-native-region-before-generation"
@@ -1439,8 +1439,8 @@ def _parse_generated_asset(
     )
 
 
-def _expected_edit_target_kind(baseline_policy: str, phase: int) -> str:
-    if baseline_policy == "identity-anchored" or phase == 0:
+def _expected_edit_target_kind(_baseline_policy: str, phase: int) -> str:
+    if phase == 0:
         return "immutable-approved-identity-source"
     return "immutable-accepted-role-phase-0"
 
@@ -1471,10 +1471,6 @@ def _parse_edit_target_reference(
         )
     expected_kind = _expected_edit_target_kind(baseline_policy, phase)
     if raw["kind"] != expected_kind:
-        if baseline_policy == "identity-anchored":
-            raise RasterContractError(
-                f"{label}: identity-anchored role cannot use a role-P0 edit target"
-            )
         if phase == 0:
             raise RasterContractError(
                 f"{label}: immutable role phase 0 must target the approved identity"
@@ -1662,13 +1658,13 @@ def _parse_phase_semantic(
             f"{label}: production out-of-region budget must be exactly zero"
         )
     expected_baseline = (
-        "approved-identity"
-        if baseline_policy == "identity-anchored"
-        else (
-            "approved-identity-pose-gate"
-            if phase == 0
-            else "immutable-role-phase-0"
+        (
+            "approved-identity"
+            if baseline_policy == "identity-anchored"
+            else "approved-identity-pose-gate"
         )
+        if phase == 0
+        else "immutable-role-phase-0"
     )
     if raw["semantic_baseline"] != expected_baseline:
         raise RasterContractError(
@@ -2035,7 +2031,7 @@ def _parse_generated_action_semantic_contract(
         for phase_lock in phases:
             expected_composition_baseline = (
                 identity_frame_sha256
-                if baseline_policy == "identity-anchored" or phase_lock.phase == 0
+                if phase_lock.phase == 0
                 else baseline_frame_hash
             )
             if (
@@ -2046,10 +2042,7 @@ def _parse_generated_action_semantic_contract(
                     f"{identity_key}/{role}/{phase_lock.phase}: composition "
                     "baseline hash drifted"
                 )
-            if (
-                baseline_policy == "immutable-role-phase-0"
-                and phase_lock.phase > 0
-            ):
+            if phase_lock.phase > 0:
                 target = phase_lock.edit_target_reference
                 if (
                     target.source_sha256 != p0_asset.source_sha256
@@ -3632,18 +3625,19 @@ def validate_generated_action_semantic_role(
             )
 
         expected_semantic_baseline = (
-            "approved-identity"
-            if semantic.baseline_policy == "identity-anchored"
-            else (
-                "approved-identity-pose-gate"
-                if frame.phase == 0
-                else "immutable-role-phase-0"
+            (
+                "approved-identity"
+                if semantic.baseline_policy == "identity-anchored"
+                else "approved-identity-pose-gate"
             )
+            if frame.phase == 0
+            else "immutable-role-phase-0"
         )
         if phase_lock.semantic_baseline != expected_semantic_baseline:
             raise RasterContractError(
-                f"{phase_label}: semantic baseline drifted; phase 0 is never a "
-                "generation reference"
+                f"{phase_label}: semantic baseline drifted; phase 0 alone targets "
+                "identity and every later phase independently targets the same "
+                "accepted phase 0"
             )
         semantic_baseline = (
             identity_mask
@@ -3715,7 +3709,7 @@ def validate_generated_action_semantic_role(
         frame_mask = set(frame.mask)
         composition_baseline_frame = (
             identity
-            if semantic.baseline_policy == "identity-anchored" or frame.phase == 0
+            if frame.phase == 0
             else frames[0]
         )
         composition_baseline = set(composition_baseline_frame.mask)
@@ -3758,11 +3752,6 @@ def validate_generated_action_semantic_role(
             semantic.baseline_policy, frame.phase
         )
         if target.kind != expected_target_kind:
-            if semantic.baseline_policy == "identity-anchored":
-                raise RasterContractError(
-                    f"{phase_label}: identity-anchored role cannot use a role-P0 "
-                    "edit target"
-                )
             if frame.phase == 0:
                 raise RasterContractError(
                     f"{phase_label}: immutable role phase 0 must target the "
@@ -4933,7 +4922,7 @@ def load_high_res_generated_species(
         for phase, registered_candidate in enumerate(registered_candidates):
             baseline = (
                 identity
-                if semantic_role.baseline_policy == "identity-anchored" or phase == 0
+                if phase == 0
                 else role_frames[0]
             )
             role_frames.append(

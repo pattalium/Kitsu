@@ -165,7 +165,14 @@ def make_semantic_role(
 ) -> contract.GeneratedRoleSemanticLock:
     identity_mask = set(identity.mask)
     deltas = [identity_mask ^ set(frame.mask) for frame in frames]
-    allowed = deltas if allowed_regions is None else allowed_regions
+    requested_allowed = deltas if allowed_regions is None else allowed_regions
+    allowed = [
+        set(requested_allowed[0]),
+        *(
+            set(requested_allowed[phase]) | deltas[0]
+            for phase in range(1, 4)
+        ),
+    ]
     if motion_region is None:
         motion_region = set().union(*deltas)
     candidates = frames if imported_candidates is None else imported_candidates
@@ -183,16 +190,31 @@ def make_semantic_role(
     protected_head = contract.native_region_mask_lock(
         {(x, y) for y in range(28, 36) for x in range(24, 40)}
     )
-    target = identity_edit_target("red_panda", identity)
+    identity_target = identity_edit_target("red_panda", identity)
+    p0_target = contract.ImmutableEditTargetReference(
+        kind="immutable-accepted-role-phase-0",
+        relative_path="idle/00.png",
+        identity_key="red_panda",
+        role="idle",
+        phase=0,
+        source_sha256=candidates[0].source_sha256,
+        registered_frame_sha256=frame_sha256(candidates[0]),
+        accepted_composited_frame_sha256=frame_sha256(frames[0]),
+    )
     phases: list[contract.GeneratedPhaseSemanticLock] = []
     for phase, (frame, candidate) in enumerate(
         zip(frames, candidates, strict=True)
     ):
         allowed_lock = contract.native_region_mask_lock(allowed[phase])
+        target = identity_target if phase == 0 else p0_target
         phases.append(
             contract.GeneratedPhaseSemanticLock(
                 phase=phase,
-                semantic_baseline="approved-identity",
+                semantic_baseline=(
+                    "approved-identity"
+                    if phase == 0
+                    else "immutable-role-phase-0"
+                ),
                 identity_reference=reference,
                 edit_target_reference=target,
                 preauthorization_reference=phase_preauthorization(
@@ -207,7 +229,11 @@ def make_semantic_role(
                 ),
                 allowed_change_region=allowed_lock,
                 composition_mode=contract.GENERATED_COMPOSITION_MODE,
-                composition_baseline_frame_sha256=identity_frame_sha256,
+                composition_baseline_frame_sha256=(
+                    identity_frame_sha256
+                    if phase == 0
+                    else frame_sha256(frames[0])
+                ),
                 composited_frame_sha256=frame_sha256(frame),
                 maximum_out_of_region_changed_pixels=0,
                 frozen_regions=(
@@ -981,24 +1007,11 @@ class GeneratedActionSemanticLocalityTests(unittest.TestCase):
         idle_phases = list(idle_semantic.phases)
         idle_phases[1] = replace(
             idle_phases[1],
-            edit_target_reference=contract.ImmutableEditTargetReference(
-                kind="immutable-accepted-role-phase-0",
-                relative_path="idle/00.png",
-                identity_key="red_panda",
-                role="idle",
-                phase=0,
-                source_sha256=idle_phases[0].generated_asset.source_sha256,
-                registered_frame_sha256=(
-                    idle_phases[0].generated_asset.registered_candidate_frame_sha256
-                ),
-                accepted_composited_frame_sha256=(
-                    idle_phases[0].composited_frame_sha256
-                ),
-            ),
+            edit_target_reference=identity_edit_target("red_panda", identity),
         )
         with self.assertRaisesRegex(
             contract.RasterContractError,
-            r"identity-anchored role cannot use a role-P0 edit target",
+            r"phases 1\.\.3 must target the same immutable role phase 0",
         ):
             validate(
                 identity,

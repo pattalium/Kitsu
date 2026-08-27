@@ -249,7 +249,7 @@ def make_test_generated_semantic_contract(
     for phase, candidate in enumerate(registered_candidates):
         baseline = (
             identity
-            if baseline_policy == "identity-anchored" or phase == 0
+            if phase == 0
             else final_frames[0]
         )
         delta = set(baseline.mask) ^ set(candidate.mask)
@@ -310,7 +310,7 @@ def make_test_generated_semantic_contract(
     ):
         semantic_baseline = (
             identity_mask
-            if baseline_policy == "identity-anchored" or phase == 0
+            if phase == 0
             else role_pose_mask
         )
         changed = semantic_baseline ^ frame_mask
@@ -320,7 +320,7 @@ def make_test_generated_semantic_contract(
         motion.update(motion_baseline ^ frame_mask)
         edit_target_kind = (
             "immutable-approved-identity-source"
-            if baseline_policy == "identity-anchored" or phase == 0
+            if phase == 0
             else "immutable-accepted-role-phase-0"
         )
         if edit_target_kind == "immutable-approved-identity-source":
@@ -379,20 +379,20 @@ def make_test_generated_semantic_contract(
         )
         composition_baseline = (
             identity
-            if baseline_policy == "identity-anchored" or phase == 0
+            if phase == 0
             else final_frames[0]
         )
         phase_locks.append(
             contract.GeneratedPhaseSemanticLock(
                 phase=phase,
                 semantic_baseline=(
-                    "approved-identity"
-                    if baseline_policy == "identity-anchored"
-                    else (
-                        "approved-identity-pose-gate"
-                        if phase == 0
-                        else "immutable-role-phase-0"
+                    (
+                        "approved-identity"
+                        if baseline_policy == "identity-anchored"
+                        else "approved-identity-pose-gate"
                     )
+                    if phase == 0
+                    else "immutable-role-phase-0"
                 ),
                 identity_reference=reference,
                 edit_target_reference=edit_target,
@@ -863,7 +863,7 @@ class CompanionRasterContractTests(unittest.TestCase):
             "non_destructive_build": False,
             "raster_contract": {},
         }
-        with self.assertRaisesRegex(ValueError, r"schema must be .*v5"):
+        with self.assertRaisesRegex(ValueError, r"schema must be .*v6"):
             portrait_sync.require_fail_closed_manifest(legacy)
 
     def test_portrait_sync_requires_exact_source_snapshot_provenance(self) -> None:
