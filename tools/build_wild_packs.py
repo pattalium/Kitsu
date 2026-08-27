@@ -4,9 +4,11 @@
 Every creature owns one approved canonical identity image, an independently
 authored exact 16x18 portrait, and four independent frames for each of twelve
 actions. Direct sources must already be exact one-bit 64x80 release rasters.
-ImageGen sources may use one manifest-pinned identity transform for the entire
-creature; the same crop, BOX-area reduction, threshold, and fixed offset are
-then applied to every action frame without per-frame fitting or cleanup.
+ImageGen sources use one manifest-pinned identity transform for the entire
+creature, one pre-frozen native change mask per phase, and deterministic
+baseline-outside/candidate-inside composition. Role-base phases 1..3 are
+independent edits of the same accepted phase 0; no phase is chained from a
+previous generated edit and no per-frame fitting or cleanup exists.
 
 Action art, serialized frames, GIFs, contact sheets, manifests containing frame
 hashes, and pack bytes are private release inputs. The tool refuses to read or
@@ -63,14 +65,10 @@ WILD_FRAME_HEIGHT = 80
 WILD_FRAME_BYTES = WILD_FRAME_WIDTH * WILD_FRAME_HEIGHT // 8
 WILD_FLOOR_Y = 77
 WILD_PACK_REVISION = 3
-PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v4"
+PRIVATE_MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v5"
 DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
 IMAGEGEN_RASTER_TRANSFORM = (
-    "rgba-over-white-box-area-black-coverage-then-fixed-offset"
-)
-IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM = (
-    "rgba-over-white-fixed-action-sheet-cells-box-area-black-coverage-"
-    "then-fixed-offset"
+    "rgba-over-white-box-area-fixed-role-registration-bounded-native-composite-v1"
 )
 TRANSFORM_CONTROLS = {
     "auto_fit": False,
@@ -128,8 +126,8 @@ def load_release_identity_locks(
         )
     raise ValueError(
         "identity lock must use the exact format-v2 direct-target or "
-        "ImageGen import schema; legacy v1 locks are forbidden, and unsafe "
-        "ImageGen v2 action locks are forbidden"
+        "ImageGen import schema; legacy v1 locks and unsafe ImageGen v2/v3 "
+        "action locks are forbidden"
     )
 
 
@@ -190,8 +188,8 @@ def build_species(
                 f"{species}: ImageGen build requires an ImageGen import lock"
             )
         # Independent full-canvas frames use output_offset for identity and
-        # actions alike. The action-sheet-only calibration field may therefore
-        # equal it without claiming a second, unused viewport.
+        # actions alike. The legacy-reserved action_output_offset field is
+        # hash-bound but never consumed by the v4 builder.
         raster = raster_contract.load_high_res_generated_species(
             source_dir, species, identity_lock
         )
@@ -223,52 +221,10 @@ def build_species(
             "transform_sha256": identity_lock.transform_sha256,
         }
     elif source_kind == "imagegen-one-action-sheets":
-        if not isinstance(identity_lock, raster_contract.ImageGenImportLock):
-            raise ValueError(
-                f"{species}: ImageGen action sheets require an ImageGen import lock"
-            )
-        if (
-            identity_lock.transform.action_output_offset
-            == identity_lock.transform.output_offset
-        ):
-            raise ValueError(
-                f"{species}: action-sheet output offset must be explicitly pinned "
-                "and distinct from the identity output offset"
-            )
-        raster = raster_contract.load_high_res_generated_action_sheet_species(
-            source_dir, species, identity_lock
+        raise ValueError(
+            f"{species}: ImageGen import v4 forbids one-action sheets; four "
+            "independent full-canvas phase edits are required"
         )
-        raster_transform = IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
-        crop_width = (
-            identity_lock.transform.crop_rect[2]
-            - identity_lock.transform.crop_rect[0]
-        )
-        identity_raster_scale = WILD_FRAME_WIDTH / crop_width
-        action_cell_raster_scale = WILD_FRAME_WIDTH / 560
-        action_source_layout = (
-            raster_contract.imagegen_action_sheet_layout_record()
-        )
-        action_source_layout_sha256 = (
-            raster_contract.imagegen_action_sheet_layout_sha256()
-        )
-        action_output_offset = list(identity_lock.transform.action_output_offset)
-        lock_record = {
-            "schema": raster_contract.IMAGEGEN_IMPORT_LOCK_SCHEMA,
-            "action_semantic_contract": (
-                raster_contract.generated_action_semantic_contract_record(
-                    identity_lock.action_semantic_contract
-                )
-            ),
-            "action_semantic_contract_sha256": (
-                identity_lock.action_semantic_contract_sha256
-            ),
-            "identity_source_sha256": identity_lock.identity_source_sha256,
-            "identity_frame_sha256": identity_lock.identity_frame_sha256,
-            "transform": raster_contract.imagegen_import_transform_record(
-                identity_lock.transform
-            ),
-            "transform_sha256": identity_lock.transform_sha256,
-        }
     else:
         raise ValueError(f"{species}: unsupported private source kind {source_kind!r}")
 
@@ -321,21 +277,10 @@ def build_species(
             ],
             "frame_sha256": hashes,
         }
-        if source_kind == "imagegen-one-action-sheets":
-            role_record["action_source_sha256"] = raster.source_sha256[
-                f"{role.name}.png"
-            ]
-            role_record["source_region_sha256"] = [
-                frame.source_sha256 for frame in role_rasters
-            ]
-        else:
-            role_record["source_sha256"] = [
-                frame.source_sha256 for frame in role_rasters
-            ]
-        if source_kind in {
-            "imagegen-locked-import",
-            "imagegen-one-action-sheets",
-        }:
+        role_record["source_sha256"] = [
+            frame.source_sha256 for frame in role_rasters
+        ]
+        if source_kind == "imagegen-locked-import":
             if raster.generated_semantic_evidence is None:
                 raise ValueError(
                     f"{species}/{role.name}: generated semantic evidence is missing"
@@ -532,7 +477,7 @@ def snapshot_species_sources(
     species: str,
     expected_hashes: dict[str, str],
 ) -> dict[str, str]:
-    """Copy original PNG bytes into the private staged result without overwrite."""
+    """Copy every hash-pinned source/preauthorization byte without overwrite."""
 
     destination_dir = staging_output / "source-snapshot" / species
     destination_dir.mkdir(parents=True, exist_ok=False)
@@ -583,7 +528,7 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help=(
             "Private kitsu-wild-identity-lock-v2 direct-target file or "
-            "kitsu-wild-imagegen-import-lock-v3 file. The two schemas are "
+            "kitsu-wild-imagegen-import-lock-v4 file. The two schemas are "
             "distinct and are never reinterpreted."
         ),
     )
@@ -598,8 +543,9 @@ def parse_args() -> argparse.Namespace:
         choices=("independent-frames", "one-action-sheets"),
         default="independent-frames",
         help=(
-            "Explicit ImageGen source tree: four independent files per action "
-            "or one canonical four-cell sheet per action. Never auto-detected."
+            "Explicit ImageGen source tree. v4 accepts four independent "
+            "full-canvas files per action; the legacy sheet choice is retained "
+            "only so it can fail with an explicit migration diagnostic."
         ),
     )
     parser.add_argument(
@@ -630,13 +576,10 @@ def main() -> int:
     source_kind, identity_lock_schema, identity_locks = (
         load_release_identity_locks(identity_lock_path, selected)
     )
-    if source_kind == "imagegen-locked-import":
-        if args.imagegen_source_layout == "one-action-sheets":
-            source_kind = "imagegen-one-action-sheets"
-    elif args.imagegen_source_layout != "independent-frames":
+    if args.imagegen_source_layout == "one-action-sheets":
         raise ValueError(
-            "--imagegen-source-layout one-action-sheets requires an "
-            "ImageGen import lock"
+            "ImageGen import v4 forbids one-action sheets; author four "
+            "independent full-canvas edits with frozen per-phase masks"
         )
     private_output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -702,7 +645,6 @@ def main() -> int:
                 "allowed_pack_transforms": [
                     DIRECT_RASTER_TRANSFORM,
                     IMAGEGEN_RASTER_TRANSFORM,
-                    IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM,
                 ],
                 **TRANSFORM_CONTROLS,
                 "source_snapshots": True,
@@ -716,15 +658,28 @@ def main() -> int:
                 "required_changed_pixels_per_role": 16,
                 "source_asset_layouts": [
                     "one-independent-file-per-phase",
-                    "one-fixed-four-cell-sheet-per-action",
                 ],
                 "independent_final_frame_per_phase": True,
                 "generated_action_semantic_schema": (
                     raster_contract.GENERATED_ACTION_SEMANTIC_SCHEMA
                 ),
                 "immutable_identity_reference_per_generated_phase": True,
+                "identity_reference_image_number": 1,
+                "immutable_edit_target_reference_per_generated_phase": True,
+                "edit_target_reference_image_number": 2,
                 "generated_phase_chaining": False,
-                "role_phase_0_is_generation_reference": False,
+                "identity_anchored_role_uses_identity_edit_target": True,
+                "role_phase_0_generation_target": "approved-identity",
+                "role_phase_0_exact_identity_baseline_copy_without_generation": (
+                    True
+                ),
+                "identity_baseline_copy_requires_byte_exact_source_and_zero_registration": (
+                    True
+                ),
+                "role_phase_1_to_3_generation_target": (
+                    "same-immutable-accepted-role-phase-0"
+                ),
+                "role_phase_0_is_generation_reference_for_role_phases_1_to_3": True,
                 "role_baseline_policy": dict(
                     raster_contract.GENERATED_ROLE_BASELINE_POLICY
                 ),
@@ -737,7 +692,21 @@ def main() -> int:
                         raster_contract.GENERATED_ROLE_CONTACT_POLICY_CAPABILITIES.items()
                     )
                 },
+                "preauthorization_schema": (
+                    raster_contract.GENERATED_PHASE_PREAUTHORIZATION_SCHEMA
+                ),
+                "phase_mask_frozen_before_generation": True,
                 "exact_allowed_change_masks": True,
+                "bounded_composition_mode": (
+                    raster_contract.GENERATED_COMPOSITION_MODE
+                ),
+                "role_registration_schema": (
+                    raster_contract.GENERATED_ROLE_REGISTRATION_SCHEMA
+                ),
+                "maximum_absolute_role_output_offset_pixels": (
+                    raster_contract.GENERATED_ROLE_OUTPUT_OFFSET_MAXIMUM
+                ),
+                "per_phase_registration_override": False,
                 "production_out_of_region_pixel_budget": 0,
                 "zero_tolerance_frozen_contact_and_anatomy_masks": True,
                 "role_motion_landmark_proof": True,

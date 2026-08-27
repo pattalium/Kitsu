@@ -73,109 +73,140 @@ grayscale, flatten alpha, quantize a palette, resize, crop, pad, translate,
 clean, sharpen, or delete components. Its fixed production raster scale is
 exactly `1.0` for every frame of every action.
 
-The separately locked ImageGen import path uses the same directory layout, but
-`identity.png` and the forty-eight action PNGs are RGB/RGBA files sharing the
-exact identity source canvas. The exact 16x18 portrait is still authored
-separately. The two paths have different lock schemas and cannot be silently
-reinterpreted as one another.
-
-## One-action four-phase ImageGen source layout
-
-When four separate ImageGen calls cannot preserve one action's camera and
-identity, one generated **source file per named action** may hold that action's
-four phases. This is not a twelve-action mega-sheet. `idle.png` contains only
-idle phases 0..3, `blink.png` contains only blink phases 0..3, and so on. The
-source selector must explicitly choose `one-action-sheets`; the builder must
-not guess from the tree or reinterpret independent-frame input.
+The separately locked ImageGen import path uses one independent full-canvas
+RGB/RGBA file per phase. It also requires a separately frozen JSON
+preauthorization for every role and phase:
 
 ```text
 <private-source>/ferret/
   identity.png                 # exact locked 1122x1402 RGB/RGBA identity
-  portrait.png                 # exact 16x18, mode 1, separately authored
-  idle.png                     # exact 1122x1402 RGB/RGBA, idle phases only
-  blink.png                    # exact 1122x1402 RGB/RGBA, blink phases only
-  pet.png
-  sleep.png
-  listen.png
-  surprise.png
-  play.png
-  tired.png
-  feed.png
-  wake.png
-  meet.png
-  evolve.png
+  portrait.png                 # exact 16x18 mode-1 portrait
+  idle/00.png ... 03.png       # independent full-canvas ImageGen sources
+  ...
+  evolve/00.png ... 03.png
+  preauthorization/
+    idle/00.json ... 03.json   # frozen before each generation call
+    ...
+    evolve/00.json ... 03.json
 ```
 
-The canonical `kitsu-imagegen-action-sheet-2x2-v1` layout is byte-exact:
+Each preauthorization uses
+`kitsu-wild-generated-phase-preauthorization-v1` and pins the frozen
+storyboard SHA-256, edit-target kind, and exact native 64x80 allowed-change
+mask. The file must declare `frozen_before_generation=true` and
+`mask_authoring_basis=frozen-storyboard-native-region-before-generation`.
+Unexpected fields are forbidden so a generated candidate cannot be used to
+derive, expand, or explain its own permission mask.
 
-```text
-source canvas: 1122x1402
-phase 0: (0,   0,   560,  700)   phase 1: (562, 0,   1122, 700)
-phase 2: (0,   702, 560,  1402)  phase 3: (562, 702, 1122, 1402)
-vertical gutter:   (560, 0,   562, 1402)
-horizontal gutter: (0,   700, 1122, 702)
-```
+There is one fail-closed migration exception for a role phase 0 that was
+already generated under a hash-pinned pre-call freeze which declared an exact
+inclusive native rectangle but did not serialize the 640-byte mask. Its v4
+wrapper uses
+`mask_authoring_basis=hash-pinned-pre-generation-native-rectangle-migration`
+and an exact `rectangle_migration` record with:
 
-Each phase viewport is exactly 560x700, or 4:5. The full two-pixel cross
-gutter and the two source pixels along every cell's outer edge must be white.
-Ink there means a divider, label, cross-cell drawing, or clipped subject and
-rejects the complete action. Each fixed viewport is extracted by coordinate;
-the importer never locates the subject, adjusts a viewport, or uses a bounding
-box. The resulting cell is composited over white, BOX area sampled to 64x80,
-tested at the identity's single coverage threshold, and moved by the separately
-locked `action_output_offset`. That action offset is repeated unchanged for
-every action and all four cells. It is never inherited from the identity's
-differently scaled viewport. There is no per-cell crop, fit, resize policy,
-translation, threshold tuning, cleanup, morphology, or component deletion.
+- `freeze_record_relative_path`, which must be
+  `preauthorization/_frozen-source/<freeze SHA-256>.json`;
+- the same `freeze_record_sha256`, the frozen record's schema, role `phase=0`,
+  and the fixed source field
+  `roles[].preauthorized_role_pose_region`.
 
-The canonical layout record and its SHA-256 are release provenance. The record
-pins the source canvas, phase order, four viewports, both gutters, two-pixel
-cell-edge guards, fixed extraction, and every forbidden per-cell control. A
-one-pixel change creates a different hash and fails the build. The current
-canonical layout hash is
-`7ce76bf5a00170641374b0b964e085f39e1aea7e51ad2dc0f019f27b9146552e`.
+A hash-pinned addendum that listed additional P0 roles before their calls may
+chain to that original rectangle freeze. Its migration record additionally
+pins `base_freeze_record_relative_path`, `base_freeze_record_sha256`, and
+`base_freeze_record_schema`, and uses the fixed field
+`base_freeze.roles[].preauthorized_role_pose_region`. The addendum must name
+the same base hash, identity, storyboard, identity edit target, exact bounded
+registration policy, and selected role with zero raw sources at freeze time.
+The base record must authenticate one identical safe rectangle across all of
+its listed roles. Both original JSON files are content-addressed, copied, and
+hash-listed; neither an unpinned inheritance claim nor a role-specific
+rectangle invented after generation is accepted.
 
-Import is all-or-nothing. The validator reads one sheet once, validates all
-four raw cells and final masks in memory, and returns no phases if one cell
-fails. It performs no extraction writes. A builder may stage output only after
-all selected actions pass, so a shifted or oversized late cell cannot leave a
-partial accepted action or species.
+The loader authenticates those original bytes, requires their identity-source
+and storyboard hashes to match the v4 lock, requires
+`status=frozen-before-p0-generation`, identity as the edit target, and
+`generated_source_count_at_freeze=0`, and then mechanically materializes the
+declared inclusive rectangle. The result must equal both the wrapper's exact
+native mask and the semantic lock byte-for-byte. The rectangle must stay in
+the 64x80 safe stage and keep rows 78..79 forbidden. This exception is not
+available to identity-anchored roles or phases 1..3; those phases still require
+their ordinary exact masks frozen before their own calls. Every referenced
+legacy freeze is copied into the source snapshot and hash-listed, while
+missing, drifted, extra, or orphan freeze records fail the build. A legacy
+freeze that already embeds an exact native mask uses the ordinary path, not
+this rectangle-only migration.
+
+ImageGen import v4 explicitly rejects one-action sheets and all other
+multi-phase generated assets. A sheet cannot prove that phases 1, 2, and 3
+were independently edited from the same immutable phase-0 action base; a
+visually coherent sheet is still invalid provenance. The old sheet parsing
+helpers remain diagnostic/legacy utilities only and have no v4 builder path.
 
 ## Image-generation workflow
 
-ImageGen is used one identity or one named action at a time. Cat, Dog, and Fox
-may be supplied only as immutable style and line-economy references; a real
-animal reference should supply anatomy. The approved identity is then pinned
-and reused as the identity reference for all twelve actions.
+ImageGen is used for one identity or one phase at a time. Cat, Dog, and Fox may
+be supplied only as immutable style and line-economy references; a real animal
+reference should supply anatomy. Every generated phase receives two explicit
+references: Image 1 is the immutable approved species identity/anatomy source,
+and Image 2 is the immutable edit target. For Idle, Blink, and Listen, the edit
+target is also the approved identity. For every other role, phase 0 targets the
+identity; after phase 0 is accepted and hash-frozen, phases 1, 2, and 3 each
+independently target that same phase 0. Phase 1 is never an input to phase 2,
+and no phase may target phase 2 or phase 3.
+
+A role-base phase 0 that is intentionally the unchanged identity needs no
+ImageGen call. It is represented explicitly as
+`generated_asset.layout=immutable-identity-baseline-copy`: the role's `00.png`
+must be byte-identical to `identity.png`, its imported, registered, and final
+64x80 hashes must equal the identity frame hash, and its one role registration
+must be exactly zero. The ordinary exact P0 preauthorization and bounded
+composition records remain required. Only role P0 can use this provenance;
+identity-anchored roles and phases 1..3 cannot use it. Later role phases still
+reference `<role>/00.png` as the one immutable P0 star base.
 
 Direct 64x80 art remains preferred. A larger ImageGen result may enter the
 separate importer only through one quality-preserving transform approved from
 the identity and reused byte-for-byte for all forty-eight frames:
 
-1. require the exact locked source canvas for identity and every independent
-   frame or one-action sheet;
-2. composite RGB/RGBA over opaque white;
-3. use an exact centered 4:5 viewport that removes at most a two-pixel proven-
+1. authenticate the phase's pre-generation storyboard and native allowed-
+   change mask before importing its generated candidate;
+2. require the exact locked source canvas for identity and every independent
+   full-canvas phase;
+3. composite RGB/RGBA over opaque white;
+4. use an exact centered 4:5 viewport that removes at most a two-pixel proven-
    white source border—never a subject bounding-box crop;
-4. downsample black coverage with Pillow `BOX` area sampling to 64x80;
-5. apply one identity-stage black-coverage threshold, recorded per mille;
-6. apply one integer identity `output_offset` to the identity and independent-
-   frame viewport, placing the identity near `x=32` with floor `y=77`;
-7. require a separate integer `action_output_offset`, approved against the
-   fixed 560x700 action-cell geometry, and apply it byte-for-byte to every role
-   and phase; no constructor, loader, or builder may supply a default;
-8. validate the exact resulting mask without morphology, cleanup, component
-   deletion, sharpening, per-frame translation, or per-frame threshold tuning.
+5. downsample black coverage with Pillow `BOX` area sampling to 64x80;
+6. apply the one identity-stage black-coverage threshold and identity transform;
+7. for identity-anchored roles, retain exact zero role registration; for a
+   role-base action, apply its one hash-pinned role-level output offset to all
+   four candidates. `dy` is exactly `77 - unregistered_P0_floor`; `dx` is
+   explicitly approved and root-alignment checked; both are bounded to
+   `[-4, 4]`, and no phase can override either value;
+8. choose the immutable composition baseline: identity for identity-anchored
+   phases and every role phase 0, otherwise the accepted composited role P0;
+9. build the release frame exactly as `(baseline - allowed_mask) |
+   (registered_candidate & allowed_mask)`;
+10. prove byte-exact baseline pixels outside the mask and candidate pixels
+    inside the mask, then validate the complete composited frame globally.
 
-The source crop, identity offset, action offset, and coverage threshold may be
-compared only during lock approval. Once selected, all four are included in the
-canonical transform JSON SHA-256. The action offset must pass complete four-
-phase floor, scale, identity, stability, and continuity validation before it is
-locked, then it cannot vary by role or phase. If the fixed transform clips or
-mis-scales another action, reject that action; the importer has no auto-fit
-fallback. BOX coverage is used instead of source-threshold plus nearest-
-neighbor reduction so a clean one-logical-pixel contour survives without
-nearest-sample phase loss.
+The source crop, identity offset, and coverage threshold are included in the
+canonical transform JSON SHA-256. Role registration is a separate hash-pinned
+record because only role P0 may justify it, and that one value is reused for
+P0/P1/P2/P3. If the fixed transform or role registration clips a candidate,
+reject it; the importer has no auto-fit fallback. BOX coverage is used instead
+of source-threshold plus nearest-neighbor reduction so a clean one-logical-
+pixel contour survives without nearest-sample phase loss.
+
+Generated candidates are provenance inputs, not release frames. Exact canvas,
+source-edge safety, and registration clipping are checked globally. Mid-tone
+and coverage-threshold ambiguity is checked only inside the inverse-registered
+preauthorized output region, because candidate pixels outside that region
+cannot enter the release result. Those discarded pixels remain represented in
+the raw-source and imported/registered candidate hashes. The deterministic
+composite then receives all safe-stage, guard-row, debris, scale, identity,
+topology, motion, and continuity checks globally. This is bounded import, not
+post-generation cleanup or manual paint.
 
 Generation and review rules:
 
@@ -222,22 +253,24 @@ approval and requires a new visual review.
 
 ## ImageGen import lock
 
-Generated RGB/RGBA source uses a distinct lock. Version 3 retains the mandatory
-action-cell offset from version 2 and adds a mandatory, hash-bound semantic-
-locality contract for every generated role and phase. Versions 1 and 2 are
-invalid release inputs: version 1 cannot distinguish the 1120x1400 identity
-viewport from a 560x700 action cell, and version 2 can prove geometry but not
-generation lineage or action locality. Mechanical approval is not acceptance
-of the artwork, action GIFs, pack, publication, or device installation.
+Generated RGB/RGBA source uses a distinct hard-break v4 lock. Version 4 adds
+pre-generation mask provenance, two-reference edit-target lineage, imported
+and registered candidate hashes, deterministic bounded-composition baselines
+and results, plus one optional-nonzero role-level registration record. Versions
+1, 2, and 3 are invalid release inputs: none can prove that global ImageGen
+redraw outside a local semantic permission was excluded byte-exactly, and v3
+does not represent an action-specific role-P0 edit target. Mechanical approval
+is not acceptance of the artwork, action GIFs, pack, publication, or device
+installation.
 
 ```json
 {
-  "schema": "kitsu-wild-imagegen-import-lock-v3",
+  "schema": "kitsu-wild-imagegen-import-lock-v4",
   "identities": [
     {
       "approved": true,
       "action_semantic_contract": {
-        "schema": "kitsu-wild-generated-action-semantic-locality-v1",
+        "schema": "kitsu-wild-generated-action-semantic-locality-v2",
         "roles": ["<twelve complete canonical role records>"]
       },
       "action_semantic_contract_sha256": "<lowercase SHA-256 of canonical action_semantic_contract JSON>",
@@ -245,7 +278,7 @@ of the artwork, action GIFs, pack, publication, or device installation.
       "identity_source_sha256": "d3ddf4e7651c8f1e8310feb6b5047e47cb3a550de3264ab567799b8682f88261",
       "identity_frame_sha256": "70cde51efa3500a8d94e6fb6e4379e001e5b8c2a0771e43169dbe1ffde79feeb",
       "transform": {
-        "action_output_offset": [-1, 30],
+        "action_output_offset": [-1, 27],
         "alpha_background": [255, 255, 255],
         "black_coverage_threshold_per_mille": 120,
         "crop_rect": [1, 1, 1121, 1401],
@@ -255,32 +288,47 @@ of the artwork, action GIFs, pack, publication, or device installation.
         "resample_mode": "box-area",
         "source_canvas": [1122, 1402]
       },
-      "transform_sha256": "9337e020aea0a56d8a6a321a2a72c72b1766d9070cce0b7432546caa2e59bbca"
+      "transform_sha256": "<SHA-256 of the exact canonical transform JSON>"
     }
   ]
 }
 ```
 
-Every role record contains four phase records in canonical order. Every phase
-repeats the immutable `identity.png` source hash and imported identity-frame
-hash as its only generation reference. A path or kind naming another generated
-phase is invalid, so F1 can never become the edit/reference input for F2. Role
-phase 0 can be an immutable **validation baseline**, but it is never a generation
-input. Every generated source must attest that it independently referenced the
-approved identity.
+The transform's `action_output_offset` is retained as an exact legacy-reserved
+field so old transform records cannot be ambiguously reinterpreted; v4
+independent-frame import does not consume it. New v4 records set it equal to
+the identity `output_offset`. Registration is represented only by each role's
+separate hash-pinned `role_registration` record.
 
-Idle, Blink, and Listen are `identity-anchored`: every phase's exact allowed-
-change, frozen-contact, protected-landmark, and motion comparison uses the
-approved standing identity. All other roles are `immutable-role-phase-0`:
-phase 0 first passes the ordinary identity Jaccard and scale envelopes plus a
-bounded whole-subject component/topology delta and hash-pinned identity-region
-to role-pose-region landmark gates. Those landmark gates require minimum ink,
-ink-count retention, and bounded local component delta so a pose can rotate or
-lie down without discarding species markings/anatomy. Phase 0's full pose change
-must fit its own exact identity-to-pose allowed region. Phases 1..3 then compare
-locality, frozen anatomy, contacts, and role motion to the exact hash-pinned
-phase-0 raster. This permits a real Sleep pose without permitting head, marking,
-or paw shimmer between Sleep phases.
+Every role record contains one `role_registration`, its SHA-256, and four phase
+records in canonical order. Every phase pins both references supplied to
+ImageGen: the immutable `identity.png` reference and the immutable edit target.
+For identity-anchored roles and every role phase 0, the edit target is identity.
+For role phases 1..3, it is exactly `<role>/00.png`, with the raw P0 source hash,
+registered-candidate packed hash, and accepted-composited P0 packed hash. All
+three must share the same values. F1 can never become F2's input, and no phase
+can reference P2 or P3.
+
+Idle, Blink, and Listen are `identity-anchored`: every phase composes against
+the approved standing identity and requires
+`identity-anchored-zero-offset=[0,0]`. All other roles are
+`immutable-role-phase-0`: phase 0 is independently generated from identity,
+composed against identity through its pre-frozen role-pose mask, then accepted
+and hash-frozen. Phases 1..3 are independent edits of that P0 and compose
+against that exact accepted P0. Phase 0 first passes ordinary identity Jaccard
+and scale envelopes plus a bounded whole-subject component/topology delta and
+hash-pinned identity-region to role-pose-region landmark gates. This permits a
+real Sleep pose without permitting head, marking, or paw shimmer between
+Sleep phases.
+
+Each non-identity role may lock one
+`role-p0-fixed-dx-explicit-dy-floor-derived` registration. Its P0 unregistered
+floor is pinned, `dy` must equal `77 - floor`, and `dx` must preserve identity
+root alignment. Both components are at most four native pixels in magnitude.
+The raw imported and post-registration packed hashes are recorded for every
+phase, and recomputing the same one role offset must reproduce all four
+registered hashes. A per-phase registration field is malformed schema; a
+different registered result is treated as a per-phase override and rejected.
 
 Every role lock explicitly names its per-species contact policy; no policy is
 inferred from a default. The defaults guide storyboarding, while the allowed
@@ -312,11 +360,22 @@ and the zero-tolerance frozen mask must contain every baseline floor contact
 outside that exact per-phase permission. Phase 0 freezes all contacts in the
 immutable role-pose baseline.
 
-Each phase also pins its generated asset path, complete source hash, fixed-
-region hash, exact allowed-change region, and both required zero-tolerance
-frozen-region kinds: `planted-contact` and
-`protected-identity-landmark`. Production out-of-region budget is exactly zero;
-there is no soft exception through which one-pixel shimmer can pass.
+Each phase pins all of the following:
+
+- generated raw path and source SHA-256;
+- imported-candidate and registered-candidate 640-byte packed SHA-256 values;
+- immutable identity and edit-target source/packed hashes;
+- preauthorization path, file SHA-256, storyboard SHA-256, edit-target kind,
+  and exact allowed-change-mask SHA-256;
+- composition mode, baseline packed SHA-256, and final composited packed
+  SHA-256;
+- both required zero-tolerance frozen-region kinds: `planted-contact` and
+  `protected-identity-landmark`.
+
+The final raster is recomputed from those exact values. Baseline pixels outside
+the mask and candidate pixels inside the mask must both compare byte-exactly.
+Production out-of-region budget remains exactly zero; global candidate redraw
+does not consume a budget because it is never copied into the final raster.
 
 Regions use `kitsu-native-region-mask-64x80-v1`: exactly 640 row-major,
 least-significant-bit-first bytes represented as lowercase hexadecimal, plus
@@ -335,25 +394,23 @@ phases. Four packed-frame hashes that differ only through scattered head, tail,
 paw, or background noise—and off-role noise hiding a one-pixel landmark
 shimmer—do not constitute an animation.
 
-The manifest repeats the complete transform, its hash, the semantic-locality
-contract and hash, the raw identity hash,
-the imported 640-byte identity hash, every raw action hash, every final frame
-hash, and the applicable fixed scales. Independent-frame imports record
-`identity_raster_scale=action_cell_raster_scale=64/1120`. One-action-sheet
-imports record `identity_raster_scale=64/1120` and
-`action_cell_raster_scale=64/560`; this documents their two fixed source
-viewports and does not authorize an identity or subject auto-fit. The exact
-64x80 masks remain the scale/identity acceptance evidence.
+The private release manifest is
+`kitsu-wild-pack-private-release-v5`. It repeats the complete transform and
+hash, semantic-v2 contract and hash, preauthorization-v1 and registration-v1
+schemas, raw identity and imported identity hashes, every preauthorization and
+raw action source hash, every imported/registered/baseline/final packed hash,
+role registrations, and fixed scales. ImageGen imports record
+`identity_raster_scale=action_cell_raster_scale=64/1120`; the only permitted
+generated source layout is one independent full-canvas file per phase. The
+portrait synchronizer revalidates the star lineage and all of these hashes
+before it will consume even the separately authored catalog portraits.
 
-One-action-sheet provenance also repeats the exact `action_output_offset`,
-records source kind, layout record and hash,
-the whole action-source SHA-256, four fixed composited-region SHA-256 values,
-four final-mask hashes, and four packed-frame hashes. All four region hashes
-and all four packed hashes must be distinct. A one-pixel source-canvas, crop,
-offset, cell-layout, or gutter change breaks its corresponding lock. The
-importer rejects more than 55% mid-tone source ink, or a final raster where
-more than 5% of ink pixels change under a `+/-20`-per-mille coverage-stability
-probe; these are rejection gates, not alternate thresholds.
+The importer rejects more than 55% mid-tone source ink or excessive coverage
+sensitivity within pixels that can enter the preauthorized region. Candidate
+ambiguity outside that region is recorded in raw/candidate hashes and
+discarded by construction. The composited final raster is always validated
+globally. These are rejection and composition rules, never alternate per-frame
+thresholds.
 
 ## Frame and portrait packing
 
@@ -375,33 +432,35 @@ The format-v2 validator rejects the complete build when any of these occur:
 - a direct-target frame is not exact mode `1` or is not exactly 64x80;
 - a generated frame is not RGB/RGBA on the exact locked source canvas;
 - the selected source layout does not match its exact source tree;
-- a one-action sheet is not exact 1122x1402 RGB/RGBA, contains more than one
-  named action, or differs from the four fixed 560x700 phase viewports;
-- a one-action sheet contains ink in either two-pixel center gutter or a
-  phase's two-pixel outer safe guard;
+- a one-action sheet or any other multi-phase generated source is selected;
 - the portrait is not exact mode `1` or is not exactly 16x18;
-- the source tree has missing or unexpected identities, actions, or phases;
+- the source tree has missing or unexpected identities, actions, phases, or
+  preauthorization records;
 - any subject pixel leaves `[2, 2, 61, 77]` or enters rows 78..79;
 - the subject does not land on floor `y=77` or leaves the centered stage;
 - Cat, Dog, or Fox enters the new-art pipeline;
-- a legacy identity lock, ImageGen import lock v1/v2, missing or changed action
-  offset, changed identity hash, changed import-transform hash, missing or
-  drifted semantic mask/contract hash, or unapproved identity is used;
+- a legacy identity lock, ImageGen import lock v1/v2/v3, changed identity hash,
+  changed import-transform hash, missing or drifted semantic/preauthorization/
+  registration hash, or unapproved identity is used;
 - a generated source contains ink in the removed border, the BOX/coverage
-  result is threshold-unstable, or either fixed output offset clips its input;
-- one action-sheet cell is shifted, oversized, clipped, duplicated, collapsed,
-  scale-popping, identity-incoherent, or discontinuous; one bad cell rejects
-  all four phases and leaves no partial output;
+  result is threshold-unstable inside its allowed output region, or the fixed
+  transform/role registration clips its input;
+- role registration exceeds four pixels, uses non-floor-derived `dy`, drifts
+  identity root alignment, or differs between phases;
 - the frame contains excessive components, a second subject, or detached
   debris outside the primary subject;
 - any phase is byte-identical to another phase, an adjacent pair changes fewer
   than four native pixels, or the complete action changes fewer than sixteen;
-- a phase references any generated phase instead of the immutable approved
-  identity, changes a planted contact/protected landmark, exceeds its exact
-  zero-budget allowed-change region, requests a per-species contact capability
-  outside that role's allowed set or over its exact floor-pixel bound, drifts a
-  role-pose identity landmark/topology gate, or proves uniqueness only with
-  pixels outside role motion landmarks;
+- a phase omits the immutable identity reference; an identity-anchored phase or
+  role P0 does not target identity; a role phase 1..3 does not target the same
+  accepted P0; or P1/P2/P3 forms a chain;
+- a preauthorization was not frozen before generation, contains dynamic fields,
+  changes its storyboard/target/mask hash, or differs from the semantic lock;
+- a deterministic composite differs from baseline outside its mask or from the
+  registered candidate inside it, changes a planted contact/protected landmark,
+  requests a contact capability outside the role's allowed set or bound, drifts
+  a role-pose landmark/topology gate, or proves uniqueness only with pixels
+  outside role motion landmarks;
 - adjacent phase differences indicate a discontinuous identity/pose jump;
 - apparent scale leaves the role-specific identity envelope or pops within an
   action;
@@ -414,5 +473,6 @@ The format-v2 validator rejects the complete build when any of these occur:
 Mechanical gates cannot prove that a ferret looks like a ferret or that `meet`
 reads as a greeting. Final acceptance must bind a human-reviewed 1x/8x contact
 sheet, every action GIF, all fifty source PNG hashes (identity, portrait, and
-forty-eight phases), and the exact pack SHA-256. Every role must be explicitly
-accepted; passing metrics alone never authorizes integration or publication.
+forty-eight phases), all forty-eight preauthorization JSON hashes, and the exact
+pack SHA-256. Every role must be explicitly accepted; passing metrics alone
+never authorizes integration or publication.

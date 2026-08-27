@@ -210,19 +210,61 @@ def write_imagegen_raw(
 
 
 def make_test_generated_semantic_contract(
+    species_dir: Path,
     species: str,
     identity: contract.HighResFrame,
-    frames: list[contract.HighResFrame],
+    imported_candidates: list[contract.HighResFrame],
     *,
     identity_source_sha256: str,
     identity_frame_sha256: str,
-    source_layout: str,
-    role_source_sha256: str | None = None,
     role: base.RoleSpec = IDLE,
 ) -> contract.GeneratedActionSemanticContract:
     identity_mask = set(identity.mask)
-    frame_masks = [set(frame.mask) for frame in frames]
     baseline_policy = contract.GENERATED_ROLE_BASELINE_POLICY[role.name]
+    if baseline_policy == "identity-anchored":
+        registration = contract.GeneratedRoleRegistrationLock(
+            schema=contract.GENERATED_ROLE_REGISTRATION_SCHEMA,
+            derivation="identity-anchored-zero-offset",
+            output_offset=(0, 0),
+            p0_unregistered_floor_y=contract.HIGH_RES_FLOOR_Y,
+        )
+    else:
+        p0_floor = imported_candidates[0].metrics.bounds[3]
+        registration = contract.GeneratedRoleRegistrationLock(
+            schema=contract.GENERATED_ROLE_REGISTRATION_SCHEMA,
+            derivation="role-p0-fixed-dx-explicit-dy-floor-derived",
+            output_offset=(0, contract.HIGH_RES_FLOOR_Y - p0_floor),
+            p0_unregistered_floor_y=p0_floor,
+        )
+    registered_candidates = [
+        contract.register_generated_candidate(
+            candidate,
+            registration,
+            label=f"{species}/{role.name}/{candidate.phase}/test-registration",
+        )
+        for candidate in imported_candidates
+    ]
+    final_frames: list[contract.HighResFrame] = []
+    allowed_regions: list[contract.NativeRegionMaskLock] = []
+    for phase, candidate in enumerate(registered_candidates):
+        baseline = (
+            identity
+            if baseline_policy == "identity-anchored" or phase == 0
+            else final_frames[0]
+        )
+        delta = set(baseline.mask) ^ set(candidate.mask)
+        allowed = contract.native_region_mask_lock(delta)
+        allowed_regions.append(allowed)
+        final_frames.append(
+            contract.compose_bounded_generated_frame(
+                candidate,
+                baseline,
+                allowed,
+                identity_mask,
+                label=f"{species}/{role.name}/{phase}/test-composition",
+            )
+        )
+    frame_masks = [set(frame.mask) for frame in final_frames]
     role_pose_mask = frame_masks[0]
     frozen_baseline = (
         identity_mask if baseline_policy == "identity-anchored" else role_pose_mask
@@ -249,7 +291,23 @@ def make_test_generated_semantic_contract(
     )
     phase_locks: list[contract.GeneratedPhaseSemanticLock] = []
     motion: set[tuple[int, int]] = set()
-    for phase, (frame, frame_mask) in enumerate(zip(frames, frame_masks, strict=True)):
+    storyboard_sha256 = hashlib.sha256(b"frozen-test-storyboard-v1").hexdigest()
+    for phase, (
+        imported_candidate,
+        registered_candidate,
+        frame,
+        frame_mask,
+        allowed,
+    ) in enumerate(
+        zip(
+            imported_candidates,
+            registered_candidates,
+            final_frames,
+            frame_masks,
+            allowed_regions,
+            strict=True,
+        )
+    ):
         semantic_baseline = (
             identity_mask
             if baseline_policy == "identity-anchored" or phase == 0
@@ -260,12 +318,70 @@ def make_test_generated_semantic_contract(
             identity_mask if baseline_policy == "identity-anchored" else role_pose_mask
         )
         motion.update(motion_baseline ^ frame_mask)
-        source_sha256 = (
-            frame.source_sha256
-            if source_layout == "independent-frame"
-            else role_source_sha256
+        edit_target_kind = (
+            "immutable-approved-identity-source"
+            if baseline_policy == "identity-anchored" or phase == 0
+            else "immutable-accepted-role-phase-0"
         )
-        assert source_sha256 is not None
+        if edit_target_kind == "immutable-approved-identity-source":
+            edit_target = contract.ImmutableEditTargetReference(
+                kind=edit_target_kind,
+                relative_path="identity.png",
+                identity_key=species,
+                role="identity",
+                phase=-1,
+                source_sha256=identity_source_sha256,
+                registered_frame_sha256=identity_frame_sha256,
+                accepted_composited_frame_sha256=identity_frame_sha256,
+            )
+        else:
+            edit_target = contract.ImmutableEditTargetReference(
+                kind=edit_target_kind,
+                relative_path=f"{role.name}/00.png",
+                identity_key=species,
+                role=role.name,
+                phase=0,
+                source_sha256=imported_candidates[0].source_sha256,
+                registered_frame_sha256=hashlib.sha256(
+                    registered_candidates[0].packed
+                ).hexdigest(),
+                accepted_composited_frame_sha256=hashlib.sha256(
+                    final_frames[0].packed
+                ).hexdigest(),
+            )
+        preauthorization_path = (
+            species_dir / "preauthorization" / role.name / f"{phase:02d}.json"
+        )
+        preauthorization_path.parent.mkdir(parents=True, exist_ok=True)
+        preauthorization_path.write_text(
+            json.dumps(
+                {
+                    "allowed_change_region": contract.native_region_mask_record(
+                        allowed
+                    ),
+                    "edit_target_kind": edit_target_kind,
+                    "frozen_before_generation": True,
+                    "identity_key": species,
+                    "mask_authoring_basis": (
+                        "frozen-storyboard-native-region-before-generation"
+                    ),
+                    "phase": phase,
+                    "role": role.name,
+                    "schema": contract.GENERATED_PHASE_PREAUTHORIZATION_SCHEMA,
+                    "storyboard_sha256": storyboard_sha256,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        composition_baseline = (
+            identity
+            if baseline_policy == "identity-anchored" or phase == 0
+            else final_frames[0]
+        )
         phase_locks.append(
             contract.GeneratedPhaseSemanticLock(
                 phase=phase,
@@ -279,17 +395,38 @@ def make_test_generated_semantic_contract(
                     )
                 ),
                 identity_reference=reference,
-                generated_asset=contract.GeneratedPhaseAsset(
-                    layout=source_layout,
-                    relative_path=(
-                        f"{role.name}/{phase:02d}.png"
-                        if source_layout == "independent-frame"
-                        else f"{role.name}.png"
-                    ),
-                    source_sha256=source_sha256,
-                    source_region_sha256=frame.source_sha256,
+                edit_target_reference=edit_target,
+                preauthorization_reference=(
+                    contract.FrozenPhasePreauthorizationReference(
+                        kind="immutable-pre-generation-phase-mask",
+                        relative_path=(
+                            f"preauthorization/{role.name}/{phase:02d}.json"
+                        ),
+                        source_sha256=contract.sha256_file(
+                            preauthorization_path
+                        ),
+                        storyboard_sha256=storyboard_sha256,
+                        allowed_change_region_sha256=allowed.packed_sha256,
+                        edit_target_kind=edit_target_kind,
+                    )
                 ),
-                allowed_change_region=contract.native_region_mask_lock(changed),
+                generated_asset=contract.GeneratedPhaseAsset(
+                    layout="independent-frame",
+                    relative_path=f"{role.name}/{phase:02d}.png",
+                    source_sha256=imported_candidate.source_sha256,
+                    imported_candidate_frame_sha256=hashlib.sha256(
+                        imported_candidate.packed
+                    ).hexdigest(),
+                    registered_candidate_frame_sha256=hashlib.sha256(
+                        registered_candidate.packed
+                    ).hexdigest(),
+                ),
+                allowed_change_region=allowed,
+                composition_mode=contract.GENERATED_COMPOSITION_MODE,
+                composition_baseline_frame_sha256=hashlib.sha256(
+                    composition_baseline.packed
+                ).hexdigest(),
+                composited_frame_sha256=hashlib.sha256(frame.packed).hexdigest(),
                 maximum_out_of_region_changed_pixels=0,
                 frozen_regions=(
                     contract.FrozenSemanticRegion(
@@ -316,8 +453,12 @@ def make_test_generated_semantic_contract(
                 contact_policy=(
                     contract.GENERATED_ROLE_CONTACT_POLICY_DEFAULTS[role.name]
                 ),
+                role_registration=registration,
+                role_registration_sha256=(
+                    contract.generated_role_registration_sha256(registration)
+                ),
                 role_pose_baseline_frame_sha256=hashlib.sha256(
-                    frames[0].packed
+                    final_frames[0].packed
                 ).hexdigest(),
                 maximum_role_pose_component_count_delta=2,
                 maximum_contact_changed_pixels_per_phase=(
@@ -394,12 +535,12 @@ def write_valid_imagegen_sources(
         for phase in range(4)
     ]
     semantic = make_test_generated_semantic_contract(
+        species_dir,
         species,
         identity,
         frames,
         identity_source_sha256=identity_source_sha256,
         identity_frame_sha256=identity_frame_sha256,
-        source_layout="independent-frame",
     )
     return contract.ImageGenImportLock(
         identity_key=species,
@@ -472,24 +613,9 @@ def write_valid_imagegen_action_sheet_sources(
     )
     identity_source_sha256 = contract.sha256_file(identity_path)
     identity_frame_sha256 = hashlib.sha256(identity.packed).hexdigest()
-    role_source_sha256 = contract.sha256_file(species_dir / "idle.png")
-    frames = list(
-        contract.load_imagegen_action_sheet_frames(
-            species_dir / "idle.png",
-            species,
-            IDLE,
-            transform,
-            set(identity.mask),
-        )
-    )
-    semantic = make_test_generated_semantic_contract(
-        species,
-        identity,
-        frames,
-        identity_source_sha256=identity_source_sha256,
-        identity_frame_sha256=identity_frame_sha256,
-        source_layout="one-action-sheet-region",
-        role_source_sha256=role_source_sha256,
+    semantic = contract.GeneratedActionSemanticContract(
+        schema=contract.GENERATED_ACTION_SEMANTIC_SCHEMA,
+        roles=(),
     )
     return contract.ImageGenImportLock(
         identity_key=species,
@@ -544,13 +670,12 @@ def refresh_test_generated_semantic_lock(
             )
             role_source_sha256 = contract.sha256_file(role_path)
         one_role = make_test_generated_semantic_contract(
+            species_dir,
             species,
             identity,
             frames,
             identity_source_sha256=lock.identity_source_sha256,
             identity_frame_sha256=lock.identity_frame_sha256,
-            source_layout=source_layout,
-            role_source_sha256=role_source_sha256,
             role=role,
         )
         semantic_roles.append(one_role.roles[0])
@@ -738,7 +863,7 @@ class CompanionRasterContractTests(unittest.TestCase):
             "non_destructive_build": False,
             "raster_contract": {},
         }
-        with self.assertRaisesRegex(ValueError, r"schema must be .*v4"):
+        with self.assertRaisesRegex(ValueError, r"schema must be .*v5"):
             portrait_sync.require_fail_closed_manifest(legacy)
 
     def test_portrait_sync_requires_exact_source_snapshot_provenance(self) -> None:
@@ -950,6 +1075,86 @@ class CompanionRasterContractTests(unittest.TestCase):
         self.assertEqual(set(frame.mask), expected)
         self.assertEqual(base.bounds(frame.mask)[3], contract.HIGH_RES_FLOOR_Y)
 
+    def test_v4_candidate_sensitivity_is_bounded_to_frozen_output_mask(self) -> None:
+        transform = imagegen_import_transform()
+        identity_logical = imagegen_logical_outline()
+        candidate_logical = imagegen_logical_outline(0)
+        sensitive_noise = {
+            (4 + index % 12, 8 + index // 12)
+            for index in range(23)
+        }
+        output_dx, output_dy = transform.output_offset
+        allowed = {
+            (x + output_dx, y + output_dy)
+            for x, y in candidate_logical - identity_logical
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "red_panda"
+            identity_path = source / "identity.png"
+            candidate_path = source / "idle" / "00.png"
+            write_imagegen_raw(identity_path, transform, identity_logical)
+
+            logical = Image.new(
+                "L",
+                (contract.HIGH_RES_FRAME_WIDTH, contract.HIGH_RES_FRAME_HEIGHT),
+                255,
+            )
+            pixels = logical.load()
+            for x, y in candidate_logical:
+                pixels[x, y] = 0
+            # Luma 224 passes the nominal 120-per-mille ink gate but falls
+            # between its +/-20 stability probes. These cells model the
+            # observed global ImageGen redraw noise outside a local eye edit.
+            for x, y in sensitive_noise:
+                pixels[x, y] = 224
+            left, top, right, bottom = transform.crop_rect
+            generated = logical.resize(
+                (right - left, bottom - top), Image.Resampling.NEAREST
+            ).convert("RGB")
+            raw = Image.new("RGB", transform.source_canvas, "white")
+            raw.paste(generated, (left, top))
+            candidate_path.parent.mkdir(parents=True)
+            raw.save(candidate_path)
+
+            identity = contract.load_imagegen_import_frame(
+                identity_path, "identity", -1, transform
+            )
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"output pixels are coverage-threshold sensitive",
+            ):
+                contract.load_imagegen_import_frame(
+                    candidate_path,
+                    "idle",
+                    0,
+                    transform,
+                    require_floor=False,
+                )
+
+            candidate = contract.load_imagegen_import_frame(
+                candidate_path,
+                "idle",
+                0,
+                transform,
+                require_floor=False,
+                bounded_validation_region=allowed,
+            )
+            final = contract.compose_bounded_generated_frame(
+                candidate,
+                identity,
+                contract.native_region_mask_lock(allowed),
+                set(identity.mask),
+                label="red_panda/idle/0/test-bounded-sensitivity",
+            )
+
+        self.assertEqual(set(final.mask), set(identity.mask) | allowed)
+        discarded_noise = {
+            (x + output_dx, y + output_dy) for x, y in sensitive_noise
+        }
+        self.assertFalse(set(final.mask) & discarded_noise)
+        self.assertTrue(set(candidate.mask) & discarded_noise)
+
     def test_imagegen_source_canvas_one_pixel_drift_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             transform = imagegen_import_transform()
@@ -1152,6 +1357,29 @@ class CompanionRasterContractTests(unittest.TestCase):
         )
         self.assertEqual(len({frame.packed for frame in raster.frames}), 4)
 
+    def test_imagegen_generated_species_rejects_orphan_freeze_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            lock = write_valid_imagegen_sources(source, "ferret")
+            orphan_dir = (
+                source
+                / "ferret"
+                / "preauthorization"
+                / "_frozen-source"
+            )
+            orphan_dir.mkdir()
+            (orphan_dir / f"{'a' * 64}.json").write_text(
+                "{}\n", encoding="utf-8", newline="\n"
+            )
+
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"frozen preauthorization provenance set differs",
+            ):
+                contract.load_high_res_generated_species(
+                    source, "ferret", lock, roles=(IDLE,)
+                )
+
     def test_imagegen_distinct_raw_phases_that_collapse_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
@@ -1210,69 +1438,28 @@ class CompanionRasterContractTests(unittest.TestCase):
             "7ce76bf5a00170641374b0b964e085f39e1aea7e51ad2dc0f019f27b9146552e",
         )
 
-    def test_imagegen_one_action_sheet_imports_four_distinct_native_frames(self) -> None:
+    def test_imagegen_v4_explicitly_rejects_one_action_sheet_import(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
-            raster = contract.load_high_res_generated_action_sheet_species(
-                source, "ferret", lock, roles=(IDLE,)
-            )
-
-        self.assertEqual(len(raster.frames), 4)
-        self.assertEqual(len({frame.source_sha256 for frame in raster.frames}), 4)
-        self.assertEqual(len({frame.packed for frame in raster.frames}), 4)
-        self.assertEqual(
-            raster.fixed_action_scale,
-            contract.HIGH_RES_FRAME_WIDTH / 560,
-        )
-        self.assertEqual(
-            set(raster.source_sha256),
-            {"identity.png", "portrait.png", "idle.png"},
-        )
-        self.assertTrue(
-            all(
-                base.bounds(frame.mask)[3] == contract.HIGH_RES_FLOOR_Y
-                for frame in raster.frames
-            )
-        )
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"v4 forbids one-action sheets.*independent star edits",
+            ):
+                contract.load_high_res_generated_action_sheet_species(
+                    source, "ferret", lock, roles=(IDLE,)
+                )
 
     def test_imagegen_fixed_action_offset_is_shared_by_all_cells_and_actions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             lock = write_valid_imagegen_action_sheet_sources(source, "ferret")
-            write_imagegen_action_sheet(
-                source / "ferret" / "blink.png",
-                [imagegen_action_logical_outline(phase) for phase in range(4)],
-            )
-            lock = refresh_test_generated_semantic_lock(
-                source,
-                "ferret",
-                lock,
-                (IDLE, BLINK),
-                source_layout="one-action-sheet-region",
-            )
-            raster = contract.load_high_res_generated_action_sheet_species(
-                source, "ferret", lock, roles=(IDLE, BLINK)
-            )
-
-        identity_dx, identity_dy = lock.transform.output_offset
-        self.assertEqual(
-            set(raster.identity.mask),
-            {
-                (x + identity_dx, y + identity_dy)
-                for x, y in imagegen_logical_outline()
-            },
-        )
-        action_dx, action_dy = lock.transform.action_output_offset
-        for role_index in range(2):
-            for phase in range(4):
-                frame = raster.frames[role_index * 4 + phase]
-                self.assertEqual(
-                    set(frame.mask),
-                    {
-                        (x + action_dx, y + action_dy)
-                        for x, y in imagegen_action_logical_outline(phase)
-                    },
+            with self.assertRaisesRegex(
+                contract.RasterContractError,
+                r"v4 forbids one-action sheets",
+            ):
+                contract.load_high_res_generated_action_sheet_species(
+                    source, "ferret", lock, roles=(IDLE, BLINK)
                 )
 
     def test_imagegen_action_sheet_gutter_ink_rejects_the_complete_action(self) -> None:
@@ -1287,7 +1474,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"center gutter .* contains ink.*labels, dividers, grid lines",
+                r"v4 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "ferret", lock, roles=(IDLE,)
@@ -1306,7 +1493,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"rabbit/idle/2/raw-cell: subject touches source-cell edge",
+                r"v4 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "rabbit", lock, roles=(IDLE,)
@@ -1331,10 +1518,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"raccoon/idle/1: subject touches source-cell edge|"
-                r"raccoon/idle/1: bounds .* violate format-v2 safe stage|"
-                r"raccoon/idle/1: the identity-locked action output offset "
-                r".* clips this phase",
+                r"v4 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "raccoon", lock, roles=(IDLE,)
@@ -1352,8 +1536,7 @@ class CompanionRasterContractTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"all four exact canonical PNGs must be distinct|"
-                r"area import collapsed one or more phases",
+                r"v4 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "capybara", lock, roles=(IDLE,)
@@ -1375,7 +1558,7 @@ class CompanionRasterContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 contract.RasterContractError,
-                r"primary subject is only .* second subject",
+                r"v4 forbids one-action sheets",
             ):
                 contract.load_high_res_generated_action_sheet_species(
                     source, "otter", lock, roles=(IDLE,)

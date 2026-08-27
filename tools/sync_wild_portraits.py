@@ -20,46 +20,32 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v4"
+MANIFEST_SCHEMA = "kitsu-wild-pack-private-release-v5"
 EXPECTED_CREATURES = 21
 PORTRAIT_WIDTH = 16
 PORTRAIT_HEIGHT = 18
 PORTRAIT_BYTES = 36
 PORTRAIT_STORAGE = "XBM least-significant-bit first, two bytes per row"
 DIRECT_LOCK_SCHEMA = "kitsu-wild-identity-lock-v2"
-IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v3"
+IMAGEGEN_LOCK_SCHEMA = "kitsu-wild-imagegen-import-lock-v4"
 GENERATED_ACTION_SEMANTIC_SCHEMA = (
-    "kitsu-wild-generated-action-semantic-locality-v1"
+    "kitsu-wild-generated-action-semantic-locality-v2"
 )
+GENERATED_PHASE_PREAUTHORIZATION_SCHEMA = (
+    "kitsu-wild-generated-phase-preauthorization-v1"
+)
+GENERATED_ROLE_REGISTRATION_SCHEMA = (
+    "kitsu-wild-generated-role-registration-v1"
+)
+GENERATED_COMPOSITION_MODE = (
+    "immutable-baseline-outside-mask-imported-candidate-inside-mask"
+)
+GENERATED_ROLE_OUTPUT_OFFSET_MAXIMUM = 4
+GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT = "immutable-identity-baseline-copy"
 DIRECT_RASTER_TRANSFORM = "none-direct-exact-target"
 IMAGEGEN_RASTER_TRANSFORM = (
-    "rgba-over-white-box-area-black-coverage-then-fixed-offset"
+    "rgba-over-white-box-area-fixed-role-registration-bounded-native-composite-v1"
 )
-IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM = (
-    "rgba-over-white-fixed-action-sheet-cells-box-area-black-coverage-"
-    "then-fixed-offset"
-)
-EXPECTED_ACTION_SHEET_LAYOUT = {
-    "cell_outer_safe_guard_pixels": 2,
-    "cell_transform": "identity-pinned-box-area-coverage-fixed-offset",
-    "fixed_cell_extraction": True,
-    "gutter_rects": [[560, 0, 562, 1402], [0, 700, 1122, 702]],
-    "per_cell_cleanup": False,
-    "per_cell_crop": False,
-    "per_cell_fit": False,
-    "per_cell_offset": False,
-    "per_cell_threshold": False,
-    "phase_order": [0, 1, 2, 3],
-    "phase_viewports": [
-        [0, 0, 560, 700],
-        [562, 0, 1122, 700],
-        [0, 702, 560, 1402],
-        [562, 702, 1122, 1402],
-    ],
-    "schema": "kitsu-imagegen-action-sheet-2x2-v1",
-    "source_asset_per_action": True,
-    "source_canvas": [1122, 1402],
-}
 TRANSFORM_CONTROLS = {
     "auto_fit": False,
     "crop_by_subject": False,
@@ -71,12 +57,38 @@ EXPECTED_RASTER_CONTRACT = {
     "allowed_pack_transforms": [
         DIRECT_RASTER_TRANSFORM,
         IMAGEGEN_RASTER_TRANSFORM,
-        IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM,
     ],
     **TRANSFORM_CONTROLS,
     "source_snapshots": True,
     "portrait_source": "independently-authored-exact-16x18",
     "portrait_resampling": "none",
+}
+REQUIRED_ANIMATION_CONTRACT_VALUES = {
+    "generated_action_semantic_schema": GENERATED_ACTION_SEMANTIC_SCHEMA,
+    "preauthorization_schema": GENERATED_PHASE_PREAUTHORIZATION_SCHEMA,
+    "phase_mask_frozen_before_generation": True,
+    "bounded_composition_mode": GENERATED_COMPOSITION_MODE,
+    "role_registration_schema": GENERATED_ROLE_REGISTRATION_SCHEMA,
+    "maximum_absolute_role_output_offset_pixels": (
+        GENERATED_ROLE_OUTPUT_OFFSET_MAXIMUM
+    ),
+    "per_phase_registration_override": False,
+    "immutable_identity_reference_per_generated_phase": True,
+    "identity_reference_image_number": 1,
+    "immutable_edit_target_reference_per_generated_phase": True,
+    "edit_target_reference_image_number": 2,
+    "generated_phase_chaining": False,
+    "identity_anchored_role_uses_identity_edit_target": True,
+    "role_phase_0_generation_target": "approved-identity",
+    "role_phase_0_exact_identity_baseline_copy_without_generation": True,
+    "identity_baseline_copy_requires_byte_exact_source_and_zero_registration": (
+        True
+    ),
+    "role_phase_1_to_3_generation_target": (
+        "same-immutable-accepted-role-phase-0"
+    ),
+    "role_phase_0_is_generation_reference_for_role_phases_1_to_3": True,
+    "production_out_of_region_pixel_budget": 0,
 }
 
 FIRMWARE_RELATIVE_PATH = Path("src/wild_creature_catalog.cpp")
@@ -149,7 +161,15 @@ def require_fail_closed_manifest(manifest: dict[str, object]) -> None:
         manifest.get("raster_contract"), "raster_contract"
     )
     if raster_contract != EXPECTED_RASTER_CONTRACT:
-        raise ValueError("manifest raster_contract is not the fail-closed v4 contract")
+        raise ValueError("manifest raster_contract is not the fail-closed v5 contract")
+    animation_contract = require_mapping(
+        manifest.get("animation_contract"), "animation_contract"
+    )
+    for field, expected in REQUIRED_ANIMATION_CONTRACT_VALUES.items():
+        if animation_contract.get(field) != expected:
+            raise ValueError(
+                f"manifest animation_contract.{field} is not fail-closed v5"
+            )
     if manifest.get("identity_lock_schema") not in {
         DIRECT_LOCK_SCHEMA,
         IMAGEGEN_LOCK_SCHEMA,
@@ -234,7 +254,6 @@ def require_pack_raster_provenance(
     if transform_kind not in {
         DIRECT_RASTER_TRANSFORM,
         IMAGEGEN_RASTER_TRANSFORM,
-        IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM,
     }:
         raise ValueError(f"{identity_key} was not built by the fail-closed raster path")
     if pack.get("transform_controls") != TRANSFORM_CONTROLS:
@@ -342,8 +361,6 @@ def require_pack_raster_provenance(
             )
         crop = transform["crop_rect"]
         identity_scale = 64 / (crop[2] - crop[0])
-        action_sheet = transform_kind == IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
-        action_scale = 64 / 560 if action_sheet else identity_scale
         scale_values = (
             pack.get("identity_raster_scale"),
             pack.get("action_cell_raster_scale"),
@@ -352,45 +369,11 @@ def require_pack_raster_provenance(
         if (
             any(not isinstance(value, (int, float)) for value in scale_values)
             or abs(scale_values[0] - identity_scale) > 1e-12
-            or abs(scale_values[1] - action_scale) > 1e-12
-            or abs(scale_values[2] - action_scale) > 1e-12
+            or abs(scale_values[1] - identity_scale) > 1e-12
+            or abs(scale_values[2] - identity_scale) > 1e-12
         ):
             raise ValueError(f"{identity_key} ImageGen fixed scale does not match its lock")
-        if action_sheet:
-            # A 560x700 cell has a different viewport from the 1120x1400
-            # identity crop, so only this layout requires separate calibration.
-            if transform["action_output_offset"] == transform["output_offset"]:
-                raise ValueError(
-                    f"{identity_key} action-sheet output offset must be distinct "
-                    "from its identity output offset"
-                )
-            if pack.get("source_kind") != "imagegen-one-action-sheets":
-                raise ValueError(f"{identity_key} action-sheet source kind is invalid")
-            layout = require_mapping(
-                pack.get("action_source_layout"),
-                f"{identity_key}.action_source_layout",
-            )
-            if layout != EXPECTED_ACTION_SHEET_LAYOUT:
-                raise ValueError(f"{identity_key} action-sheet layout is not canonical")
-            layout_sha256 = require_sha256(
-                pack.get("action_source_layout_sha256"),
-                f"{identity_key}.action_source_layout_sha256",
-            )
-            canonical_layout = json.dumps(
-                layout,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=True,
-            ).encode("ascii")
-            if hashlib.sha256(canonical_layout).hexdigest() != layout_sha256:
-                raise ValueError(f"{identity_key} action-sheet layout hash does not match")
-            action_output_offset = pack.get("action_output_offset")
-            if action_output_offset != transform["action_output_offset"]:
-                raise ValueError(
-                    f"{identity_key} action-sheet output offset differs from its "
-                    "hash-bound identity lock"
-                )
-        elif (
+        if (
             pack.get("source_kind") != "imagegen-locked-import"
             or "action_source_layout" in pack
             or "action_source_layout_sha256" in pack
@@ -407,6 +390,207 @@ def require_pack_raster_provenance(
     )
     if snapshot_hashes != pack.get("source_sha256"):
         raise ValueError(f"{identity_key} source snapshot hashes do not match inputs")
+
+
+IDENTITY_ANCHORED_ROLES = frozenset({"idle", "blink", "listen"})
+
+
+def require_generated_semantic_evidence(
+    identity_key: str,
+    role_record: dict[str, object],
+    identity_lock: dict[str, object],
+    source_hashes: dict[str, object],
+) -> None:
+    """Verify the v4 bounded-composite evidence consumed by portrait sync."""
+
+    role = role_record.get("role")
+    if not isinstance(role, str):
+        raise ValueError(f"{identity_key} generated role is invalid")
+    label = f"{identity_key}.{role}.semantic_locality"
+    semantic = require_mapping(role_record.get("semantic_locality"), label)
+    expected_baseline = (
+        "identity-anchored"
+        if role in IDENTITY_ANCHORED_ROLES
+        else "immutable-role-phase-0"
+    )
+    if (
+        semantic.get("schema") != GENERATED_ACTION_SEMANTIC_SCHEMA
+        or semantic.get("role") != role
+        or semantic.get("source_layout") != "independent-frame"
+        or semantic.get("baseline_policy") != expected_baseline
+    ):
+        raise ValueError(f"{label} lacks exact v4 role lineage")
+
+    registration = require_mapping(
+        semantic.get("role_registration"), f"{label}.role_registration"
+    )
+    if set(registration) != {
+        "derivation",
+        "output_offset",
+        "p0_unregistered_floor_y",
+        "schema",
+    } or registration.get("schema") != GENERATED_ROLE_REGISTRATION_SCHEMA:
+        raise ValueError(f"{label} role registration is missing or malformed")
+    canonical_registration = json.dumps(
+        registration,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    registration_hash = require_sha256(
+        semantic.get("role_registration_sha256"),
+        f"{label}.role_registration_sha256",
+    )
+    if hashlib.sha256(canonical_registration).hexdigest() != registration_hash:
+        raise ValueError(f"{label} role registration hash drifted")
+    offset = registration.get("output_offset")
+    floor = registration.get("p0_unregistered_floor_y")
+    if (
+        not isinstance(offset, list)
+        or len(offset) != 2
+        or any(type(value) is not int for value in offset)
+        or any(abs(value) > GENERATED_ROLE_OUTPUT_OFFSET_MAXIMUM for value in offset)
+        or type(floor) is not int
+    ):
+        raise ValueError(f"{label} role registration is out of range")
+    if expected_baseline == "identity-anchored":
+        if registration != {
+            "derivation": "identity-anchored-zero-offset",
+            "output_offset": [0, 0],
+            "p0_unregistered_floor_y": 77,
+            "schema": GENERATED_ROLE_REGISTRATION_SCHEMA,
+        }:
+            raise ValueError(f"{label} identity-anchored registration drifted")
+    elif (
+        registration.get("derivation")
+        != "role-p0-fixed-dx-explicit-dy-floor-derived"
+        or offset[1] != 77 - floor
+    ):
+        raise ValueError(f"{label} role-P0 registration is not floor-derived")
+
+    phases = require_list(semantic.get("phases"), f"{label}.phases")
+    frame_hashes = require_list(
+        role_record.get("frame_sha256"), f"{identity_key}.{role}.frame_sha256"
+    )
+    generated_source_hashes = require_list(
+        role_record.get("source_sha256"), f"{identity_key}.{role}.source_sha256"
+    )
+    if len(phases) != 4 or len(frame_hashes) != 4 or len(generated_source_hashes) != 4:
+        raise ValueError(f"{label} must pin exactly four independent phases")
+    identity_source_hash = require_sha256(
+        identity_lock.get("identity_source_sha256"),
+        f"{identity_key}.identity_source_sha256",
+    )
+    identity_frame_hash = require_sha256(
+        identity_lock.get("identity_frame_sha256"),
+        f"{identity_key}.identity_frame_sha256",
+    )
+    p0 = require_mapping(phases[0], f"{label}.phases[0]")
+    p0_source_hash = p0.get("generated_source_sha256")
+    p0_registered_hash = p0.get("registered_candidate_frame_sha256")
+    p0_final_hash = p0.get("composited_frame_sha256")
+    if semantic.get("role_pose_baseline_frame_sha256") != p0_final_hash:
+        raise ValueError(f"{label} immutable role P0 hash drifted")
+
+    for phase_index, raw_phase in enumerate(phases):
+        phase = require_mapping(raw_phase, f"{label}.phases[{phase_index}]")
+        if phase.get("phase") != phase_index:
+            raise ValueError(f"{label} phases are missing or out of order")
+        for field in (
+            "allowed_change_mask_sha256",
+            "preauthorization_source_sha256",
+            "preauthorization_storyboard_sha256",
+            "identity_reference_source_sha256",
+            "edit_target_source_sha256",
+            "edit_target_registered_frame_sha256",
+            "edit_target_accepted_composited_frame_sha256",
+            "generated_source_sha256",
+            "imported_candidate_frame_sha256",
+            "registered_candidate_frame_sha256",
+            "composition_baseline_frame_sha256",
+            "composited_frame_sha256",
+        ):
+            require_sha256(phase.get(field), f"{label}.phases[{phase_index}].{field}")
+        if (
+            phase.get("composition_mode") != GENERATED_COMPOSITION_MODE
+            or phase.get("outside_allowed_change_pixels") != 0
+            or type(phase.get("discarded_candidate_outside_mask_pixels")) is not int
+            or phase.get("discarded_candidate_outside_mask_pixels") < 0
+            or "output_offset" in phase
+        ):
+            raise ValueError(f"{label}.phases[{phase_index}] is not a bounded composite")
+        if (
+            phase.get("composited_frame_sha256") != frame_hashes[phase_index]
+            or phase.get("generated_source_sha256")
+            != generated_source_hashes[phase_index]
+            or source_hashes.get(f"{role}/{phase_index:02d}.png")
+            != phase.get("generated_source_sha256")
+            or phase.get("identity_reference_source_sha256")
+            != identity_source_hash
+            or source_hashes.get(
+                f"preauthorization/{role}/{phase_index:02d}.json"
+            )
+            != phase.get("preauthorization_source_sha256")
+        ):
+            raise ValueError(f"{label}.phases[{phase_index}] provenance drifted")
+
+        asset_layout = phase.get("generated_asset_layout")
+        if asset_layout == GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT:
+            if (
+                expected_baseline != "immutable-role-phase-0"
+                or phase_index != 0
+                or registration.get("output_offset") != [0, 0]
+                or phase.get("generated_source_sha256")
+                != identity_source_hash
+                or phase.get("imported_candidate_frame_sha256")
+                != identity_frame_hash
+                or phase.get("registered_candidate_frame_sha256")
+                != identity_frame_hash
+                or phase.get("composited_frame_sha256")
+                != identity_frame_hash
+            ):
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] no-call identity baseline "
+                    "copy drifted"
+                )
+        elif asset_layout != "independent-frame":
+            raise ValueError(
+                f"{label}.phases[{phase_index}] generated asset layout drifted"
+            )
+
+        identity_target = expected_baseline == "identity-anchored" or phase_index == 0
+        expected_baseline_hash = (
+            identity_frame_hash if identity_target else p0_final_hash
+        )
+        if phase.get("composition_baseline_frame_sha256") != expected_baseline_hash:
+            raise ValueError(f"{label}.phases[{phase_index}] baseline hash drifted")
+        if identity_target:
+            if (
+                phase.get("edit_target_kind")
+                != "immutable-approved-identity-source"
+                or phase.get("edit_target_relative_path") != "identity.png"
+                or phase.get("edit_target_source_sha256") != identity_source_hash
+                or phase.get("edit_target_registered_frame_sha256")
+                != identity_frame_hash
+                or phase.get("edit_target_accepted_composited_frame_sha256")
+                != identity_frame_hash
+            ):
+                raise ValueError(
+                    f"{label}.phases[{phase_index}] must target immutable identity"
+                )
+        elif (
+            phase.get("edit_target_kind")
+            != "immutable-accepted-role-phase-0"
+            or phase.get("edit_target_relative_path") != f"{role}/00.png"
+            or phase.get("edit_target_source_sha256") != p0_source_hash
+            or phase.get("edit_target_registered_frame_sha256")
+            != p0_registered_hash
+            or phase.get("edit_target_accepted_composited_frame_sha256")
+            != p0_final_hash
+        ):
+            raise ValueError(
+                f"{label}.phases[{phase_index}] does not target the same immutable P0"
+            )
 
 
 def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
@@ -461,10 +645,14 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
         ):
             raise ValueError(f"{identity_key} does not contain the complete 48/12 pack")
         require_pack_raster_provenance(pack, identity_key)
-        if require_mapping(
+        pack_identity_lock = require_mapping(
             pack.get("identity_lock"), f"{identity_key}.identity_lock"
-        ).get("schema") != manifest.get("identity_lock_schema"):
+        )
+        if pack_identity_lock.get("schema") != manifest.get("identity_lock_schema"):
             raise ValueError(f"{identity_key} lock schema differs from the manifest")
+        source_hashes = require_mapping(
+            pack.get("source_sha256"), f"{identity_key}.source_sha256"
+        )
 
         roles = require_list(pack.get("roles"), f"{identity_key}.roles")
         expected_roles = list((
@@ -486,17 +674,19 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
             for role in roles
         ] != expected_roles:
             raise ValueError(f"{identity_key} roles are missing or out of order")
-        action_sheet_pack = (
-            pack.get("raster_transform")
-            == IMAGEGEN_ACTION_SHEET_RASTER_TRANSFORM
-        )
-        action_source_hashes: list[str] = []
         for role in roles:
             role_record = require_mapping(role, f"{identity_key}.role")
-            if "action_output_offset" in role_record:
+            if any(
+                field in role_record
+                for field in (
+                    "action_output_offset",
+                    "action_source_sha256",
+                    "source_region_sha256",
+                )
+            ):
                 raise ValueError(
-                    f"{identity_key}.{role_record.get('role')} cannot override the "
-                    "single hash-bound action-sheet output offset"
+                    f"{identity_key}.{role_record.get('role')} cannot use or "
+                    "override a legacy action-sheet source"
                 )
             if role_record.get("unique_frames") != 4:
                 raise ValueError(f"{identity_key} has a collapsed animation role")
@@ -525,39 +715,7 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
                         f"{identity_key}.{role_record.get('role')} lacks semantic "
                         "locality evidence"
                     )
-            phase_hash_fields = ["final_mask_sha256", "frame_sha256"]
-            if action_sheet_pack:
-                action_source_sha256 = require_sha256(
-                    role_record.get("action_source_sha256"),
-                    f"{identity_key}.{role_record.get('role')}.action_source_sha256",
-                )
-                action_source_hashes.append(action_source_sha256)
-                source_hashes = require_mapping(
-                    pack.get("source_sha256"), f"{identity_key}.source_sha256"
-                )
-                if source_hashes.get(f"{role_record.get('role')}.png") != action_source_sha256:
-                    raise ValueError(
-                        f"{identity_key}.{role_record.get('role')} action source "
-                        "hash differs from its snapshot manifest"
-                    )
-                phase_hash_fields.append("source_region_sha256")
-                if "source_sha256" in role_record:
-                    raise ValueError(
-                        f"{identity_key}.{role_record.get('role')} action sheet "
-                        "cannot claim independent source files"
-                    )
-            else:
-                phase_hash_fields.append("source_sha256")
-                if (
-                    "action_source_sha256" in role_record
-                    or "source_region_sha256" in role_record
-                ):
-                    raise ValueError(
-                        f"{identity_key}.{role_record.get('role')} independent "
-                        "layout cannot claim an action sheet"
-                    )
-
-            for field in phase_hash_fields:
+            for field in ("final_mask_sha256", "frame_sha256", "source_sha256"):
                 hashes = require_list(
                     role_record.get(field), f"{identity_key}.{role_record.get('role')}.{field}"
                 )
@@ -576,8 +734,13 @@ def load_records(manifest_path: Path) -> dict[str, PortraitRecord]:
                         f"{identity_key}.{role_record.get('role')}.{field} "
                         "must pin four independent frames"
                     )
-        if action_sheet_pack and len(set(action_source_hashes)) != len(expected_roles):
-            raise ValueError(f"{identity_key} reuses one action sheet for multiple roles")
+            if pack.get("raster_transform") == IMAGEGEN_RASTER_TRANSFORM:
+                require_generated_semantic_evidence(
+                    identity_key,
+                    role_record,
+                    pack_identity_lock,
+                    source_hashes,
+                )
 
         portrait = require_mapping(pack.get("portrait"), f"{identity_key}.portrait")
         if (
