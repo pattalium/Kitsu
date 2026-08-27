@@ -1020,6 +1020,35 @@ class GeneratedActionSemanticLocalityTests(unittest.TestCase):
     def test_identity_anchored_p0_may_be_exact_no_call_identity_copy(self) -> None:
         identity, frames, semantic = identity_anchored_baseline_fixture()
 
+        # The original pre-call role-pose plan may name a different cutout than
+        # the identity landmark.  Once P0 is proven byte-identical to identity,
+        # comparing those two unrelated cutouts would manufacture topology
+        # drift in an unchanged frame.
+        one_connected_identity_region = contract.native_region_mask_lock(
+            {(x, y) for y in range(40, 48) for x in range(20, 36)}
+        )
+        four_component_hypothetical_pose_region = (
+            contract.native_region_mask_lock(
+                {
+                    (x, y)
+                    for left in (18, 25, 32, 39)
+                    for y in range(40, 48)
+                    for x in range(left, left + 4)
+                }
+            )
+        )
+        landmark = semantic.role_pose_identity_landmarks[0]
+        semantic = replace(
+            semantic,
+            role_pose_identity_landmarks=(
+                replace(
+                    landmark,
+                    identity_region=one_connected_identity_region,
+                    role_pose_region=four_component_hypothetical_pose_region,
+                ),
+            ),
+        )
+
         evidence = validate(identity, frames, semantic)
 
         self.assertEqual(
@@ -1033,6 +1062,14 @@ class GeneratedActionSemanticLocalityTests(unittest.TestCase):
         self.assertEqual(
             evidence["phases"][0]["composited_frame_sha256"],
             hashlib.sha256(identity.packed).hexdigest(),
+        )
+        self.assertEqual(
+            evidence["role_pose_identity_landmarks"][0]["comparison_mode"],
+            "byte-exact-identity-baseline-copy",
+        )
+        self.assertEqual(
+            evidence["role_pose_identity_landmarks"][0]["component_count_delta"],
+            0,
         )
 
         record = import_lock_record(semantic, identity)
@@ -1083,6 +1120,46 @@ class GeneratedActionSemanticLocalityTests(unittest.TestCase):
             },
             source_hashes,
         )
+
+    def test_generated_p0_cannot_use_exact_copy_landmark_comparison(self) -> None:
+        identity, frames, semantic = identity_anchored_baseline_fixture()
+        one_connected_identity_region = contract.native_region_mask_lock(
+            {(x, y) for y in range(40, 48) for x in range(20, 36)}
+        )
+        four_component_pose_region = contract.native_region_mask_lock(
+            {
+                (x, y)
+                for left in (18, 25, 32, 39)
+                for y in range(40, 48)
+                for x in range(left, left + 4)
+            }
+        )
+        landmark = semantic.role_pose_identity_landmarks[0]
+        phases = list(semantic.phases)
+        phases[0] = replace(
+            phases[0],
+            generated_asset=replace(
+                phases[0].generated_asset,
+                layout="independent-frame",
+            ),
+        )
+        semantic = replace(
+            semantic,
+            role_pose_identity_landmarks=(
+                replace(
+                    landmark,
+                    identity_region=one_connected_identity_region,
+                    role_pose_region=four_component_pose_region,
+                ),
+            ),
+            phases=tuple(phases),
+        )
+
+        with self.assertRaisesRegex(
+            contract.RasterContractError,
+            r"local marking/anatomy topology drifted",
+        ):
+            validate(identity, frames, semantic)
 
     def test_identity_baseline_copy_cannot_alias_a_later_phase(self) -> None:
         identity, frames, semantic = identity_baseline_role_fixture()

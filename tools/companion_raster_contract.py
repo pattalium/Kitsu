@@ -3476,6 +3476,24 @@ def validate_generated_action_semantic_role(
         raise RasterContractError(
             f"{label}: immutable role phase-0 raster differs from its lock"
         )
+    p0_asset = semantic.phases[0].generated_asset
+    identity_baseline_copy = (
+        p0_asset.layout == GENERATED_IDENTITY_BASELINE_ASSET_LAYOUT
+    )
+    if identity_baseline_copy and (
+        semantic.role_registration.output_offset != (0, 0)
+        or p0_asset.source_sha256 != identity_source_sha256
+        or imported_candidates[0].source_sha256 != identity_source_sha256
+        or hashlib.sha256(imported_candidates[0].packed).hexdigest()
+        != identity_frame_sha256
+        or hashlib.sha256(registered_candidates[0].packed).hexdigest()
+        != identity_frame_sha256
+        or role_pose_hash != identity_frame_sha256
+    ):
+        raise RasterContractError(
+            f"{label}/0: no-call identity baseline is not an exact source, "
+            "imported, registered, and final identity copy"
+        )
     if abs(base.median_x(role_pose_mask) - base.median_x(identity_mask)) > 4.0:
         raise RasterContractError(
             f"{label}/0: role-level dx does not preserve identity root alignment"
@@ -3532,8 +3550,13 @@ def validate_generated_action_semantic_role(
             landmark.role_pose_region,
             f"{label}/pose-landmark/{landmark.name}/role-pose",
         )
-        identity_ink = identity_mask & set(landmark.identity_region.mask)
-        role_pose_ink = role_pose_mask & set(landmark.role_pose_region.mask)
+        identity_landmark_region = set(landmark.identity_region.mask)
+        identity_ink = identity_mask & identity_landmark_region
+        role_pose_ink = role_pose_mask & (
+            identity_landmark_region
+            if identity_baseline_copy
+            else set(landmark.role_pose_region.mask)
+        )
         if (
             len(identity_ink) < landmark.minimum_ink_pixels
             or len(role_pose_ink) < landmark.minimum_ink_pixels
@@ -3565,6 +3588,11 @@ def validate_generated_action_semantic_role(
                 "name": landmark.name,
                 "identity_region_sha256": landmark.identity_region.packed_sha256,
                 "role_pose_region_sha256": landmark.role_pose_region.packed_sha256,
+                "comparison_mode": (
+                    "byte-exact-identity-baseline-copy"
+                    if identity_baseline_copy
+                    else "identity-region-to-role-pose-region"
+                ),
                 "identity_ink_pixels": len(identity_ink),
                 "role_pose_ink_pixels": len(role_pose_ink),
                 "ink_retention_per_mille": retention,

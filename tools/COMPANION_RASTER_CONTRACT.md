@@ -168,6 +168,15 @@ immutable identity and Image 2 as `<role>/00.png`, the byte-identical immutable
 P0 star base. This avoids asking ImageGen to redraw a base pose that is meant to
 remain unchanged while preserving the same two-reference lineage.
 
+For that exact-copy layout only, identity-to-role-P0 landmark evidence compares
+the identity landmark region against the same coordinates in P0. The verifier
+may take this path only after proving that the source hash, imported frame,
+registered frame, final frame, and zero registration are all exactly the
+approved identity. A generated or altered P0 continues to compare its distinct
+identity and role-pose regions and receives no such exemption. This prevents a
+pre-call hypothetical pose-region mapping from falsely rejecting a byte-exact
+identity copy without weakening topology checks for generated art.
+
 Direct 64x80 art remains preferred. A larger ImageGen result may enter the
 separate importer only through one quality-preserving transform approved from
 the identity and reused byte-for-byte for all forty-eight frames:
