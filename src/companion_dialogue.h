@@ -79,6 +79,13 @@ static_assert(sizeof(ActionState) <= 16U,
 
 void resetActionState(ActionState& state);
 bool validateActionState(const ActionState& state);
+
+// Reconstructs an authored line from the stable ID returned by
+// selectActionLine(). This lets firmware persist/replay the last dialogue
+// without storing pointers or text. Invalid and reserved IDs return false and
+// leave out unchanged.
+bool actionLineById(uint16_t id, ActionLine& out);
+
 ActionLine selectActionLine(Action action, const ActionContext& context,
                             uint32_t companionFingerprint,
                             ActionState& state);

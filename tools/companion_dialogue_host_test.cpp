@@ -34,6 +34,113 @@ dialogue::ActionContext richContext(uint8_t personality) {
   return context;
 }
 
+void assertReplayMatches(const dialogue::ActionLine& selected) {
+  dialogue::ActionLine replayed{};
+  assert(dialogue::actionLineById(selected.id, replayed));
+  assert(replayed.id == selected.id);
+  assert(replayed.flavor == selected.flavor);
+  assert(strcmp(replayed.line1, selected.line1) == 0);
+  assert(strcmp(replayed.line2, selected.line2) == 0);
+}
+
+void testActionLineReplayCatalogue() {
+  // Every authored success slot is addressable. The two reserved slots in
+  // each 16-ID action block are deliberately not part of the catalogue.
+  uint16_t validCount = 0U;
+  for (uint8_t action = 0U; action < dialogue::kActionCount; ++action) {
+    const uint16_t base = static_cast<uint16_t>(1U + action * 16U);
+    for (uint8_t slot = 0U; slot < 14U; ++slot) {
+      dialogue::ActionLine line{};
+      const uint16_t id = static_cast<uint16_t>(base + slot);
+      assert(dialogue::actionLineById(id, line));
+      assert(line.id == id);
+      assertDisplayText(line.line1);
+      assertDisplayText(line.line2);
+      const dialogue::LineFlavor expected =
+          slot < 4U
+              ? dialogue::LineFlavor::General
+              : (slot < 10U
+                     ? dialogue::LineFlavor::Personality
+                     : static_cast<dialogue::LineFlavor>(
+                           static_cast<uint8_t>(dialogue::LineFlavor::LowEnergy) +
+                           slot - 10U));
+      assert(line.flavor == expected);
+      ++validCount;
+    }
+  }
+
+  // Failed, busy, and no-reply pools each occupy ten slots in a 16-ID block.
+  const uint16_t outcomeBase = UINT16_C(0x0101);
+  for (uint8_t outcome = 0U; outcome < 3U; ++outcome) {
+    const uint16_t base =
+        static_cast<uint16_t>(outcomeBase + outcome * 16U);
+    for (uint8_t slot = 0U; slot < 10U; ++slot) {
+      dialogue::ActionLine line{};
+      const uint16_t id = static_cast<uint16_t>(base + slot);
+      assert(dialogue::actionLineById(id, line));
+      assert(line.id == id && line.flavor == dialogue::LineFlavor::Outcome);
+      assertDisplayText(line.line1);
+      assertDisplayText(line.line2);
+      ++validCount;
+    }
+  }
+  assert(validCount == 142U);
+
+  // IDs produced by the live selector replay byte-for-byte across every
+  // action, personality, and outcome family.
+  for (uint8_t action = 0U; action < dialogue::kActionCount; ++action) {
+    for (uint8_t personality = 0U; personality < 6U; ++personality) {
+      for (uint8_t outcome = 0U; outcome < 4U; ++outcome) {
+        dialogue::ActionState state{};
+        dialogue::ActionContext context = richContext(personality);
+        context.outcome = static_cast<dialogue::ActionOutcome>(outcome);
+        for (uint8_t turn = 0U; turn < 16U; ++turn) {
+          const dialogue::ActionLine selected = dialogue::selectActionLine(
+              static_cast<dialogue::Action>(action), context,
+              UINT32_C(0xA17E0000) + action * 97U + personality * 7U + outcome,
+              state);
+          assert(selected.id != 0U);
+          assertReplayMatches(selected);
+        }
+      }
+    }
+  }
+
+  // Reserved gaps, sentinels, and out-of-range IDs fail atomically.
+  uint16_t invalid[2U * dialogue::kActionCount + 3U * 6U + 5U]{};
+  size_t invalidCount = 0U;
+  invalid[invalidCount++] = 0U;
+  invalid[invalidCount++] = UINT16_C(0x0100);
+  invalid[invalidCount++] = UINT16_C(0x012B);
+  invalid[invalidCount++] = UINT16_C(0xFFFF);
+  invalid[invalidCount++] = 127U;
+  for (uint8_t action = 0U; action < dialogue::kActionCount; ++action) {
+    const uint16_t base = static_cast<uint16_t>(1U + action * 16U);
+    invalid[invalidCount++] = static_cast<uint16_t>(base + 14U);
+    invalid[invalidCount++] = static_cast<uint16_t>(base + 15U);
+  }
+  for (uint8_t outcome = 0U; outcome < 3U; ++outcome) {
+    const uint16_t base =
+        static_cast<uint16_t>(outcomeBase + outcome * 16U);
+    for (uint8_t slot = 10U; slot < 16U; ++slot) {
+      invalid[invalidCount++] = static_cast<uint16_t>(base + slot);
+    }
+  }
+  assert(invalidCount == sizeof(invalid) / sizeof(invalid[0]));
+  for (size_t index = 0U; index < invalidCount; ++index) {
+    dialogue::ActionLine untouched{};
+    untouched.line1 = "SENTINEL ONE";
+    untouched.line2 = "SENTINEL TWO";
+    untouched.id = 4242U;
+    untouched.flavor = dialogue::LineFlavor::Nearby;
+    assert(!dialogue::actionLineById(invalid[index], untouched));
+    assert(strcmp(untouched.line1, "SENTINEL ONE") == 0);
+    assert(strcmp(untouched.line2, "SENTINEL TWO") == 0);
+    assert(untouched.id == 4242U);
+    assert(untouched.flavor == dialogue::LineFlavor::Nearby);
+  }
+}
+
 void testActionDeterminismAndAntiRepeat() {
   for (uint8_t action = 0U; action < dialogue::kActionCount; ++action) {
     for (uint8_t person = 0U; person < 6U; ++person) {
@@ -318,6 +425,7 @@ int main() {
                 "Micro-story state unexpectedly grew");
 
   testActionDeterminismAndAntiRepeat();
+  testActionLineReplayCatalogue();
   testActionContextAndTruthfulOutcomes();
   testActionStateRepairAndReset();
   testStoryLifecycleAndCatalogue();

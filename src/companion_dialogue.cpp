@@ -486,6 +486,54 @@ bool validateActionState(const ActionState& state) {
   return true;
 }
 
+bool actionLineById(uint16_t id, ActionLine& out) {
+  if (!validActionLineId(id)) return false;
+
+  ActionLine resolved;
+  if (id < kOutcomeIdBase) {
+    const uint16_t offset = static_cast<uint16_t>(id - 1U);
+    const uint8_t action = static_cast<uint8_t>(offset >> 4U);
+    const uint8_t slot = static_cast<uint8_t>(offset & 15U);
+    const ActionSet& set = kActions[action];
+    const Text* text = nullptr;
+    if (slot < kGeneralLineCount) {
+      text = &set.general[slot];
+      resolved.flavor = LineFlavor::General;
+    } else if (slot < 10U) {
+      text = &set.personality[slot - 4U];
+      resolved.flavor = LineFlavor::Personality;
+    } else if (slot == 10U) {
+      text = &set.lowEnergy;
+      resolved.flavor = LineFlavor::LowEnergy;
+    } else if (slot == 11U) {
+      text = &set.bonded;
+      resolved.flavor = LineFlavor::Bonded;
+    } else if (slot == 12U) {
+      text = &set.curious;
+      resolved.flavor = LineFlavor::Curious;
+    } else {
+      text = &set.nearby;
+      resolved.flavor = LineFlavor::Nearby;
+    }
+    resolved.line1 = text->line1;
+    resolved.line2 = text->line2;
+  } else {
+    const uint16_t offset = static_cast<uint16_t>(id - kOutcomeIdBase);
+    const uint8_t outcome = static_cast<uint8_t>(offset >> 4U);
+    const uint8_t slot = static_cast<uint8_t>(offset & 15U);
+    const OutcomeSet& set = kOutcomes[outcome];
+    const Text& text = slot < kGeneralLineCount
+                           ? set.general[slot]
+                           : set.personality[slot - 4U];
+    resolved.line1 = text.line1;
+    resolved.line2 = text.line2;
+    resolved.flavor = LineFlavor::Outcome;
+  }
+  resolved.id = id;
+  out = resolved;
+  return true;
+}
+
 ActionLine selectActionLine(Action action, const ActionContext& context,
                             uint32_t companionFingerprint,
                             ActionState& state) {
