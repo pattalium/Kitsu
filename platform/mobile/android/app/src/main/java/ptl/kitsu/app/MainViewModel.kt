@@ -568,12 +568,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         NeighborInteractionKind.PET -> "Pet"
         NeighborInteractionKind.GREET -> "Greet"
         NeighborInteractionKind.PLAY -> "Play"
+        NeighborInteractionKind.GIFT -> "Gift"
     }
 
     private fun NeighborInteractionKind.acceptedNotice(): String = when (this) {
         NeighborInteractionKind.PET -> "Pet is queued for the nearby Kitsu."
         NeighborInteractionKind.GREET -> "Greeting is queued for the nearby Kitsu."
         NeighborInteractionKind.PLAY -> "Playtime is queued for the nearby Kitsu."
+        NeighborInteractionKind.GIFT -> "Gift is queued for the nearby Kitsu."
     }
 
     private fun rejectWhileFirmwareBusy(): Boolean {

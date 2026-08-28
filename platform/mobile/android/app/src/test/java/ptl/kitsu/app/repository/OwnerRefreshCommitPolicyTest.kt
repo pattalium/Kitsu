@@ -30,6 +30,7 @@ class OwnerRefreshCommitPolicyTest {
                 NeighborInteractionKind.PET,
                 NeighborInteractionKind.GREET,
                 NeighborInteractionKind.PLAY,
+                NeighborInteractionKind.GIFT,
             ),
         )
 

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Pets
@@ -260,7 +261,7 @@ private fun NearbyOwnedKitsuCard(
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             NearbyActionButton(
                 label = "Pet",
@@ -286,6 +287,15 @@ private fun NearbyOwnedKitsuCard(
                 kind = NeighborInteractionKind.PLAY,
                 deviceId = neighbor.deviceId,
                 enabled = enabled && !actionInFlight && NeighborInteractionKind.PLAY in supportedActions,
+                onInteraction = onInteraction,
+                modifier = Modifier.weight(1f),
+            )
+            NearbyActionButton(
+                label = "Gift",
+                icon = Icons.Default.CardGiftcard,
+                kind = NeighborInteractionKind.GIFT,
+                deviceId = neighbor.deviceId,
+                enabled = enabled && !actionInFlight && NeighborInteractionKind.GIFT in supportedActions,
                 onInteraction = onInteraction,
                 modifier = Modifier.weight(1f),
             )
@@ -326,8 +336,8 @@ private fun NearbyActionButton(
         modifier = modifier.testTag("nearby-kitsu-${kind.name.lowercase()}-$deviceId"),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
-        Spacer(Modifier.size(5.dp))
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.size(4.dp))
         Text(label, maxLines = 1)
     }
 }
@@ -337,6 +347,7 @@ private val NeighborInteractionKind.actionLabel: String
         NeighborInteractionKind.PET -> "Pet"
         NeighborInteractionKind.GREET -> "Greet"
         NeighborInteractionKind.PLAY -> "Play"
+        NeighborInteractionKind.GIFT -> "Gift"
     }
 
 private fun nearbySignalLabel(rssi: Double): String = when {

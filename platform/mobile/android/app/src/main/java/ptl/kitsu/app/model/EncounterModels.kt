@@ -134,6 +134,7 @@ enum class NeighborInteractionKind {
     @SerialName("pet") PET,
     @SerialName("greet") GREET,
     @SerialName("play") PLAY,
+    @SerialName("gift") GIFT,
 }
 
 @Serializable

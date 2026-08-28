@@ -112,6 +112,7 @@ class EncounterWireCodecTest {
         mapOf(
             NeighborInteractionKind.GREET to "greet",
             NeighborInteractionKind.PLAY to "play",
+            NeighborInteractionKind.GIFT to "gift",
         ).forEach { (kind, wireName) ->
             val kindBody = EncounterWireCodec.neighborActionBody(command.copy(kind = kind))
             assertEquals(wireName, kindBody.getValue("kind").jsonPrimitive.content)
@@ -154,7 +155,7 @@ class EncounterWireCodecTest {
         val page = EncounterWireCodec.nearbyKitsu(
             """{
                 "schema":"kitsu.encounter-neighbors.v1",
-                "supported_actions":["pet","greet","play"],
+                "supported_actions":["pet","greet","play","gift"],
                 "items":[]
             }""".trimIndent().toByteArray(),
         )
@@ -164,6 +165,7 @@ class EncounterWireCodecTest {
                 NeighborInteractionKind.PET,
                 NeighborInteractionKind.GREET,
                 NeighborInteractionKind.PLAY,
+                NeighborInteractionKind.GIFT,
             ),
             page.supportedActions,
         )

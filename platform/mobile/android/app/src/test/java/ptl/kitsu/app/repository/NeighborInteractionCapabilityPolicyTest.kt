@@ -29,6 +29,13 @@ class NeighborInteractionCapabilityPolicyTest {
                 NeighborInteractionKind.PLAY,
             ),
         )
+        assertEquals(
+            "neighbor_action_unsupported",
+            NeighborInteractionCapabilityPolicy.validationError(
+                legacyFirmware,
+                NeighborInteractionKind.GIFT,
+            ),
+        )
 
         val expandedFirmware = NeighborInteractionKind.entries.toSet()
         NeighborInteractionKind.entries.forEach { kind ->
