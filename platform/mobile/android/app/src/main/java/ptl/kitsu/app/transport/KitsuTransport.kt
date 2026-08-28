@@ -7,6 +7,8 @@ import ptl.kitsu.app.model.ControllerForgetReceipt
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EncounterCatalogPage
+import ptl.kitsu.app.model.ExpeditionDuration
+import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.MessagePage
@@ -17,6 +19,9 @@ import ptl.kitsu.app.model.NearbyKitsuPage
 import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.PeerPage
+import ptl.kitsu.app.model.PartyJoinCommand
+import ptl.kitsu.app.model.PartyRoundCommand
+import ptl.kitsu.app.model.StoryTrigger
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import kotlinx.coroutines.flow.Flow
 
@@ -62,6 +67,30 @@ interface KitsuTransport {
     suspend fun nearbyKitsu(): NearbyKitsuPage =
         throw TransportException("firmware_operation_unavailable")
     suspend fun neighborInteraction(command: NeighborInteractionCommand): NeighborInteractionReceipt =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun funState(): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun startExpedition(duration: ExpeditionDuration): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun claimExpedition(): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun startStory(trigger: StoryTrigger): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun advanceStory(storyId: Int): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun chooseStory(storyId: Int, choice: Int): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun scanParty(): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun hostParty(): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun joinParty(command: PartyJoinCommand): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun beginParty(): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun chooseParty(command: PartyRoundCommand): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun leaveParty(): FunState =
         throw TransportException("firmware_operation_unavailable")
     suspend fun forgetController(): ControllerForgetReceipt
 

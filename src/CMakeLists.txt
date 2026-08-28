@@ -2,8 +2,10 @@ idf_component_register(
   SRCS
     "companion_brain.cpp"
     "companion_dialogue.cpp"
+    "companion_fun.cpp"
     "companion_pack.cpp"
     "encounter_protocol.cpp"
+    "expedition_core.cpp"
     "kitsu_nearby_protocol.cpp"
     "kitsu_ble_action.cpp"
     "kitsu_ble_gatt.cpp"
@@ -28,10 +30,12 @@ idf_component_register(
     "kitsu_mesh_messages.cpp"
     "kitsu_mesh_transport.cpp"
     "kitsu_unlock_codes.cpp"
+    "kitsu_party_hotspot.cpp"
     "main.cpp"
     "mesh_discovery_journal.cpp"
     "mini_games.cpp"
     "signal_encounter.cpp"
+    "signal_trail.cpp"
     "wild_creature_catalog.cpp"
   INCLUDE_DIRS "."
   # PlatformIO mounts Arduino-ESP32 as an IDF component using the package

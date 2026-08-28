@@ -169,6 +169,14 @@ internal fun KitsuHomeScreen(
             }
         }
 
+        if (owner.status != null && owner.funSupported) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    KitsuFunCards(owner, viewModel, updateBusy)
+                }
+            }
+        }
+
         item {
             SectionHeading(
                 title = "Recent moments",

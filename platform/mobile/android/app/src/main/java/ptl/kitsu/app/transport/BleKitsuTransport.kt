@@ -34,6 +34,20 @@ import ptl.kitsu.app.model.EncounterCatalogPage
 import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.EventEnvelope
+import ptl.kitsu.app.model.ExpeditionDuration
+import ptl.kitsu.app.model.FUN_EXPEDITION_CLAIM_OPERATION
+import ptl.kitsu.app.model.FUN_EXPEDITION_START_OPERATION
+import ptl.kitsu.app.model.FUN_PARTY_BEGIN_OPERATION
+import ptl.kitsu.app.model.FUN_PARTY_CHOOSE_OPERATION
+import ptl.kitsu.app.model.FUN_PARTY_HOST_OPERATION
+import ptl.kitsu.app.model.FUN_PARTY_JOIN_OPERATION
+import ptl.kitsu.app.model.FUN_PARTY_LEAVE_OPERATION
+import ptl.kitsu.app.model.FUN_PARTY_SCAN_OPERATION
+import ptl.kitsu.app.model.FUN_STATE_GET_OPERATION
+import ptl.kitsu.app.model.FUN_STORY_ADVANCE_OPERATION
+import ptl.kitsu.app.model.FUN_STORY_CHOOSE_OPERATION
+import ptl.kitsu.app.model.FUN_STORY_START_OPERATION
+import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.MessageMarkReadReceipt
@@ -45,6 +59,9 @@ import ptl.kitsu.app.model.NEIGHBOR_ACTION_OPERATION
 import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.PeerPage
+import ptl.kitsu.app.model.PartyJoinCommand
+import ptl.kitsu.app.model.PartyRoundCommand
+import ptl.kitsu.app.model.StoryTrigger
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingProtocol
 import ptl.kitsu.app.pairing.ControllerPairingService
@@ -1335,6 +1352,69 @@ class BleKitsuTransport(
             command,
         )
     }
+
+    override suspend fun funState(): FunState = funRequest(
+        FUN_STATE_GET_OPERATION,
+        buildJsonObject {},
+    )
+
+    override suspend fun startExpedition(duration: ExpeditionDuration): FunState = funRequest(
+        FUN_EXPEDITION_START_OPERATION,
+        FunWireCodec.expeditionStartBody(duration),
+    )
+
+    override suspend fun claimExpedition(): FunState = funRequest(
+        FUN_EXPEDITION_CLAIM_OPERATION,
+        buildJsonObject {},
+    )
+
+    override suspend fun startStory(trigger: StoryTrigger): FunState = funRequest(
+        FUN_STORY_START_OPERATION,
+        FunWireCodec.storyStartBody(trigger),
+    )
+
+    override suspend fun advanceStory(storyId: Int): FunState = funRequest(
+        FUN_STORY_ADVANCE_OPERATION,
+        FunWireCodec.storyAdvanceBody(storyId),
+    )
+
+    override suspend fun chooseStory(storyId: Int, choice: Int): FunState = funRequest(
+        FUN_STORY_CHOOSE_OPERATION,
+        FunWireCodec.storyChooseBody(storyId, choice),
+    )
+
+    override suspend fun scanParty(): FunState = funRequest(
+        FUN_PARTY_SCAN_OPERATION,
+        buildJsonObject {},
+    )
+
+    override suspend fun hostParty(): FunState = funRequest(
+        FUN_PARTY_HOST_OPERATION,
+        buildJsonObject {},
+    )
+
+    override suspend fun joinParty(command: PartyJoinCommand): FunState = funRequest(
+        FUN_PARTY_JOIN_OPERATION,
+        FunWireCodec.partyJoinBody(command),
+    )
+
+    override suspend fun beginParty(): FunState = funRequest(
+        FUN_PARTY_BEGIN_OPERATION,
+        buildJsonObject {},
+    )
+
+    override suspend fun chooseParty(command: PartyRoundCommand): FunState = funRequest(
+        FUN_PARTY_CHOOSE_OPERATION,
+        FunWireCodec.partyChooseBody(command),
+    )
+
+    override suspend fun leaveParty(): FunState = funRequest(
+        FUN_PARTY_LEAVE_OPERATION,
+        buildJsonObject {},
+    )
+
+    private suspend fun funRequest(operation: String, body: JsonObject): FunState =
+        FunWireCodec.state(successfulPayload(operation, body))
 
     override suspend fun action(command: ActionCommand): ActionReceipt {
         if (command.kind !in setOf(

@@ -13,6 +13,8 @@ import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.EncounterCatalogCreature
 import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.model.HistoryEntry
+import ptl.kitsu.app.model.ExpeditionDuration
+import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.Message
 import ptl.kitsu.app.model.MeshChannel
@@ -22,6 +24,9 @@ import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.Peer
+import ptl.kitsu.app.model.PartyJoinCommand
+import ptl.kitsu.app.model.PartyRoundCommand
+import ptl.kitsu.app.model.StoryTrigger
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
 import ptl.kitsu.app.pairing.PairingException
@@ -33,6 +38,7 @@ import ptl.kitsu.app.security.CredentialStore
 import ptl.kitsu.app.security.SafeLog
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.transport.FirmwareEncounterApiPolicy
+import ptl.kitsu.app.transport.FirmwareFunApiPolicy
 import ptl.kitsu.app.transport.KitsuTransport
 import ptl.kitsu.app.transport.FirmwareMessageApiPolicy
 import ptl.kitsu.app.transport.TransportException
@@ -74,6 +80,10 @@ data class OwnerState(
     val nearbyKitsuSupported: Boolean = false,
     val nearbyInteractionKinds: Set<NeighborInteractionKind> = emptySet(),
     val nearbyKitsuErrorCode: String? = null,
+    val funState: FunState? = null,
+    val funSupported: Boolean = false,
+    val funErrorCode: String? = null,
+    val funMutationInFlight: Boolean = false,
     val messages: List<Message> = emptyList(),
     val messagesErrorCode: String? = null,
     val messageJournalSession: String? = null,
@@ -161,6 +171,10 @@ class OwnerRepository(
                     nearbyKitsuErrorCode = if (connection.connected) {
                         mutableState.value.nearbyKitsuErrorCode
                     } else null,
+                    funState = if (connection.connected) mutableState.value.funState else null,
+                    funSupported = connection.connected && mutableState.value.funSupported,
+                    funErrorCode = if (connection.connected) mutableState.value.funErrorCode else null,
+                    funMutationInFlight = connection.connected && mutableState.value.funMutationInFlight,
                     messageJournalSession = if (connection.connected) {
                         mutableState.value.messageJournalSession
                     } else null,
@@ -474,6 +488,21 @@ class OwnerRepository(
                 } else {
                     null
                 }
+                var funErrorCode: String? = null
+                val funSupported = FirmwareFunApiPolicy.supportsV1(status.firmwareVersion)
+                val funState = if (funSupported) {
+                    try {
+                        transport.funState()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        funErrorCode = failure.transportCodeOr("fun_state_refresh_failed")
+                        SafeLog.warn("owner_fun", funErrorCode!!, failure)
+                        null
+                    }
+                } else {
+                    null
+                }
                 val replaceHistory = OwnerCursorPolicy.shouldReplace(
                     lastLiveNamespace,
                     liveNamespace,
@@ -494,6 +523,9 @@ class OwnerRepository(
                     nearbyKitsuSupported = nearbyKitsuSupported,
                     nearbyInteractionKinds = nearbyPage?.supportedActions?.toSet().orEmpty(),
                     nearbyKitsuErrorCode = nearbyKitsuErrorCode,
+                    funState = funState,
+                    funSupported = funSupported,
+                    funErrorCode = funErrorCode,
                     messageMarkReadSupported = FirmwareMessageApiPolicy.supportsMarkRead(
                         status.firmwareVersion,
                     ),
@@ -669,6 +701,60 @@ class OwnerRepository(
                     nearbyKitsuErrorCode = null,
                 )
             }
+        }
+    }
+
+    suspend fun startExpedition(duration: ExpeditionDuration): FunState =
+        mutateFun { it.startExpedition(duration) }
+
+    suspend fun claimExpedition(): FunState = mutateFun(KitsuTransport::claimExpedition)
+
+    suspend fun startStory(trigger: StoryTrigger): FunState =
+        mutateFun { it.startStory(trigger) }
+
+    suspend fun advanceStory(storyId: Int): FunState =
+        mutateFun { it.advanceStory(storyId) }
+
+    suspend fun chooseStory(storyId: Int, choice: Int): FunState =
+        mutateFun { it.chooseStory(storyId, choice) }
+
+    suspend fun scanParty(): FunState = mutateFun(KitsuTransport::scanParty)
+
+    suspend fun hostParty(): FunState = mutateFun(KitsuTransport::hostParty)
+
+    suspend fun joinParty(command: PartyJoinCommand): FunState =
+        mutateFun { it.joinParty(command) }
+
+    suspend fun beginParty(): FunState = mutateFun(KitsuTransport::beginParty)
+
+    suspend fun chooseParty(command: PartyRoundCommand): FunState =
+        mutateFun { it.chooseParty(command) }
+
+    suspend fun leaveParty(): FunState = mutateFun(KitsuTransport::leaveParty)
+
+    private suspend fun mutateFun(
+        call: suspend (KitsuTransport) -> FunState,
+    ): FunState = refreshMutex.withLock {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        if (!mutableState.value.funSupported) throw TransportException("firmware_operation_unavailable")
+        if (mutableState.value.funMutationInFlight) throw TransportException("fun_action_in_flight")
+        mutableState.value = mutableState.value.copy(
+            funMutationInFlight = true,
+            funErrorCode = null,
+        )
+        try {
+            coordinator.withTransport(call).also { updated ->
+                mutableState.value = mutableState.value.copy(
+                    funState = updated,
+                    funErrorCode = null,
+                )
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            throw failure
+        } finally {
+            mutableState.value = mutableState.value.copy(funMutationInFlight = false)
         }
     }
 
@@ -1116,6 +1202,10 @@ class OwnerRepository(
             nearbyKitsuSupported = false,
             nearbyInteractionKinds = emptySet(),
             nearbyKitsuErrorCode = null,
+            funState = null,
+            funSupported = false,
+            funErrorCode = null,
+            funMutationInFlight = false,
             messages = emptyList(),
             messagesErrorCode = null,
             messageJournalSession = null,
@@ -1176,6 +1266,10 @@ class OwnerRepository(
             nearbyKitsuSupported = false,
             nearbyInteractionKinds = emptySet(),
             nearbyKitsuErrorCode = null,
+            funState = null,
+            funSupported = false,
+            funErrorCode = null,
+            funMutationInFlight = false,
             messages = emptyList(),
             messagesErrorCode = null,
             messageJournalSession = null,

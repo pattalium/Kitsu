@@ -3,6 +3,7 @@ package ptl.kitsu.app.repository
 import ptl.kitsu.app.connection.ConnectionState
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.EncounterCatalogCreature
+import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.NearbyKitsu
@@ -22,6 +23,9 @@ internal data class OwnerNonMessageSnapshot(
     val nearbyKitsuSupported: Boolean = false,
     val nearbyInteractionKinds: Set<NeighborInteractionKind> = emptySet(),
     val nearbyKitsuErrorCode: String? = null,
+    val funState: FunState? = null,
+    val funSupported: Boolean = false,
+    val funErrorCode: String? = null,
     val messageMarkReadSupported: Boolean = false,
 )
 
@@ -40,6 +44,9 @@ internal object OwnerRefreshCommitPolicy {
         nearbyKitsuSupported = snapshot.nearbyKitsuSupported,
         nearbyInteractionKinds = snapshot.nearbyInteractionKinds,
         nearbyKitsuErrorCode = snapshot.nearbyKitsuErrorCode,
+        funState = snapshot.funState,
+        funSupported = snapshot.funSupported,
+        funErrorCode = snapshot.funErrorCode,
         messageMarkReadSupported = snapshot.messageMarkReadSupported,
         loading = false,
         errorCode = null,

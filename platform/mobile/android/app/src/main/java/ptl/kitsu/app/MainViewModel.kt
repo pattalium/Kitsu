@@ -8,10 +8,16 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.AdvertiseScope
 import ptl.kitsu.app.model.EncounterUnlockCode
+import ptl.kitsu.app.model.DiscoveredPartyHost
+import ptl.kitsu.app.model.ExpeditionDuration
 import ptl.kitsu.app.model.MessageRoute
 import ptl.kitsu.app.model.NearbyKitsu
 import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionKind
+import ptl.kitsu.app.model.PartyJoinCommand
+import ptl.kitsu.app.model.PartyRoundCommand
+import ptl.kitsu.app.model.PartySignalChoice
+import ptl.kitsu.app.model.StoryTrigger
 import ptl.kitsu.app.pairing.PairingException
 import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
 import ptl.kitsu.app.repository.OwnerRepository
@@ -325,6 +331,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun petNeighbor(neighbor: NearbyKitsu) =
         interactWithNeighbor(neighbor, NeighborInteractionKind.PET)
 
+    fun startExpedition(duration: ExpeditionDuration) = runFunAction(
+        success = "Expedition started. It keeps progressing while you are away.",
+    ) { repository.startExpedition(duration) }
+
+    fun claimExpedition() = runFunAction(
+        success = "Expedition report claimed.",
+    ) { repository.claimExpedition() }
+
+    fun startStory(trigger: StoryTrigger = StoryTrigger.QUIET) = runFunAction(
+        success = null,
+    ) { repository.startStory(trigger) }
+
+    fun advanceStory(storyId: Int) = runFunAction(success = null) {
+        repository.advanceStory(storyId)
+    }
+
+    fun chooseStory(storyId: Int, choice: Int) = runFunAction(
+        success = "That choice became part of your Kitsu's story.",
+    ) { repository.chooseStory(storyId, choice) }
+
+    fun scanParty() = runFunAction(
+        success = "Listening for nearby Party Hotspots.",
+    ) { repository.scanParty() }
+
+    fun hostParty() = runFunAction(
+        success = "Party Hotspot opened. Nearby Kitsu can join now.",
+    ) { repository.hostParty() }
+
+    fun joinParty(host: DiscoveredPartyHost) = runFunAction(
+        success = "Join request sent to ${host.hostDeviceId}.",
+    ) {
+        repository.joinParty(PartyJoinCommand(host.hostDeviceId, host.sessionNonce))
+    }
+
+    fun beginParty() = runFunAction(
+        success = "Signal hunt started.",
+    ) { repository.beginParty() }
+
+    fun chooseParty(round: Int, choice: PartySignalChoice) = runFunAction(
+        success = "${choice.name.lowercase().replaceFirstChar { it.uppercase() }} locked for round $round.",
+    ) { repository.chooseParty(PartyRoundCommand(round, choice)) }
+
+    fun leaveParty() = runFunAction(
+        success = "Party Hotspot closed.",
+    ) { repository.leaveParty() }
+
     fun pairController(label: String) {
         if (rejectWhileFirmwareBusy()) return
         viewModelScope.launch {
@@ -569,6 +621,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         NeighborInteractionKind.GREET -> "Greet"
         NeighborInteractionKind.PLAY -> "Play"
         NeighborInteractionKind.GIFT -> "Gift"
+    }
+
+    private fun runFunAction(success: String?, action: suspend () -> Unit) {
+        if (rejectWhileFirmwareBusy() || owner.value.funMutationInFlight) return
+        if (!owner.value.connection.connected) {
+            mutableNotice.value = "Connect your Kitsu first."
+            return
+        }
+        if (!owner.value.funSupported) {
+            mutableNotice.value = "Update Kitsu firmware to use expeditions, stories, and Party Hotspot."
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { action() }
+            if (result.isSuccess && success != null) mutableNotice.value = success
+            result.report("fun_action_failed")
+        }
     }
 
     private fun NeighborInteractionKind.acceptedNotice(): String = when (this) {
