@@ -320,6 +320,8 @@ bool operationAllowed(const char* operation) {
       "messages.get",       "messages.get.v2",   "messages.get.v3",
       "messages.get.v4",
       "messages.mark_read",
+      "encounter.codes.get.v1", "encounter.neighbors.get.v1",
+      "encounter.neighbor.action.v1", "encounter.catalog.get.v1",
       "channels.get",       "channels.get.v2",
       "chat.storage.get",
       "clock.sync",

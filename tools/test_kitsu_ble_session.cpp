@@ -448,6 +448,73 @@ void testPairingHandshakeEnvelopeAndReplay() {
   assert(fixture.transport.disconnected);
 }
 
+void testEncounterOperationsReachDelegate() {
+  Fixture fixture;
+  uint8_t controllerId[16]{};
+  uint8_t controllerRoot[32]{};
+  pairController(fixture, controllerId, controllerRoot);
+
+  uint8_t c2d[32]{};
+  uint8_t d2c[32]{};
+  authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+
+  static const char* const operations[] = {
+      "encounter.codes.get.v1",
+      "encounter.neighbors.get.v1",
+      "encounter.neighbor.action.v1",
+      "encounter.catalog.get.v1",
+  };
+  static const uint8_t payload[] = "{}";
+  for (size_t index = 0U;
+       index < sizeof(operations) / sizeof(operations[0]); ++index) {
+    uint8_t nonce[16]{};
+    uint8_t requestId[16]{};
+    memset(nonce, static_cast<int>(0x50U + index), sizeof(nonce));
+    memset(requestId, static_cast<int>(0x60U + index), sizeof(requestId));
+    uint8_t requestJson[1024]{};
+    size_t requestBytes = 0U;
+    const uint64_t sequence = static_cast<uint64_t>(index + 1U);
+    assert(kitsu868::companion::encodeEnvelope(
+               EnvelopeChannel::Request, sequence, nonce, requestId,
+               operations[index], payload, sizeof(payload) - 1U, c2d,
+               fixture.crypto, requestJson, sizeof(requestJson),
+               requestBytes) == ProtocolResult::Ok);
+
+    fixture.session.onFrame(requestJson, requestBytes,
+                            static_cast<uint32_t>(2010U + index));
+    assert(fixture.operations.calls == index + 1U);
+    assert(fixture.operations.lastOperation == operations[index]);
+    assert(fixture.operations.lastPayload == "{}");
+
+    const std::string response = fixture.transport.frames.back();
+    uint8_t decodedPayload[128]{};
+    DecodedEnvelope decoded{};
+    assert(kitsu868::companion::decodeAndVerifyEnvelope(
+               reinterpret_cast<const uint8_t*>(response.data()),
+               response.size(), d2c, EnvelopeChannel::Response, sequence,
+               fixture.crypto, decoded, decodedPayload,
+               sizeof(decodedPayload)) == ProtocolResult::Ok);
+    assert(strcmp(decoded.operation, operations[index]) == 0);
+    assert(std::string(reinterpret_cast<char*>(decodedPayload),
+                       decoded.payloadBytes) == "{\"ok\":true}");
+  }
+
+  uint8_t nonce[16]{};
+  uint8_t requestId[16]{};
+  memset(nonce, 0x70, sizeof(nonce));
+  memset(requestId, 0x71, sizeof(requestId));
+  uint8_t requestJson[1024]{};
+  size_t requestBytes = 0U;
+  assert(kitsu868::companion::encodeEnvelope(
+             EnvelopeChannel::Request, 5U, nonce, requestId,
+             "encounter.unsupported.v1", payload, sizeof(payload) - 1U, c2d,
+             fixture.crypto, requestJson, sizeof(requestJson), requestBytes) ==
+         ProtocolResult::Ok);
+  fixture.session.onFrame(requestJson, requestBytes, 2020U);
+  assert(fixture.operations.calls == 4U);
+  assert(fixture.session.status(2020U).state == BleSessionState::Closing);
+}
+
 void testAuthenticatedControllerForgetDrainsReceipt() {
   Fixture fixture;
   uint8_t controllerId[16]{};
@@ -585,6 +652,7 @@ void testPairingNeverPersistsBeforeCommit() {
 
 int main() {
   testPairingHandshakeEnvelopeAndReplay();
+  testEncounterOperationsReachDelegate();
   testAuthenticatedControllerForgetDrainsReceipt();
   testPartialControllerForgetCannotKeepUsingSession();
   testStrictControlsAndTimeout();
