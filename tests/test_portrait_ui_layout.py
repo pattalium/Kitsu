@@ -107,6 +107,8 @@ class PortraitPlannerContractTest(unittest.TestCase):
             "ControllerManager",
             "ControllerConfirm",
             "ControllerResult",
+            "FieldGuide",
+            "Goals",
         }
         self.assertEqual(screens, expected)
         for native_test in (
@@ -120,6 +122,7 @@ class PortraitPlannerContractTest(unittest.TestCase):
             "testStatusPages",
             "testPairPhoneVariants",
             "testControllerRecoveryVariants",
+            "testFieldGuideAndGoals",
         ):
             self.assertIn(native_test, HOST_TEST)
         for phone_state in (

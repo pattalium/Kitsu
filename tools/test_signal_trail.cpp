@@ -199,18 +199,68 @@ void testHintsPersistenceAndFailClosedRestore() {
         "operation marker without an ID is rejected");
 }
 
+void testCoordinatorIntegrationKeepsOriginalRolls() {
+  signal::Configuration configuration{};
+  const uint16_t rarityWeights[signal::kRarityCount] = {
+      5500U, 2500U, 1200U, 500U, 200U, 50U, 50U};
+  for (size_t index = 0U; index < signal::kRarityCount; ++index) {
+    configuration.rarityWeightBasisPoints[index] = rarityWeights[index];
+    configuration.codeChanceBasisPoints[index] = 2500U;
+  }
+  check(signal::validateConfiguration(configuration) ==
+            signal::ConfigurationStatus::Ok,
+        "zero-natural-chance integration configuration is valid");
+  signal::SignalEncounterCoordinator coordinator(configuration);
+  signal::SignalTrail trail;
+  signal::EncounterRecord record{};
+  signal::SignalTrailResult trailResult{};
+  for (uint64_t id = 1U; id <= 21U; ++id) {
+    const signal::LogicalOperationEvent operation = event(id);
+    const signal::ProcessStatus coordinatorStatus = coordinator.process(
+        operation, static_cast<uint32_t>(UINT32_C(0x10203040) + id), record);
+    check(coordinatorStatus == signal::ProcessStatus::RecordedNoEncounter,
+          "coordinator remains a natural miss at zero configured chance");
+    const uint16_t rarityRollBefore = record.rarityRollBasisPoints;
+    const uint16_t codeRollBefore = record.codeRollBasisPoints;
+    const signal::SignalTrailProcessStatus trailStatus = trail.process(
+        operation, record.encounterOccurred, trailResult);
+    if (id <= 20U) {
+      check(trailStatus == signal::SignalTrailProcessStatus::RecordedMiss,
+            "first twenty coordinator misses fill trail");
+    } else {
+      check(trailStatus ==
+                    signal::SignalTrailProcessStatus::RecordedEncounter &&
+                trailResult.guaranteedByTrail == 1U,
+            "twenty-first coordinator miss becomes one trail encounter");
+      signal::Rarity rarity = signal::Rarity::Common;
+      check(signal::rarityForRoll(configuration, rarityRollBefore, rarity),
+            "forced encounter resolves rarity from coordinator roll");
+      const signal::CodeOutcome code = signal::codeOutcomeForRoll(
+          configuration, rarity, codeRollBefore);
+      check(code == signal::CodeOutcome::Revealed ||
+                code == signal::CodeOutcome::NotRevealed,
+            "forced encounter resolves code from coordinator roll");
+      check(record.rarityRollBasisPoints == rarityRollBefore &&
+                record.codeRollBasisPoints == codeRollBefore,
+            "trail does not reroll or mutate coordinator entropy");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
   testTwentyMissGuaranteeAndDedupe();
   testNaturalAndRepeaterResets();
   testHintsPersistenceAndFailClosedRestore();
+  testCoordinatorIntegrationKeepsOriginalRolls();
 
   if (failures != 0) {
     std::cerr << "TEST_FAIL signal_trail failures=" << failures << '\n';
     return 1;
   }
   std::cout << "TEST_PASS signal_trail cap=20 hints=5,10,15,20 "
-               "dedupe=monotonic restore=fail_closed repeater=immediate\n";
+               "dedupe=monotonic restore=fail_closed repeater=immediate "
+               "coordinator_rolls=preserved\n";
   return 0;
 }

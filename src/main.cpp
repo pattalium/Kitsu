@@ -7,6 +7,7 @@
 #include <Wire.h>
 
 #include "companion_brain.h"
+#include "companion_fun.h"
 #include "companion_pack.h"
 #include "companion_replacement_intent.h"
 #include "encounter_protocol.h"
@@ -31,15 +32,19 @@
 #include "portrait_font.h"
 #include "portrait_ui_layout.h"
 #include "signal_encounter.h"
+#include "signal_trail.h"
 #include "wild_creature_catalog.h"
 
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.17.4";
+constexpr char FIRMWARE_VERSION[] = "0.18.0";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 constexpr uint32_t SIGNAL_STATE_MAGIC = 0x4b534731;  // "KSG1"
+constexpr uint32_t SIGNAL_STATE_V2_MAGIC = 0x4b534732;  // "KSG2"
+constexpr uint32_t FUN_STATE_MAGIC = 0x4b465531;  // "KFU1"
+constexpr uint32_t PENDING_WILD_STATE_MAGIC = 0x4b505731;  // "KPW1"
 
 constexpr int16_t UI_WIDTH = 64;
 constexpr int16_t UI_HEIGHT = 128;
@@ -70,6 +75,8 @@ constexpr uint32_t BRAIN_MINUTE_MS = 60UL * 1000UL;
 constexpr uint32_t BATTERY_SAMPLE_MS = 60UL * 1000UL;
 constexpr uint32_t AWAKE_DISPLAY_SLEEP_MS = 2UL * 60UL * 1000UL;
 constexpr uint32_t DREAM_DISPLAY_SLEEP_MS = 20UL * 1000UL;
+constexpr uint32_t DREAM_MINIMUM_SLEEP_MS = 10UL * 60UL * 1000UL;
+constexpr uint32_t MOMENT_DISPLAY_MS = 6500UL;
 constexpr uint32_t MESH_INTRODUCE_MIN_INTERVAL_MS = 1000UL;
 constexpr uint32_t DISCOVERY_JOURNAL_DEBOUNCE_MS = 5000UL;
 constexpr uint32_t BLE_REFRESH_INTERVAL_MS = 30UL * 1000UL;
@@ -84,6 +91,7 @@ CompanionPack companionPack;
 kitsu868::CompanionBrain companionBrain;
 kitsu868::SignalCatchGame signalCatchGame;
 kitsu868::PounceFetchGame pounceFetchGame;
+kitsu868::EchoBeatGame echoBeatGame;
 kitsu868::mesh::KitsuMeshTransport meshTransport;
 kitsu868::mesh::SettingsStore meshSettingsStore;
 kitsu868::mesh::Settings meshSettings = kitsu868::mesh::defaultSettings();
@@ -124,6 +132,7 @@ const kitsu868::signal::Configuration SIGNAL_ENCOUNTER_CONFIGURATION =
     makeSignalEncounterConfiguration();
 kitsu868::signal::SignalEncounterCoordinator signalEncounterCoordinator(
     SIGNAL_ENCOUNTER_CONFIGURATION);
+kitsu868::signal::SignalTrail signalTrail;
 kitsu868::connectivity::Esp32DeviceSecurityStorage connectivityStorage;
 kitsu868::connectivity::Esp32DeviceSecurityPlatform connectivityPlatform;
 kitsu868::connectivity::KitsuDeviceSecurity deviceSecurity;
@@ -160,6 +169,8 @@ enum class Screen : uint8_t {
   ControllerConfirm,
   ControllerResult,
   WildEncounter,
+  FieldGuide,
+  Goals,
 };
 
 enum class ConnectionAction : uint8_t {
@@ -179,7 +190,7 @@ enum class ControllerRecoveryResult : uint8_t {
   ControllerAuthorityChanged,
 };
 
-enum class ActiveGame : uint8_t { None, SignalCatch, PounceFetch };
+enum class ActiveGame : uint8_t { None, SignalCatch, PounceFetch, EchoBeat };
 
 struct WispState {
   String uid;
@@ -228,21 +239,84 @@ struct SignalStateV1 {
   uint32_t entropy = 0U;
   uint32_t crc32 = 0U;
 };
+
+struct SignalStateV2 {
+  uint32_t magic = SIGNAL_STATE_V2_MAGIC;
+  uint16_t schema = 2U;
+  uint16_t bytes = 0U;
+  uint64_t lastOperationId = 0U;
+  uint8_t hasLastRecord = 0U;
+  uint8_t operationKind = 0U;
+  uint8_t encounterOccurred = 0U;
+  uint8_t guaranteed = 0U;
+  uint8_t rarity = 0U;
+  uint8_t codeOutcome = 0U;
+  uint16_t encounterRoll = 0U;
+  uint16_t rarityRoll = 0U;
+  uint16_t codeRoll = 0U;
+  uint64_t recordOperationId = 0U;
+  uint32_t entropy = 0U;
+  uint8_t trailSchema = kitsu868::signal::kSignalTrailStateSchemaVersion;
+  uint8_t trailMissCount = 0U;
+  uint8_t trailHasLastOperation = 0U;
+  uint8_t trailReserved = 0U;
+  uint64_t trailLastOperationId = 0U;
+  uint32_t crc32 = 0U;
+};
+
+struct FunStateV1 {
+  uint32_t magic = FUN_STATE_MAGIC;
+  uint16_t schema = 1U;
+  uint16_t bytes = 0U;
+  uint32_t seenMask = 0U;
+  uint16_t encounterCounts[kitsu868::fun::kCatalogCreatureCount]{};
+  uint8_t lastSources[kitsu868::fun::kCatalogCreatureCount]{};
+  uint16_t completedDreams = 0U;
+  uint16_t rareReactions = 0U;
+  uint8_t dreamHistory[kitsu868::fun::kDreamHistoryCapacity]{};
+  uint8_t dreamHead = 0U;
+  uint8_t dreamHistoryCount = 0U;
+  uint64_t lastEncounterOperationId = 0U;
+  uint32_t crc32 = 0U;
+};
+
+struct PendingWildStateV1 {
+  uint32_t magic = PENDING_WILD_STATE_MAGIC;
+  uint16_t schema = 1U;
+  uint16_t bytes = 0U;
+  uint64_t operationId = 0U;
+  uint32_t entropy = 0U;
+  uint32_t packId = 0U;
+  uint8_t active = 0U;
+  uint8_t source = 0U;
+  uint8_t rarity = 0U;
+  uint8_t codeOutcome = 0U;
+  uint8_t guaranteed = 0U;
+  uint8_t reserved[3]{};
+  uint32_t crc32 = 0U;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(CoreStateV2) == 37, "core persistence layout changed");
 static_assert(sizeof(SignalStateV1) == 44,
               "signal encounter persistence layout changed");
+static_assert(sizeof(SignalStateV2) == 56,
+              "signal trail persistence layout changed");
+static_assert(sizeof(FunStateV1) == 101,
+              "fun persistence layout changed");
+static_assert(sizeof(PendingWildStateV1) == 36,
+              "pending wild encounter persistence layout changed");
 
 WispState wisp;
 Screen screen = Screen::Pet;
 const char* const MENU_ITEMS[] = {
-    "CONNECT", "FEED", "PLAY", "GAMES", "INBOX", "RADIO", "SLEEP",
-    "INFO", "BACK"};
-const char* const GAME_ITEMS[] = {"SIGNAL", "POUNCE", "BACK"};
+    "CONNECT", "FEED", "PLAY", "GAMES", "CREATURES", "GOALS",
+    "INBOX", "RADIO", "SLEEP", "INFO", "BACK"};
+const char* const GAME_ITEMS[] = {"SIGNAL", "POUNCE", "ECHO", "BACK"};
 uint8_t menuIndex = 0;
 uint8_t gameMenuIndex = 0;
 uint8_t statusPage = 0;
+uint8_t fieldGuideIndex = 0;
 ConnectionAction connectionAction = ConnectionAction::Bluetooth;
 ActiveGame activeGame = ActiveGame::None;
 bool gameRewarded = false;
@@ -284,6 +358,11 @@ struct WildEncounterView {
 };
 
 WildEncounterView wildEncounterView{};
+uint64_t pendingWildOperationId = 0U;
+uint32_t pendingWildEntropy = 0U;
+kitsu868::signal::CodeOutcome pendingWildCodeOutcome =
+    kitsu868::signal::CodeOutcome::NotApplicable;
+bool pendingWildMaterialized = false;
 
 constexpr uint8_t NEARBY_NEIGHBOR_CAPACITY = 8U;
 struct NearbyNeighbor {
@@ -302,10 +381,15 @@ struct NearbyNeighbor {
   uint32_t lastAcceptedActionAt = 0U;
   uint16_t nextSequence = 1U;
   kitsu868::nearby::DuplicateToken lastInbound{};
+  bool hasInboundResult = false;
+  kitsu868::nearby::ActionResult lastInboundResult =
+      kitsu868::nearby::ActionResult::None;
 };
 
 NearbyNeighbor nearbyNeighbors[NEARBY_NEIGHBOR_CAPACITY]{};
 uint32_t nearbySessionNonce = 0U;
+uint16_t nearbySequenceCursor = 1U;
+bool nearbySequenceReady = false;
 struct PendingNearbyAction {
   bool active = false;
   kitsu868::nearby::Packet request{};
@@ -322,6 +406,21 @@ alignas(4) uint8_t encounterCodeRollback[
     kitsu868::unlocks::kStoreSerializedBytes]{};
 bool encounterCodesReady = false;
 bool signalEncounterStateReady = false;
+bool funStateReady = false;
+kitsu868::fun::DiscoveryState funDiscovery{};
+uint64_t lastFunEncounterOperationId = 0U;
+kitsu868::fun::SessionChallenges sessionChallenges{};
+bool sessionAuraActive = false;
+
+struct MomentView {
+  bool active = false;
+  const char* line1 = nullptr;
+  const char* line2 = nullptr;
+  uint32_t until = 0U;
+};
+MomentView momentView{};
+uint32_t sleepStartedAt = 0U;
+uint32_t nextRareReactionAt = 0U;
 
 struct BatteryState {
   uint16_t millivolts = 0;
@@ -466,8 +565,11 @@ bool sendNearbyPresence();
 void processNearbyRadio();
 void recordSuccessfulEncounterTrigger(
     kitsu868::signal::MeshOperationKind kind);
-kitsu868::mesh::TransportStatus queueNearbyPetAction(
-    uint16_t targetUid, uint32_t targetSessionNonce, uint16_t sequence);
+bool materializePendingWildEncounter();
+void loadPendingWildEncounter();
+kitsu868::mesh::TransportStatus queueNearbyAction(
+    uint16_t targetUid, uint32_t targetSessionNonce, uint16_t sequence,
+    kitsu868::nearby::PositiveAction action);
 kitsu868::CompanionVitals companionVitals();
 ChatJournalEntry& appendChatJournal();
 void advanceChatJournalGeneration();
@@ -1791,6 +1893,24 @@ bool buildState(const uint8_t* payload, size_t payloadBytes, String& output) {
       companionBrain.personality().kind);
   output += "\",\"unlock_mask\":";
   output += String(companionBrain.unlockMask());
+  output += ",\"signal_trail_misses\":";
+  output += String(signalTrail.missCount());
+  output += ",\"signal_trail_maximum\":";
+  output += String(kitsu868::signal::kSignalTrailMaximumMisses);
+  output += ",\"signal_trail_hint\":\"";
+  output += kitsu868::signal::signalTrailHintName(signalTrail.hint());
+  output += "\",\"signal_trail_guaranteed_next\":";
+  output += signalTrail.nextEligibleGuaranteed() ? "true" : "false";
+  output += ",\"catalog_seen\":";
+  output += String(kitsu868::fun::seenCreatureCount(funDiscovery));
+  output += ",\"dream_count\":";
+  output += String(funDiscovery.completedDreams);
+  output += ",\"rare_reaction_count\":";
+  output += String(funDiscovery.rareReactions);
+  output += ",\"session_goals_complete_mask\":";
+  output += String(sessionChallenges.completedMask);
+  output += ",\"session_aura_active\":";
+  output += sessionAuraActive ? "true" : "false";
   output += ",\"memory_count\":";
   output += String(companionBrain.memoryCount());
   output += ",\"mesh_rx_ready\":";
@@ -2940,6 +3060,8 @@ struct NeighborActionRequest {
   uint32_t targetSessionNonce = 0U;
   uint16_t sequence = 0U;
   uint32_t expiresAtEpoch = 0U;
+  kitsu868::nearby::PositiveAction action =
+      kitsu868::nearby::PositiveAction::Pet;
 };
 
 bool asciiHex(uint8_t value) {
@@ -3065,8 +3187,18 @@ bool parseNeighborActionRequest(const uint8_t* payload, size_t payloadBytes,
       if ((seen & kKind) != 0U) return false;
       const uint8_t* value = nullptr;
       size_t valueBytes = 0U;
-      if (!parseAsciiString(payload, payloadBytes, cursor, value, valueBytes) ||
-          !sameToken(value, valueBytes, "pet")) {
+      if (!parseAsciiString(payload, payloadBytes, cursor, value, valueBytes)) {
+        return false;
+      }
+      if (sameToken(value, valueBytes, "pet")) {
+        output.action = kitsu868::nearby::PositiveAction::Pet;
+      } else if (sameToken(value, valueBytes, "greet")) {
+        output.action = kitsu868::nearby::PositiveAction::Greet;
+      } else if (sameToken(value, valueBytes, "play")) {
+        output.action = kitsu868::nearby::PositiveAction::Play;
+      } else if (sameToken(value, valueBytes, "gift")) {
+        output.action = kitsu868::nearby::PositiveAction::Gift;
+      } else {
         return false;
       }
       seen |= kKind;
@@ -3121,8 +3253,9 @@ bool applyNeighborAction(const uint8_t* payload, size_t payloadBytes,
     buildNeighborActionReceipt(request, false, "action_expired", output);
     return true;
   }
-  const kitsu868::mesh::TransportStatus status = queueNearbyPetAction(
-      request.targetUid, request.targetSessionNonce, request.sequence);
+  const kitsu868::mesh::TransportStatus status = queueNearbyAction(
+      request.targetUid, request.targetSessionNonce, request.sequence,
+      request.action);
   if (status == kitsu868::mesh::TransportStatus::Ok) {
     buildNeighborActionReceipt(request, true, nullptr, output);
     return true;
@@ -3145,7 +3278,10 @@ bool buildEncounterNeighbors(const uint8_t* payload, size_t payloadBytes,
                              String& output) {
   if (!emptyObject(payload, payloadBytes)) return false;
   const uint32_t now = millis();
-  output = "{\"schema\":\"kitsu.encounter-neighbors.v1\",\"items\":[";
+  output = "{\"schema\":\"kitsu.encounter-neighbors.v1\",";
+  output +=
+      "\"supported_actions\":[\"pet\",\"greet\",\"play\",\"gift\"],";
+  output += "\"items\":[";
   output.reserve(2048U);
   bool first = true;
   for (const NearbyNeighbor& neighbor : nearbyNeighbors) {
@@ -3189,6 +3325,32 @@ bool buildEncounterNeighbors(const uint8_t* payload, size_t payloadBytes,
       kitsu868::companion::kMaximumEnvelopePayloadBytes;
 }
 
+bool buildEncounterCatalog(const uint8_t* payload, size_t payloadBytes,
+                           String& output) {
+  if (!emptyObject(payload, payloadBytes)) return false;
+  output = "{\"schema\":\"kitsu.encounter-catalog.v1\",\"items\":[";
+  output.reserve(2400U);
+  for (size_t index = 0U; index < kitsu868::wild::creatureCount(); ++index) {
+    kitsu868::wild::Creature creature{};
+    if (!kitsu868::wild::creatureAt(index, creature) || !creature.name ||
+        creature.packId == 0U) {
+      return false;
+    }
+    if (index != 0U) output += ',';
+    output += "{\"pack_id\":";
+    output += String(static_cast<unsigned long>(creature.packId));
+    output += ",\"creature_name\":\"";
+    output += jsonEscaped(String(creature.name));
+    output += "\",\"rarity\":\"";
+    output += signalRarityName(creature.rarity);
+    output += "\"}";
+  }
+  output += "]}";
+  return kitsu868::wild::creatureCount() ==
+             kitsu868::fun::kCatalogCreatureCount &&
+      output.length() <= kitsu868::companion::kMaximumEnvelopePayloadBytes;
+}
+
 }  // namespace companion_api
 
 
@@ -3227,6 +3389,9 @@ __attribute__((noinline)) bool handleCompanionBleRequest(
   } else if (strcmp(request.operation, "encounter.neighbor.action.v1") == 0) {
     handled = companion_api::applyNeighborAction(payload, payloadBytes,
                                                  response);
+  } else if (strcmp(request.operation, "encounter.catalog.get.v1") == 0) {
+    handled = companion_api::buildEncounterCatalog(payload, payloadBytes,
+                                                    response);
   } else if (strcmp(request.operation, "channels.get") == 0) {
     handled = companion_api::buildChannels(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "channels.get.v2") == 0) {
@@ -3552,11 +3717,25 @@ uint32_t signalStateCrc(const SignalStateV1& state) {
   return crc32Prefix(&state, offsetof(SignalStateV1, crc32));
 }
 
+uint32_t signalStateCrc(const SignalStateV2& state) {
+  return crc32Prefix(&state, offsetof(SignalStateV2, crc32));
+}
+
+uint32_t funStateCrc(const FunStateV1& state) {
+  return crc32Prefix(&state, offsetof(FunStateV1, crc32));
+}
+
+uint32_t pendingWildStateCrc(const PendingWildStateV1& state) {
+  return crc32Prefix(&state, offsetof(PendingWildStateV1, crc32));
+}
+
 bool persistSignalEncounterState() {
   if (!storageReady || !signalEncounterStateReady) return false;
   const kitsu868::signal::CoordinatorState current =
       signalEncounterCoordinator.snapshot();
-  SignalStateV1 stored{};
+  const kitsu868::signal::SignalTrailState trail = signalTrail.snapshot();
+  if (!kitsu868::signal::validateSignalTrailState(trail)) return false;
+  SignalStateV2 stored{};
   stored.bytes = sizeof(stored);
   stored.lastOperationId = current.lastOperationId;
   stored.hasLastRecord = current.hasLastRecord;
@@ -3573,31 +3752,75 @@ bool persistSignalEncounterState() {
     stored.recordOperationId = record.operationId;
     stored.entropy = record.entropy;
   }
+  stored.trailSchema = trail.schemaVersion;
+  stored.trailMissCount = trail.missCount;
+  stored.trailHasLastOperation = trail.hasLastOperation;
+  stored.trailReserved = trail.reserved;
+  stored.trailLastOperationId = trail.lastOperationId;
   stored.crc32 = signalStateCrc(stored);
-  return preferences.putBytes("signal_v1", &stored, sizeof(stored)) ==
+  return preferences.putBytes("signal_v2", &stored, sizeof(stored)) ==
       sizeof(stored);
 }
 
 void loadSignalEncounterState() {
   signalEncounterCoordinator.reset();
+  signalTrail.reset();
   signalEncounterStateReady =
       signalEncounterCoordinator.configurationStatus() ==
           kitsu868::signal::ConfigurationStatus::Ok;
   if (!storageReady || !signalEncounterStateReady) return;
-  const size_t bytes = preferences.getBytesLength("signal_v1");
-  if (bytes == 0U) return;
-  SignalStateV1 stored{};
-  if (bytes != sizeof(stored) ||
-      preferences.getBytes("signal_v1", &stored, sizeof(stored)) !=
-          sizeof(stored) ||
-      stored.magic != SIGNAL_STATE_MAGIC || stored.schema != 1U ||
-      stored.bytes != sizeof(stored) || stored.hasLastRecord > 1U ||
-      stored.crc32 != signalStateCrc(stored)) {
-    signalEncounterStateReady = false;
-    Serial.println("KITSU_WARN signal_state=invalid");
-    return;
-  }
+  const size_t v2Bytes = preferences.getBytesLength("signal_v2");
   kitsu868::signal::CoordinatorState restored{};
+  kitsu868::signal::SignalTrailState restoredTrail{};
+  bool migrateV1 = false;
+  SignalStateV2 stored{};
+  if (v2Bytes != 0U) {
+    if (v2Bytes != sizeof(stored) ||
+        preferences.getBytes("signal_v2", &stored, sizeof(stored)) !=
+            sizeof(stored) ||
+        stored.magic != SIGNAL_STATE_V2_MAGIC || stored.schema != 2U ||
+        stored.bytes != sizeof(stored) || stored.hasLastRecord > 1U ||
+        stored.crc32 != signalStateCrc(stored)) {
+      signalEncounterStateReady = false;
+      Serial.println("KITSU_WARN signal_state=invalid");
+      return;
+    }
+    restoredTrail.schemaVersion = stored.trailSchema;
+    restoredTrail.missCount = stored.trailMissCount;
+    restoredTrail.hasLastOperation = stored.trailHasLastOperation;
+    restoredTrail.reserved = stored.trailReserved;
+    restoredTrail.lastOperationId = stored.trailLastOperationId;
+  } else {
+    const size_t v1Bytes = preferences.getBytesLength("signal_v1");
+    if (v1Bytes == 0U) return;
+    SignalStateV1 legacy{};
+    if (v1Bytes != sizeof(legacy) ||
+        preferences.getBytes("signal_v1", &legacy, sizeof(legacy)) !=
+            sizeof(legacy) || legacy.magic != SIGNAL_STATE_MAGIC ||
+        legacy.schema != 1U || legacy.bytes != sizeof(legacy) ||
+        legacy.hasLastRecord > 1U ||
+        legacy.crc32 != signalStateCrc(legacy)) {
+      signalEncounterStateReady = false;
+      Serial.println("KITSU_WARN signal_state=invalid");
+      return;
+    }
+    stored.lastOperationId = legacy.lastOperationId;
+    stored.hasLastRecord = legacy.hasLastRecord;
+    stored.operationKind = legacy.operationKind;
+    stored.encounterOccurred = legacy.encounterOccurred;
+    stored.guaranteed = legacy.guaranteed;
+    stored.rarity = legacy.rarity;
+    stored.codeOutcome = legacy.codeOutcome;
+    stored.encounterRoll = legacy.encounterRoll;
+    stored.rarityRoll = legacy.rarityRoll;
+    stored.codeRoll = legacy.codeRoll;
+    stored.recordOperationId = legacy.recordOperationId;
+    stored.entropy = legacy.entropy;
+    restoredTrail.hasLastOperation = legacy.hasLastRecord;
+    restoredTrail.lastOperationId =
+        legacy.hasLastRecord ? legacy.lastOperationId : 0U;
+    migrateV1 = true;
+  }
   restored.lastOperationId = stored.lastOperationId;
   restored.hasLastRecord = stored.hasLastRecord;
   if (restored.hasLastRecord) {
@@ -3615,11 +3838,182 @@ void loadSignalEncounterState() {
     restored.lastRecord.entropy = stored.entropy;
   }
   if (signalEncounterCoordinator.restore(restored) !=
-      kitsu868::signal::RestoreStatus::Ok) {
+          kitsu868::signal::RestoreStatus::Ok ||
+      signalTrail.restore(restoredTrail) !=
+          kitsu868::signal::SignalTrailRestoreStatus::Ok ||
+      restored.lastOperationId != restoredTrail.lastOperationId) {
     signalEncounterCoordinator.reset();
+    signalTrail.reset();
     signalEncounterStateReady = false;
     Serial.println("KITSU_WARN signal_state=invalid_semantics");
+    return;
   }
+  if (migrateV1 && !persistSignalEncounterState()) {
+    Serial.println("KITSU_WARN signal_state=migration_flush_failed");
+  }
+}
+
+bool persistFunState() {
+  if (!storageReady || !funStateReady ||
+      !kitsu868::fun::validateDiscoveryState(funDiscovery)) {
+    return false;
+  }
+  FunStateV1 stored{};
+  stored.bytes = sizeof(stored);
+  stored.seenMask = funDiscovery.seenMask;
+  memcpy(stored.encounterCounts, funDiscovery.encounterCounts,
+         sizeof(stored.encounterCounts));
+  memcpy(stored.lastSources, funDiscovery.lastSources,
+         sizeof(stored.lastSources));
+  stored.completedDreams = funDiscovery.completedDreams;
+  stored.rareReactions = funDiscovery.rareReactions;
+  memcpy(stored.dreamHistory, funDiscovery.dreamHistory,
+         sizeof(stored.dreamHistory));
+  stored.dreamHead = funDiscovery.dreamHead;
+  stored.dreamHistoryCount = funDiscovery.dreamHistoryCount;
+  stored.lastEncounterOperationId = lastFunEncounterOperationId;
+  stored.crc32 = funStateCrc(stored);
+  return preferences.putBytes("fun_v1", &stored, sizeof(stored)) ==
+      sizeof(stored);
+}
+
+void loadFunState() {
+  kitsu868::fun::resetDiscoveryState(funDiscovery);
+  lastFunEncounterOperationId = 0U;
+  funStateReady = storageReady;
+  if (!storageReady) return;
+  const size_t bytes = preferences.getBytesLength("fun_v1");
+  if (bytes == 0U) return;
+  FunStateV1 stored{};
+  if (bytes != sizeof(stored) ||
+      preferences.getBytes("fun_v1", &stored, sizeof(stored)) !=
+          sizeof(stored) || stored.magic != FUN_STATE_MAGIC ||
+      stored.schema != 1U || stored.bytes != sizeof(stored) ||
+      stored.crc32 != funStateCrc(stored)) {
+    funStateReady = false;
+    Serial.println("KITSU_WARN fun_state=invalid");
+    return;
+  }
+  funDiscovery.seenMask = stored.seenMask;
+  memcpy(funDiscovery.encounterCounts, stored.encounterCounts,
+         sizeof(funDiscovery.encounterCounts));
+  memcpy(funDiscovery.lastSources, stored.lastSources,
+         sizeof(funDiscovery.lastSources));
+  funDiscovery.completedDreams = stored.completedDreams;
+  funDiscovery.rareReactions = stored.rareReactions;
+  memcpy(funDiscovery.dreamHistory, stored.dreamHistory,
+         sizeof(funDiscovery.dreamHistory));
+  funDiscovery.dreamHead = stored.dreamHead;
+  funDiscovery.dreamHistoryCount = stored.dreamHistoryCount;
+  lastFunEncounterOperationId = stored.lastEncounterOperationId;
+  if (!kitsu868::fun::validateDiscoveryState(funDiscovery)) {
+    funStateReady = false;
+    kitsu868::fun::resetDiscoveryState(funDiscovery);
+    lastFunEncounterOperationId = 0U;
+    Serial.println("KITSU_WARN fun_state=invalid_semantics");
+  }
+}
+
+bool persistPendingWildEncounter() {
+  if (!storageReady || pendingWildOperationId == 0U ||
+      !wildEncounterView.available || !wildEncounterView.creature.name ||
+      !kitsu868::signal::validOperationKind(wildEncounterView.source) ||
+      !kitsu868::signal::validRarity(wildEncounterView.creature.rarity) ||
+      static_cast<uint8_t>(pendingWildCodeOutcome) >
+          static_cast<uint8_t>(kitsu868::signal::CodeOutcome::Revealed)) {
+    return false;
+  }
+  PendingWildStateV1 stored{};
+  stored.bytes = sizeof(stored);
+  stored.operationId = pendingWildOperationId;
+  stored.entropy = pendingWildEntropy;
+  stored.packId = wildEncounterView.creature.packId;
+  stored.active = 1U;
+  stored.source = static_cast<uint8_t>(wildEncounterView.source);
+  stored.rarity = static_cast<uint8_t>(wildEncounterView.creature.rarity);
+  stored.codeOutcome = static_cast<uint8_t>(pendingWildCodeOutcome);
+  stored.guaranteed = wildEncounterView.guaranteed ? 1U : 0U;
+  stored.crc32 = pendingWildStateCrc(stored);
+  const bool written =
+      preferences.putBytes("wild_v1", &stored, sizeof(stored)) ==
+      sizeof(stored);
+  PendingWildStateV1 verification{};
+  return written &&
+      preferences.getBytesLength("wild_v1") == sizeof(verification) &&
+      preferences.getBytes("wild_v1", &verification,
+                           sizeof(verification)) == sizeof(verification) &&
+      memcmp(&verification, &stored, sizeof(stored)) == 0;
+}
+
+bool clearPendingWildEncounter() {
+  if (!storageReady) return false;
+  if (preferences.getBytesLength("wild_v1") == 0U) return true;
+  return preferences.remove("wild_v1") &&
+      preferences.getBytesLength("wild_v1") == 0U;
+}
+
+void loadPendingWildEncounter() {
+  wildEncounterView = WildEncounterView{};
+  pendingWildOperationId = 0U;
+  pendingWildEntropy = 0U;
+  pendingWildCodeOutcome = kitsu868::signal::CodeOutcome::NotApplicable;
+  pendingWildMaterialized = false;
+  if (!storageReady) return;
+  const size_t bytes = preferences.getBytesLength("wild_v1");
+  if (bytes == 0U) return;
+  PendingWildStateV1 stored{};
+  if (bytes != sizeof(stored) ||
+      preferences.getBytes("wild_v1", &stored, sizeof(stored)) !=
+          sizeof(stored) || stored.magic != PENDING_WILD_STATE_MAGIC ||
+      stored.schema != 1U || stored.bytes != sizeof(stored) ||
+      stored.active != 1U || stored.operationId == 0U ||
+      stored.packId == 0U || stored.guaranteed > 1U ||
+      stored.source >=
+          static_cast<uint8_t>(kitsu868::signal::MeshOperationKind::Count) ||
+      stored.rarity >=
+          static_cast<uint8_t>(kitsu868::signal::Rarity::Count) ||
+      stored.codeOutcome >
+          static_cast<uint8_t>(kitsu868::signal::CodeOutcome::Revealed) ||
+      stored.reserved[0] != 0U || stored.reserved[1] != 0U ||
+      stored.reserved[2] != 0U ||
+      stored.crc32 != pendingWildStateCrc(stored)) {
+    Serial.println("KITSU_WARN pending_wild=invalid");
+    return;
+  }
+  const kitsu868::signal::CoordinatorState signalState =
+      signalEncounterCoordinator.snapshot();
+  if (!signalEncounterStateReady) {
+    // An unreadable coordinator cannot prove whether the prepared reward was
+    // committed. Preserve the journal so recovery never destroys entitlement.
+    Serial.println("KITSU_WARN pending_wild=signal_unavailable");
+    return;
+  }
+  if (signalState.lastOperationId != stored.operationId) {
+    // A prepared record whose signal operation never committed is not an
+    // encounter. It is safe to discard and the operation may be retried.
+    if (!clearPendingWildEncounter()) {
+      Serial.println("KITSU_WARN pending_wild=stale_remove_failed");
+    }
+    return;
+  }
+  kitsu868::wild::Creature creature{};
+  const kitsu868::signal::Rarity rarity =
+      static_cast<kitsu868::signal::Rarity>(stored.rarity);
+  if (!kitsu868::wild::creatureForRarity(rarity, stored.entropy, creature) ||
+      creature.packId != stored.packId) {
+    Serial.println("KITSU_WARN pending_wild=catalog_mismatch");
+    return;
+  }
+  pendingWildOperationId = stored.operationId;
+  pendingWildEntropy = stored.entropy;
+  pendingWildCodeOutcome =
+      static_cast<kitsu868::signal::CodeOutcome>(stored.codeOutcome);
+  wildEncounterView.available = true;
+  wildEncounterView.guaranteed = stored.guaranteed != 0U;
+  wildEncounterView.creature = creature;
+  wildEncounterView.source =
+      static_cast<kitsu868::signal::MeshOperationKind>(stored.source);
+  pendingWildMaterialized = materializePendingWildEncounter();
 }
 
 bool persistEncounterCodes() {
@@ -3740,6 +4134,45 @@ bool saveState() {
   return readBack;
 }
 
+void loadNearbySequenceCursor() {
+  nearbySequenceCursor = 1U;
+  nearbySequenceReady = false;
+  if (!storageReady) return;
+  if (!preferences.isKey("near_seq")) {
+    nearbySequenceReady =
+        preferences.putUShort("near_seq", nearbySequenceCursor) ==
+            sizeof(nearbySequenceCursor) &&
+        preferences.getUShort("near_seq", 0U) == nearbySequenceCursor;
+  } else if (preferences.getType("near_seq") == PT_U16) {
+    nearbySequenceCursor = preferences.getUShort("near_seq", 0U);
+    nearbySequenceReady = nearbySequenceCursor != 0U;
+  }
+  if (!nearbySequenceReady) {
+    nearbySequenceCursor = 1U;
+    Serial.println("KITSU_WARN nearby_sequence=unavailable");
+  }
+}
+
+bool reserveNearbySequence(uint16_t sequence) {
+  if (!nearbySequenceReady || sequence == 0U ||
+      sequence != nearbySequenceCursor) {
+    return false;
+  }
+  const uint16_t next =
+      sequence == UINT16_MAX ? 1U : static_cast<uint16_t>(sequence + 1U);
+  if (preferences.putUShort("near_seq", next) != sizeof(next) ||
+      preferences.getUShort("near_seq", 0U) != next) {
+    nearbySequenceReady = false;
+    Serial.println("KITSU_WARN nearby_sequence=flush_failed");
+    return false;
+  }
+  nearbySequenceCursor = next;
+  for (NearbyNeighbor& neighbor : nearbyNeighbors) {
+    if (neighbor.used) neighbor.nextSequence = next;
+  }
+  return true;
+}
+
 void persistProgress() {
   saveState();
   if (!companionBrain.flush()) {
@@ -3794,6 +4227,8 @@ void loadState() {
   companion_api::loadActionReplay();
   loadSignalEncounterState();
   loadEncounterCodes();
+  loadFunState();
+  loadPendingWildEncounter();
 }
 
 // The OLED remains a 128x64 framebuffer. Every UI pixel is mapped into a logical
@@ -4501,6 +4936,13 @@ bool drawCreatureSprite(int16_t legacyY = 24, int16_t highResolutionY = 16) {
               y + orbitY[orbit]);
     }
   }
+  if (sessionAuraActive ||
+      (companionBrain.unlockMask() & kitsu868::UnlockAura) != 0U) {
+    const uint8_t pulse = static_cast<uint8_t>((millis() / 180U) & 7U);
+    uiPixel(2 + pulse * 2, y + 3);
+    uiPixel(61 - pulse * 2, y + 28);
+    uiPixel(5 + pulse * 3, y + 62);
+  }
   return true;
 }
 
@@ -4519,8 +4961,13 @@ void renderPet() {
   }
   uiMailBadge();
   const bool highResolution = companionPack.formatVersion() == KITSU_PACK_V2;
-  uiTextCentered(moodText(), highResolution ? 99 : 93);
-  uiEnergyBar(wisp.energy, highResolution ? 113 : 110);
+  if (momentView.active) {
+    uiTextCenteredFit(momentView.line1, highResolution ? 98 : 92, 1);
+    uiTextCenteredFit(momentView.line2, highResolution ? 110 : 104, 1);
+  } else {
+    uiTextCentered(moodText(), highResolution ? 99 : 93);
+    uiEnergyBar(wisp.energy, highResolution ? 113 : 110);
+  }
 }
 
 void renderMenu() {
@@ -4647,9 +5094,37 @@ void renderPounceGame() {
   uiRect(3, view.catchY + 7, 58, 3);
 }
 
+void renderEchoGame() {
+  const kitsu868::EchoBeatView view = echoBeatGame.view(millis());
+  uiTextCentered("ECHO", 4);
+  uiTextCentered(kitsu868::echoBeatStageLabel(view.stage), 20);
+  uiTextCentered(String(view.stage == kitsu868::EchoBeatStage::Presenting
+                            ? view.presentedBeats
+                            : view.replayedBeats) +
+                     "/" + String(view.totalBeats),
+                 34);
+  if (view.cueOn) {
+    uiFillRect(23, 49, 18, 18);
+    uiRect(19, 45, 26, 26);
+  } else {
+    uiRect(25, 51, 14, 14);
+  }
+  if (view.stage == kitsu868::EchoBeatStage::Replay) {
+    uiTextCentered("TAP THE BEAT", 76);
+  } else if (view.phase == kitsu868::MiniGamePhase::Result) {
+    uiTextCentered(kitsu868::miniGameResultLabel(view.result), 76);
+  }
+  uiTextCentered("SCORE " + String(view.score), 96);
+  uiTextCentered(view.phase == kitsu868::MiniGamePhase::Finished
+                     ? "TAP HOME"
+                     : "HOLD QUIT",
+                 113);
+}
+
 void renderGame() {
   if (activeGame == ActiveGame::SignalCatch) renderSignalGame();
   else if (activeGame == ActiveGame::PounceFetch) renderPounceGame();
+  else if (activeGame == ActiveGame::EchoBeat) renderEchoGame();
   else renderGameMenu();
 }
 
@@ -4727,6 +5202,32 @@ void renderStatus() {
     } else {
       uiTextCentered("QUIET", 53, 2);
     }
+  } else if (statusPage == 3) {
+    uiTextCenteredFit("REWARDS", 6, 2);
+    uiTextCentered("DREAMS " + String(funDiscovery.completedDreams), 25);
+    uint8_t recentDreamIndex = 0U;
+    if (kitsu868::fun::recentDream(funDiscovery, 0U, recentDreamIndex)) {
+      const kitsu868::fun::Dream recent = kitsu868::fun::selectDream(
+          companionBrain.personality().kind,
+          companionBrain.deviceFingerprint(),
+          static_cast<uint16_t>(funDiscovery.completedDreams - 1U));
+      if (recent.index == recentDreamIndex) {
+        uiTextCenteredFit(recent.line1, 39, 1);
+        uiTextCenteredFit(recent.line2, 50, 1);
+      } else {
+        uiTextCentered("DREAM #" + String(recentDreamIndex + 1U), 45);
+      }
+    } else {
+      uiTextCentered("NO DREAMS", 45);
+    }
+    uiTextCentered("R" + String(funDiscovery.rareReactions) + " C" +
+                       String(kitsu868::fun::seenCreatureCount(funDiscovery)),
+                   65);
+    uiTextCentered(sessionAuraActive ? "SESSION AURA" : "AURA LOCKED", 82);
+    uiTextCentered((companionBrain.unlockMask() & kitsu868::UnlockFinalForm)
+                       ? "FINAL FORM"
+                       : "KEEP BONDING",
+                   99);
   } else {
     uiTextCentered("KITSU", 5, 2);
     uiTextCentered(FIRMWARE_VERSION, 27);
@@ -4738,7 +5239,92 @@ void renderStatus() {
     uiTextCentered(storageReady ? "STORE OK" : "STORE ERR", 91);
     uiTextCentered(companionPack.valid() ? "PACK OK" : "NO PACK", 107);
   }
-  uiMenuDots(statusPage, 4, 121);
+  uiMenuDots(statusPage, 5, 121);
+}
+
+bool catalogCreatureOwned(const kitsu868::wild::Creature& creature) {
+  if (companionPack.valid() && companionPack.id() == creature.packId) {
+    return true;
+  }
+  kitsu868::unlocks::CodeRecord record{};
+  return encounterCodesReady &&
+      encounterCodes.findByPackId(creature.packId, record);
+}
+
+void drawCatalogPortrait(const kitsu868::wild::Creature& creature,
+                         uint8_t top, uint8_t scale) {
+  const uint8_t* bitmap = nullptr;
+  size_t bitmapBytes = 0U;
+  if (!kitsu868::wild::portraitBitmap(creature.portrait, bitmap,
+                                     bitmapBytes) ||
+      bitmapBytes != kitsu868::wild::kPortraitBytes) {
+    return;
+  }
+  const uint8_t left = static_cast<uint8_t>(
+      (UI_WIDTH - kitsu868::wild::kPortraitWidth * scale) / 2U);
+  for (uint8_t y = 0U; y < kitsu868::wild::kPortraitHeight; ++y) {
+    for (uint8_t x = 0U; x < kitsu868::wild::kPortraitWidth; ++x) {
+      const size_t byteIndex =
+          static_cast<size_t>(y) * (kitsu868::wild::kPortraitWidth / 8U) +
+          x / 8U;
+      if ((bitmap[byteIndex] & (1U << (x & 7U))) != 0U) {
+        uiFillRect(left + x * scale, top + y * scale, scale, scale);
+      }
+    }
+  }
+}
+
+void drawUnknownCreatureSilhouette() {
+  uiFillRect(27, 30, 10, 10);
+  uiFillRect(22, 40, 20, 20);
+  uiFillRect(18, 48, 28, 8);
+}
+
+void renderFieldGuide() {
+  kitsu868::wild::Creature creature{};
+  if (!kitsu868::wild::creatureAt(fieldGuideIndex, creature)) {
+    uiTextCentered("FIELD GUIDE", 4);
+    uiTextCentered("UNAVAILABLE", 50, 2);
+    return;
+  }
+  const bool seen = funStateReady &&
+      kitsu868::fun::creatureSeen(funDiscovery, fieldGuideIndex);
+  uiTextCentered("FIELD GUIDE", 2);
+  uiTextCenteredFit(seen ? creature.name : "???", 14, 1);
+  if (seen) drawCatalogPortrait(creature, 27, 2U);
+  else drawUnknownCreatureSilhouette();
+  uiTextCentered(seen ? signalRarityName(creature.rarity) : "UNDISCOVERED",
+                 66);
+  uiTextCentered(seen
+                     ? "SEEN " + String(kitsu868::fun::creatureEncounterCount(
+                                      funDiscovery, fieldGuideIndex))
+                     : "FOLLOW SIGNALS",
+                 80);
+  uiTextCentered(catalogCreatureOwned(creature) ? "OWNED" : "NOT OWNED", 94);
+  uiTextCentered("ROSTER " + String(fieldGuideIndex + 1U) + "/" +
+                     String(kitsu868::fun::kCatalogCreatureCount),
+                 106);
+  uiTextCentered("TRAIL " + String(signalTrail.missCount()) + "/" +
+                     String(kitsu868::signal::kSignalTrailMaximumMisses),
+                 118);
+}
+
+void renderGoals() {
+  uiTextCentered("SESSION GOALS", 5);
+  uiTextCentered("CARE " + String(sessionChallenges.care) + "/" +
+                     String(kitsu868::fun::challengeTarget(
+                         kitsu868::fun::SessionActivity::Care)),
+                 29);
+  uiTextCentered("GAME " + String(sessionChallenges.games) + "/" +
+                     String(kitsu868::fun::challengeTarget(
+                         kitsu868::fun::SessionActivity::Game)),
+                 47);
+  uiTextCentered("SIGNAL " + String(sessionChallenges.signals) + "/" +
+                     String(kitsu868::fun::challengeTarget(
+                         kitsu868::fun::SessionActivity::Signal)),
+                 65);
+  uiTextCentered(sessionAuraActive ? "AURA ACTIVE" : "COMPLETE ALL", 87, 2);
+  uiTextCentered("HOLD BACK", 113);
 }
 
 void renderPairPhone() {
@@ -5008,8 +5594,14 @@ void renderWildEncounter() {
   uiTextCenteredFit(rarity, 69, 1);
   uiTextCentered(wildEncounterView.codeRevealed ? "CODE FOUND" : "NO CODE",
                  85);
-  uiTextCentered(wildEncounterView.guaranteed ? "REPEATER FIND" : "SIGNAL FIND",
-                 99);
+  uiTextCentered(
+      wildEncounterView.guaranteed
+          ? wildEncounterView.source ==
+                    kitsu868::signal::MeshOperationKind::RepeaterDiscovered
+                ? "REPEATER FIND"
+                : "TRAIL FIND"
+          : "SIGNAL FIND",
+      99);
   uiTextCentered("TAP OR HOLD", 114);
 }
 
@@ -5030,6 +5622,8 @@ void renderDisplay(bool force = false) {
     case Screen::Sleep: renderSleep(); break;
     case Screen::Status: renderStatus(); break;
     case Screen::WildEncounter: renderWildEncounter(); break;
+    case Screen::FieldGuide: renderFieldGuide(); break;
+    case Screen::Goals: renderGoals(); break;
     case Screen::PairPhone: renderPairPhone(); break;
     case Screen::ControllerManager: renderControllerManager(); break;
     case Screen::ControllerConfirm: renderControllerConfirm(); break;
@@ -5047,6 +5641,17 @@ void enterScreen(Screen next) {
 }
 
 void dismissWildEncounter() {
+  if (!pendingWildMaterialized && pendingWildOperationId != 0U) {
+    pendingWildMaterialized = materializePendingWildEncounter();
+  }
+  if (pendingWildMaterialized && clearPendingWildEncounter()) {
+    pendingWildOperationId = 0U;
+    pendingWildEntropy = 0U;
+    pendingWildCodeOutcome = kitsu868::signal::CodeOutcome::NotApplicable;
+    pendingWildMaterialized = false;
+  } else if (pendingWildMaterialized) {
+    Serial.println("KITSU_WARN pending_wild=clear_failed");
+  }
   wildEncounterView.available = false;
   enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
 }
@@ -5071,7 +5676,7 @@ bool requireCompanion() {
   if (companionPack.valid()) return true;
   lastMemory = "No companion pack is installed.";
   Serial.printf("KITSU_ERROR no_pack reason=%s\n", companionPack.error());
-  statusPage = 3;
+  statusPage = 4;
   enterScreen(Screen::Status);
   return false;
 }
@@ -5097,9 +5702,81 @@ void startReaction(CompanionRole normalRole,
   logBrainResult(result);
 }
 
+CompanionRole momentReactionRole(kitsu868::fun::Reaction reaction) {
+  using kitsu868::fun::Reaction;
+  switch (reaction) {
+    case Reaction::Blink: return CompanionRole::Blink;
+    case Reaction::Pet: return CompanionRole::Pet;
+    case Reaction::Surprise: return CompanionRole::Surprise;
+    case Reaction::Play: return CompanionRole::Play;
+    case Reaction::Tired: return CompanionRole::Tired;
+    case Reaction::Feed: return CompanionRole::Feed;
+    case Reaction::Wake: return CompanionRole::Wake;
+    case Reaction::Meet: return CompanionRole::Meet;
+    case Reaction::Evolve: return CompanionRole::Evolve;
+  }
+  return CompanionRole::Blink;
+}
+
+void showMoment(kitsu868::fun::MomentTrigger trigger,
+                bool startAnimation = false) {
+  const kitsu868::fun::Moment moment = kitsu868::fun::personalityMoment(
+      companionBrain.personality().kind, trigger, esp_random());
+  momentView.active = true;
+  momentView.line1 = moment.line1;
+  momentView.line2 = moment.line2;
+  momentView.until = millis() + MOMENT_DISPLAY_MS;
+  if (startAnimation) {
+    cancelAmbientAnimation();
+    if (!startTransientAnimation(momentReactionRole(moment.reaction))) {
+      startBaseAnimation();
+    }
+  }
+}
+
+void recordSessionGoal(kitsu868::fun::SessionActivity activity) {
+  const kitsu868::fun::ChallengeUpdate update =
+      kitsu868::fun::recordSessionActivity(sessionChallenges, activity);
+  if (update.allCompletedNow != 0U) {
+    sessionAuraActive = true;
+    Serial.println("KITSU_GOAL all_complete aura=true");
+  } else if (update.newlyCompletedMask != 0U) {
+    Serial.printf("KITSU_GOAL complete=%s\n",
+                  kitsu868::fun::challengeName(activity));
+  }
+  companionBleRefreshDirty = true;
+}
+
+bool recordDreamAfterSleep(uint32_t now) {
+  if (!funStateReady || sleepStartedAt == 0U ||
+      now - sleepStartedAt < DREAM_MINIMUM_SLEEP_MS ||
+      (companionBrain.unlockMask() & kitsu868::UnlockDream) == 0U) {
+    return false;
+  }
+  const kitsu868::fun::Dream dream = kitsu868::fun::selectDream(
+      companionBrain.personality().kind,
+      companionBrain.deviceFingerprint(), funDiscovery.completedDreams);
+  if (!kitsu868::fun::recordDream(funDiscovery, dream.index) ||
+      !persistFunState()) {
+    Serial.println("KITSU_WARN dream=store_failed");
+    return false;
+  }
+  momentView.active = true;
+  momentView.line1 = dream.line1;
+  momentView.line2 = dream.line2;
+  momentView.until = now + MOMENT_DISPLAY_MS;
+  Serial.printf("KITSU_DREAM index=%u total=%u\n", dream.index,
+                funDiscovery.completedDreams);
+  companionBleRefreshDirty = true;
+  return true;
+}
+
 bool ensureAwake() {
   if (!wisp.sleeping) return false;
+  const uint32_t now = millis();
   wisp.sleeping = false;
+  (void)recordDreamAfterSleep(now);
+  sleepStartedAt = 0U;
   const kitsu868::BrainEventResult result = companionBrain.onWake();
   pendingEvolutionReaction = pendingEvolutionReaction || result.evolved();
   lastMemory = "The signal woke up.";
@@ -5109,15 +5786,23 @@ bool ensureAwake() {
 
 bool petWisp() {
   if (!requireCompanion()) return false;
-  ensureAwake();
+  const bool preserveWakeMoment = ensureAwake() && momentView.active;
   wisp.energy = min<uint8_t>(100, wisp.energy + 4);
   wisp.curiosity = min<uint8_t>(100, wisp.curiosity + 1);
   wisp.affection = min<uint8_t>(100, wisp.affection + 3);
   ++wisp.pets;
   lastMemory = "You reached through the static.";
   const kitsu868::BrainEventResult result = companionBrain.onPet();
+  const bool personalityAnimationSafe =
+      !result.evolved() && !pendingEvolutionReaction;
   startReaction(CompanionRole::Pet, result);
+  if (!preserveWakeMoment) {
+    showMoment(kitsu868::fun::MomentTrigger::Pet,
+               personalityAnimationSafe);
+  }
+  recordSessionGoal(kitsu868::fun::SessionActivity::Care);
   persistProgress();
+  if (preserveWakeMoment && screen == Screen::Sleep) enterScreen(Screen::Pet);
   Serial.printf("KITSU_EVENT pet count=%lu energy=%u affection=%u\n",
                 static_cast<unsigned long>(wisp.pets), wisp.energy, wisp.affection);
   return true;
@@ -5125,13 +5810,21 @@ bool petWisp() {
 
 bool feedKitsu() {
   if (!requireCompanion()) return false;
-  ensureAwake();
+  const bool preserveWakeMoment = ensureAwake() && momentView.active;
   wisp.energy = min<uint8_t>(100, wisp.energy + 18);
   wisp.affection = min<uint8_t>(100, wisp.affection + 1);
   lastMemory = "A small meal crossed the static.";
   const kitsu868::BrainEventResult result = companionBrain.onFeed();
+  const bool personalityAnimationSafe =
+      !result.evolved() && !pendingEvolutionReaction;
   startReaction(CompanionRole::Feed, result);
+  if (!preserveWakeMoment) {
+    showMoment(kitsu868::fun::MomentTrigger::Feed,
+               personalityAnimationSafe);
+  }
+  recordSessionGoal(kitsu868::fun::SessionActivity::Care);
   persistProgress();
+  if (preserveWakeMoment && screen == Screen::Sleep) enterScreen(Screen::Pet);
   Serial.printf("KITSU_EVENT feed energy=%u affection=%u\n",
                 wisp.energy, wisp.affection);
   return true;
@@ -5139,7 +5832,7 @@ bool feedKitsu() {
 
 bool playKitsu() {
   if (!requireCompanion()) return false;
-  ensureAwake();
+  const bool preserveWakeMoment = ensureAwake() && momentView.active;
   // Active play may exhaust the companion below the passive-decay floor, but
   // it must never increase energy when the current value is already low.
   wisp.energy = wisp.energy > 6 ? wisp.energy - 6 : 1;
@@ -5147,8 +5840,15 @@ bool playKitsu() {
   wisp.affection = min<uint8_t>(100, wisp.affection + 4);
   lastMemory = "You played through the static.";
   const kitsu868::BrainEventResult result = companionBrain.onPlay();
+  const bool personalityAnimationSafe =
+      !result.evolved() && !pendingEvolutionReaction;
   startReaction(CompanionRole::Play, result);
+  if (!preserveWakeMoment) {
+    showMoment(kitsu868::fun::MomentTrigger::Play,
+               personalityAnimationSafe);
+  }
   persistProgress();
+  if (preserveWakeMoment && screen == Screen::Sleep) enterScreen(Screen::Pet);
   Serial.printf("KITSU_EVENT play energy=%u curiosity=%u affection=%u\n",
                 wisp.energy, wisp.curiosity, wisp.affection);
   return true;
@@ -5157,6 +5857,13 @@ bool playKitsu() {
 void setSleeping(bool sleeping) {
   if (sleeping && !requireCompanion()) return;
   wisp.sleeping = sleeping;
+  const uint32_t now = millis();
+  if (sleeping) {
+    sleepStartedAt = now;
+  } else {
+    (void)recordDreamAfterSleep(now);
+    sleepStartedAt = 0U;
+  }
   cancelAmbientAnimation();
   lastMemory = sleeping ? "The signal curled into a dream." : "The signal woke up.";
   const kitsu868::BrainEventResult result = sleeping
@@ -5171,6 +5878,9 @@ void setSleeping(bool sleeping) {
     if (!startTransientAnimation(evolved ? CompanionRole::Evolve
                                          : CompanionRole::Wake)) {
       startBaseAnimation();
+    }
+    if (!momentView.active) {
+      showMoment(kitsu868::fun::MomentTrigger::Wake, !evolved);
     }
   }
   logBrainResult(result);
@@ -5200,20 +5910,42 @@ void startGame(ActiveGame game) {
   const uint32_t seed = esp_random() ^ companionBrain.deviceFingerprint() ^ now;
   if (game == ActiveGame::SignalCatch) signalCatchGame.start(now, seed);
   else if (game == ActiveGame::PounceFetch) pounceFetchGame.start(now, seed);
+  else if (game == ActiveGame::EchoBeat) echoBeatGame.start(now, seed);
   enterScreen(Screen::Game);
-  Serial.printf("KITSU_GAME start=%s\n",
-                game == ActiveGame::SignalCatch ? "signal" : "pounce");
+  const char* const gameName = game == ActiveGame::SignalCatch
+                                   ? "signal"
+                                   : game == ActiveGame::PounceFetch
+                                         ? "pounce"
+                                         : "echo";
+  Serial.printf("KITSU_GAME start=%s\n", gameName);
 }
 
 uint16_t activeGameScore() {
   if (activeGame == ActiveGame::SignalCatch) return signalCatchGame.score();
   if (activeGame == ActiveGame::PounceFetch) return pounceFetchGame.score();
+  if (activeGame == ActiveGame::EchoBeat) return echoBeatGame.score();
   return 0;
+}
+
+uint16_t activeGameMaximumScore() {
+  if (activeGame == ActiveGame::EchoBeat) {
+    return echoBeatGame.view(millis()).maximumScore;
+  }
+  return 24U;
+}
+
+bool activeGamePerfect() {
+  if (activeGame == ActiveGame::EchoBeat) {
+    const kitsu868::EchoBeatView view = echoBeatGame.view(millis());
+    return view.totalBeats != 0U && view.perfectBeats == view.totalBeats;
+  }
+  return gamePerfectRounds == 5U;
 }
 
 bool activeGameFinished() {
   if (activeGame == ActiveGame::SignalCatch) return signalCatchGame.finished();
   if (activeGame == ActiveGame::PounceFetch) return pounceFetchGame.finished();
+  if (activeGame == ActiveGame::EchoBeat) return echoBeatGame.finished();
   return false;
 }
 
@@ -5221,10 +5953,12 @@ void rewardFinishedGame() {
   if (gameRewarded || !activeGameFinished()) return;
   gameRewarded = true;
   const uint16_t rawScore = activeGameScore();
+  const uint16_t maximumScore = max<uint16_t>(1U, activeGameMaximumScore());
   const uint8_t scorePercent = static_cast<uint8_t>(
       min<uint16_t>(100, static_cast<uint16_t>(
-          (static_cast<uint32_t>(rawScore) * 100U + 12U) / 24U)));
-  const bool perfect = gamePerfectRounds == 5U;
+          (static_cast<uint32_t>(rawScore) * 100U + maximumScore / 2U) /
+          maximumScore)));
+  const bool perfect = activeGamePerfect();
   wisp.energy = wisp.energy > 4U ? wisp.energy - 4U : 1U;
   wisp.curiosity = min<uint8_t>(100, wisp.curiosity + 5U);
   wisp.affection = min<uint8_t>(100, wisp.affection + (perfect ? 5U : 2U));
@@ -5234,6 +5968,9 @@ void rewardFinishedGame() {
   lastMemory = perfect ? "Perfect timing became a memory."
                        : "A little game became a memory.";
   logBrainResult(result);
+  recordSessionGoal(kitsu868::fun::SessionActivity::Game);
+  showMoment(perfect ? kitsu868::fun::MomentTrigger::PerfectGame
+                     : kitsu868::fun::MomentTrigger::Play);
   persistProgress();
   Serial.printf("KITSU_GAME finish score=%u percent=%u perfect=%s\n",
                 rawScore, scorePercent, perfect ? "true" : "false");
@@ -5247,16 +5984,21 @@ void tickGame() {
   if (rawButton || stableButton) return;
   const uint32_t now = millis();
   if (activeGame == ActiveGame::SignalCatch) signalCatchGame.tick(now);
-  else pounceFetchGame.tick(now);
+  else if (activeGame == ActiveGame::PounceFetch) pounceFetchGame.tick(now);
+  else echoBeatGame.tick(now);
   const kitsu868::MiniGamePhase phase = activeGame == ActiveGame::SignalCatch
       ? signalCatchGame.view(now).phase
-      : pounceFetchGame.view(now).phase;
+      : activeGame == ActiveGame::PounceFetch
+            ? pounceFetchGame.view(now).phase
+            : echoBeatGame.view(now).phase;
   if (lastGamePhase != kitsu868::MiniGamePhase::Result &&
       phase == kitsu868::MiniGamePhase::Result) {
     const kitsu868::MiniGameResult result =
         activeGame == ActiveGame::SignalCatch
             ? signalCatchGame.view(now).result
-            : pounceFetchGame.view(now).result;
+            : activeGame == ActiveGame::PounceFetch
+                  ? pounceFetchGame.view(now).result
+                  : echoBeatGame.view(now).result;
     if (result == kitsu868::MiniGameResult::Perfect &&
         gamePerfectRounds != 0xffU) {
       ++gamePerfectRounds;
@@ -5266,9 +6008,36 @@ void tickGame() {
   rewardFinishedGame();
 }
 
+void scheduleRareReaction(uint32_t now) {
+  nextRareReactionAt = now + 20UL * 60UL * 1000UL +
+      (esp_random() % (20UL * 60UL * 1000UL));
+}
+
+void tickFun(uint32_t now) {
+  if (momentView.active && static_cast<int32_t>(now - momentView.until) >= 0) {
+    momentView = MomentView{};
+  }
+  if (nextRareReactionAt == 0U) scheduleRareReaction(now);
+  if (static_cast<int32_t>(now - nextRareReactionAt) < 0) return;
+  if ((companionBrain.unlockMask() & kitsu868::UnlockRareReaction) == 0U ||
+      screen != Screen::Pet || wisp.sleeping || radioListening ||
+      activeGame != ActiveGame::None || momentView.active) {
+    nextRareReactionAt = now + 5UL * 60UL * 1000UL;
+    return;
+  }
+  kitsu868::fun::recordRareReaction(funDiscovery);
+  if (funStateReady && !persistFunState()) {
+    Serial.println("KITSU_WARN rare_reaction=store_failed");
+  }
+  showMoment(kitsu868::fun::MomentTrigger::RareAmbient, true);
+  scheduleRareReaction(now);
+  companionBleRefreshDirty = true;
+}
+
 void leaveGame(bool celebrate) {
   if (activeGame == ActiveGame::SignalCatch) signalCatchGame.cancel();
   else if (activeGame == ActiveGame::PounceFetch) pounceFetchGame.cancel();
+  else if (activeGame == ActiveGame::EchoBeat) echoBeatGame.cancel();
   activeGame = ActiveGame::None;
   lastGamePhase = kitsu868::MiniGamePhase::Inactive;
   if (celebrate || gameEvolved) {
@@ -5342,17 +6111,24 @@ void executeMenuItem() {
       enterScreen(Screen::GameMenu);
       break;
     case 4:
+      fieldGuideIndex = 0U;
+      enterScreen(Screen::FieldGuide);
+      break;
+    case 5:
+      enterScreen(Screen::Goals);
+      break;
+    case 6:
       inboxSelection = 0;
       markChatJournalRead();
       enterScreen(Screen::Inbox);
       break;
-    case 5: startListening(); break;
-    case 6:
+    case 7: startListening(); break;
+    case 8:
       if (!requireCompanion()) break;
       setSleeping(true);
       enterScreen(Screen::Sleep);
       break;
-    case 7:
+    case 9:
       statusPage = 0;
       sampleBattery(true);
       enterScreen(Screen::Status);
@@ -5389,6 +6165,7 @@ void executeConnectionAction() {
 void executeGameMenuItem() {
   if (gameMenuIndex == 0) startGame(ActiveGame::SignalCatch);
   else if (gameMenuIndex == 1) startGame(ActiveGame::PounceFetch);
+  else if (gameMenuIndex == 2) startGame(ActiveGame::EchoBeat);
   else enterScreen(Screen::Menu);
 }
 
@@ -5423,6 +6200,8 @@ void handleShortPress(uint32_t actionAt) {
         signalCatchGame.tap(actionAt);
       } else if (activeGame == ActiveGame::PounceFetch) {
         pounceFetchGame.tap(actionAt);
+      } else if (activeGame == ActiveGame::EchoBeat) {
+        echoBeatGame.tap(actionAt);
       }
       break;
     case Screen::Listen: stopListening(); break;
@@ -5431,7 +6210,15 @@ void handleShortPress(uint32_t actionAt) {
       enterScreen(Screen::Pet);
       break;
     case Screen::Status:
-      statusPage = (statusPage + 1U) % 4U;
+      statusPage = (statusPage + 1U) % 5U;
+      screenEnteredAt = millis();
+      break;
+    case Screen::FieldGuide:
+      fieldGuideIndex = static_cast<uint8_t>(
+          (fieldGuideIndex + 1U) % kitsu868::fun::kCatalogCreatureCount);
+      screenEnteredAt = millis();
+      break;
+    case Screen::Goals:
       screenEnteredAt = millis();
       break;
     case Screen::WildEncounter: dismissWildEncounter(); break;
@@ -5483,6 +6270,10 @@ void handleLongPress() {
       enterScreen(Screen::Pet);
       break;
     case Screen::Status: enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet); break;
+    case Screen::FieldGuide:
+    case Screen::Goals:
+      enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
+      break;
     case Screen::WildEncounter: dismissWildEncounter(); break;
     case Screen::PairPhone: {
       const uint32_t now = millis();
@@ -5627,6 +6418,7 @@ NearbyNeighbor* nearbyNeighbor(uint16_t uid, bool allocate) {
   *oldest = NearbyNeighbor{};
   oldest->used = true;
   oldest->uid = uid;
+  oldest->nextSequence = nearbySequenceCursor;
   return oldest;
 }
 
@@ -5674,8 +6466,9 @@ bool sendNearbyPresence() {
   return sendNearbyPacket(presence);
 }
 
-kitsu868::mesh::TransportStatus queueNearbyPetAction(
-    uint16_t targetUid, uint32_t targetSessionNonce, uint16_t sequence) {
+kitsu868::mesh::TransportStatus queueNearbyAction(
+    uint16_t targetUid, uint32_t targetSessionNonce, uint16_t sequence,
+    kitsu868::nearby::PositiveAction action) {
   NearbyNeighbor* neighbor = nearbyNeighbor(targetUid, false);
   if (pendingNearbyAction.active &&
       static_cast<uint32_t>(millis() - pendingNearbyAction.sentAt) <=
@@ -5695,12 +6488,18 @@ kitsu868::mesh::TransportStatus queueNearbyPetAction(
   request.targetUid = targetUid;
   request.sessionNonce = targetSessionNonce;
   request.requestSequence = sequence;
-  request.action = kitsu868::nearby::PositiveAction::Pet;
+  request.action = action;
   uint8_t wire[kitsu868::nearby::kWireBytes]{};
   size_t wireBytes = 0U;
   if (kitsu868::nearby::encode(request, wire, sizeof(wire), &wireBytes) !=
       kitsu868::nearby::Status::Ok) {
     return kitsu868::mesh::TransportStatus::InvalidArgument;
+  }
+  // Reserve the sequence durably before transmission. A reboot can create a
+  // gap after a failed radio send, but can never reuse an already-sent token.
+  if (!reserveNearbySequence(sequence)) {
+    memset(wire, 0, sizeof(wire));
+    return kitsu868::mesh::TransportStatus::MessagingStorageFailed;
   }
   const kitsu868::mesh::TransportStatus status =
       meshTransport.sendNearbyRadioFrame(meshSettings, wire, wireBytes, true);
@@ -5709,9 +6508,6 @@ kitsu868::mesh::TransportStatus queueNearbyPetAction(
     pendingNearbyAction.active = true;
     pendingNearbyAction.request = request;
     pendingNearbyAction.sentAt = millis();
-    neighbor->nextSequence = sequence == UINT16_MAX
-                                 ? 1U
-                                 : static_cast<uint16_t>(sequence + 1U);
   }
   return status;
 }
@@ -5762,46 +6558,116 @@ void processNearbyPresence(const kitsu868::nearby::Packet& packet,
       result.newEncounter ? "true" : "false", rssi, snr);
 }
 
+const char* nearbyActionName(kitsu868::nearby::PositiveAction action) {
+  using kitsu868::nearby::PositiveAction;
+  switch (action) {
+    case PositiveAction::None: return "none";
+    case PositiveAction::Pet: return "pet";
+    case PositiveAction::Greet: return "greet";
+    case PositiveAction::Play: return "play";
+    case PositiveAction::Gift: return "gift";
+  }
+  return "unknown";
+}
+
+bool nearbySequenceAfter(uint16_t candidate, uint16_t reference) {
+  const uint16_t delta = static_cast<uint16_t>(candidate - reference);
+  return delta != 0U && delta < 0x8000U;
+}
+
+void sendNearbyActionResult(const kitsu868::nearby::Packet& request,
+                            kitsu868::nearby::ActionResult outcome) {
+  kitsu868::nearby::Packet response{};
+  if (kitsu868::nearby::makeActionResult(request, outcome, response) &&
+      !sendNearbyPacket(response)) {
+    Serial.printf("KITSU_WARN nearby_ack=send_failed sequence=%u\n",
+                  request.requestSequence);
+  }
+}
+
 void processNearbyActionRequest(const kitsu868::nearby::Packet& packet) {
   if (packet.targetUid != ownUidSuffix() ||
       packet.sessionNonce != nearbySessionNonce) {
     return;
   }
   NearbyNeighbor* neighbor = nearbyNeighbor(packet.sourceUid, false);
-  if (!neighbor ||
-      kitsu868::nearby::isDuplicate(neighbor->lastInbound, packet)) {
+  if (!neighbor) return;
+  if (kitsu868::nearby::isDuplicate(neighbor->lastInbound, packet)) {
+    if (neighbor->hasInboundResult) {
+      sendNearbyActionResult(packet, neighbor->lastInboundResult);
+    }
     return;
   }
-  neighbor->lastInbound = kitsu868::nearby::makeDuplicateToken(packet);
+  if (neighbor->lastInbound.valid != 0U &&
+      !nearbySequenceAfter(packet.requestSequence,
+                           neighbor->lastInbound.requestSequence)) {
+    sendNearbyActionResult(packet, kitsu868::nearby::ActionResult::Disabled);
+    Serial.printf("KITSU_NEARBY_ACTION uid=%04X sequence=%u result=stale\n",
+                  packet.sourceUid, packet.requestSequence);
+    return;
+  }
   kitsu868::nearby::ActionResult outcome =
       kitsu868::nearby::ActionResult::Disabled;
   const uint32_t now = millis();
-  if (packet.action == kitsu868::nearby::PositiveAction::Pet &&
-      companionPack.valid() &&
+  if (companionPack.valid() &&
       (neighbor->lastAcceptedActionAt == 0U ||
        static_cast<uint32_t>(now - neighbor->lastAcceptedActionAt) >=
            30000UL)) {
-    // A remote Pet is a small social acknowledgement, not an owner-care
-    // action. It must not increment local pet counters, XP, bond progression,
-    // or provide a repeatable farming path.
-    wisp.affection = min<uint8_t>(100U, wisp.affection + 1U);
-    neighbor->lastAcceptedActionAt = now;
-    lastMemory = "A nearby friend petted your companion.";
-    cancelAmbientAnimation();
-    if (!startTransientAnimation(CompanionRole::Pet)) startBaseAnimation();
-    persistProgress();
-    outcome = kitsu868::nearby::ActionResult::Accepted;
-  } else if (packet.action == kitsu868::nearby::PositiveAction::Pet &&
-             companionPack.valid()) {
+    // Nearby actions are tiny social acknowledgements, never owner-care XP.
+    CompanionRole role = CompanionRole::Meet;
+    const char* memory = nullptr;
+    const uint8_t previousEnergy = wisp.energy;
+    const uint8_t previousCuriosity = wisp.curiosity;
+    const uint8_t previousAffection = wisp.affection;
+    const uint16_t previousGifts = collectedGifts;
+    const uint8_t previousLastGift = lastEncounterGift;
+    if (packet.action == kitsu868::nearby::PositiveAction::Pet) {
+      wisp.affection = min<uint8_t>(100U, wisp.affection + 1U);
+      memory = "A nearby friend petted your companion.";
+      role = CompanionRole::Pet;
+    } else if (packet.action == kitsu868::nearby::PositiveAction::Greet) {
+      wisp.curiosity = min<uint8_t>(100U, wisp.curiosity + 1U);
+      memory = "A nearby Kitsu waved hello.";
+      role = CompanionRole::Meet;
+    } else if (packet.action == kitsu868::nearby::PositiveAction::Play) {
+      wisp.curiosity = min<uint8_t>(100U, wisp.curiosity + 2U);
+      wisp.energy = wisp.energy > 1U ? wisp.energy - 1U : 1U;
+      memory = "A nearby Kitsu invited a quick game.";
+      role = CompanionRole::Play;
+    } else if (packet.action == kitsu868::nearby::PositiveAction::Gift) {
+      const uint8_t gift = static_cast<uint8_t>(
+          (static_cast<uint32_t>(packet.sourceUid) ^
+           static_cast<uint32_t>(packet.targetUid) ^ packet.sessionNonce ^
+           packet.requestSequence) % kitsu868::encounter::kGiftCount);
+      collectedGifts |= static_cast<uint16_t>(1U << gift);
+      lastEncounterGift = gift;
+      wisp.affection = min<uint8_t>(100U, wisp.affection + 1U);
+      memory = "A nearby Kitsu shared a tiny gift.";
+      role = CompanionRole::Surprise;
+    }
+    if (memory && saveState()) {
+      neighbor->lastAcceptedActionAt = now;
+      lastMemory = memory;
+      cancelAmbientAnimation();
+      if (!startTransientAnimation(role)) startBaseAnimation();
+      outcome = kitsu868::nearby::ActionResult::Accepted;
+    } else {
+      wisp.energy = previousEnergy;
+      wisp.curiosity = previousCuriosity;
+      wisp.affection = previousAffection;
+      collectedGifts = previousGifts;
+      lastEncounterGift = previousLastGift;
+    }
+  } else if (companionPack.valid()) {
     outcome = kitsu868::nearby::ActionResult::Busy;
   }
-  kitsu868::nearby::Packet response{};
-  if (kitsu868::nearby::makeActionResult(packet, outcome, response)) {
-    (void)sendNearbyPacket(response);
-  }
+  neighbor->lastInbound = kitsu868::nearby::makeDuplicateToken(packet);
+  neighbor->lastInboundResult = outcome;
+  neighbor->hasInboundResult = true;
+  sendNearbyActionResult(packet, outcome);
   companionBleRefreshDirty = true;
-  Serial.printf("KITSU_NEARBY_ACTION uid=%04X action=pet result=%s\n",
-                packet.sourceUid,
+  Serial.printf("KITSU_NEARBY_ACTION uid=%04X action=%s result=%s\n",
+                packet.sourceUid, nearbyActionName(packet.action),
                 outcome == kitsu868::nearby::ActionResult::Accepted
                     ? "accepted"
                     : outcome == kitsu868::nearby::ActionResult::Busy
@@ -5826,10 +6692,13 @@ void processNearbyRadio() {
                pendingNearbyAction.active &&
                kitsu868::nearby::actionResultAcknowledges(
                    pendingNearbyAction.request, packet)) {
+      const kitsu868::nearby::PositiveAction acceptedAction =
+          pendingNearbyAction.request.action;
       pendingNearbyAction = PendingNearbyAction{};
+      const char* const action = nearbyActionName(acceptedAction);
       lastMemory = packet.result == kitsu868::nearby::ActionResult::Accepted
-                       ? "Your pet reached the nearby Kitsu."
-                       : "The nearby Kitsu could not be petted.";
+                       ? String("Nearby action accepted: ") + action + "."
+                       : String("Nearby action declined: ") + action + ".";
       companionBleRefreshDirty = true;
       Serial.printf("KITSU_NEARBY_ACK uid=%04X sequence=%u result=%u\n",
                     packet.sourceUid, packet.requestSequence,
@@ -5947,7 +6816,7 @@ kitsu868::unlocks::Rarity unlockRarity(kitsu868::signal::Rarity rarity) {
 }
 
 bool addEncounterCode(const kitsu868::wild::Creature& creature,
-                      kitsu868::signal::MeshOperationKind source) {
+                       kitsu868::signal::MeshOperationKind source) {
   if (!creature.packPublished || !encounterCodesReady ||
       encounterCodes.serializedBytes() > sizeof(encounterCodeRollback)) {
     return false;
@@ -6007,6 +6876,50 @@ bool addEncounterCode(const kitsu868::wild::Creature& creature,
   return false;
 }
 
+bool materializePendingWildEncounter() {
+  if (pendingWildOperationId == 0U || !wildEncounterView.available ||
+      !wildEncounterView.creature.name) {
+    return false;
+  }
+  const bool wantsCode =
+      pendingWildCodeOutcome == kitsu868::signal::CodeOutcome::Revealed;
+  const bool codeReady = !wantsCode ||
+      addEncounterCode(wildEncounterView.creature, wildEncounterView.source);
+  wildEncounterView.codeRevealed = wantsCode && codeReady;
+
+  bool guideReady = false;
+  if (funStateReady) {
+    if (lastFunEncounterOperationId == pendingWildOperationId) {
+      guideReady = true;
+    } else if (lastFunEncounterOperationId < pendingWildOperationId) {
+      for (uint8_t index = 0U;
+           index < kitsu868::fun::kCatalogCreatureCount; ++index) {
+        kitsu868::wild::Creature catalog{};
+        if (!kitsu868::wild::creatureAt(index, catalog) ||
+            catalog.packId != wildEncounterView.creature.packId) {
+          continue;
+        }
+        const kitsu868::fun::DiscoveryState previous = funDiscovery;
+        const uint64_t previousOperation = lastFunEncounterOperationId;
+        if (kitsu868::fun::recordCreatureEncounter(
+                funDiscovery, index,
+                static_cast<uint8_t>(wildEncounterView.source))) {
+          lastFunEncounterOperationId = pendingWildOperationId;
+          guideReady = persistFunState();
+        }
+        if (!guideReady) {
+          funDiscovery = previous;
+          lastFunEncounterOperationId = previousOperation;
+        }
+        break;
+      }
+    }
+  }
+  if (!codeReady) Serial.println("KITSU_WARN pending_wild=code_pending");
+  if (!guideReady) Serial.println("KITSU_WARN pending_wild=guide_pending");
+  return codeReady && guideReady;
+}
+
 bool wildEncounterMayInterrupt() {
   return activeGame == ActiveGame::None && !radioListening &&
       screen != Screen::PairPhone && screen != Screen::ControllerManager &&
@@ -6025,11 +6938,14 @@ void presentPendingWildEncounter() {
 void recordSuccessfulEncounterTrigger(
     kitsu868::signal::MeshOperationKind kind) {
   if (!signalEncounterStateReady ||
-      !kitsu868::signal::validOperationKind(kind)) {
+      !kitsu868::signal::validOperationKind(kind) ||
+      pendingWildOperationId != 0U || wildEncounterView.available) {
     return;
   }
   const kitsu868::signal::CoordinatorState previous =
       signalEncounterCoordinator.snapshot();
+  const kitsu868::signal::SignalTrailState previousTrail =
+      signalTrail.snapshot();
   if (previous.lastOperationId == UINT64_MAX) return;
   kitsu868::signal::LogicalOperationEvent event{};
   event.operationId = previous.lastOperationId + 1U;
@@ -6042,30 +6958,98 @@ void recordSuccessfulEncounterTrigger(
       status != kitsu868::signal::ProcessStatus::RecordedNoEncounter) {
     return;
   }
-  if (!persistSignalEncounterState()) {
+  kitsu868::signal::SignalTrailResult trailResult{};
+  const kitsu868::signal::SignalTrailProcessStatus trailStatus =
+      signalTrail.process(event, record.encounterOccurred, trailResult);
+  if (trailStatus != kitsu868::signal::SignalTrailProcessStatus::RecordedMiss &&
+      trailStatus !=
+          kitsu868::signal::SignalTrailProcessStatus::RecordedEncounter) {
     (void)signalEncounterCoordinator.restore(previous);
-    Serial.println("KITSU_WARN signal_state=flush_failed");
+    (void)signalTrail.restore(previousTrail);
+    Serial.printf("KITSU_WARN signal_trail=%s\n",
+                  kitsu868::signal::signalTrailProcessStatusName(trailStatus));
     return;
   }
-  if (status == kitsu868::signal::ProcessStatus::RecordedNoEncounter) return;
+  if (trailResult.encounterOccurred == 0U) {
+    if (!persistSignalEncounterState()) {
+      (void)signalEncounterCoordinator.restore(previous);
+      (void)signalTrail.restore(previousTrail);
+      Serial.println("KITSU_WARN signal_state=flush_failed");
+      return;
+    }
+    recordSessionGoal(kitsu868::fun::SessionActivity::Signal);
+    companionBleRefreshDirty = true;
+    return;
+  }
 
-  const kitsu868::signal::Rarity rarity =
-      static_cast<kitsu868::signal::Rarity>(record.rarity);
+  kitsu868::signal::Rarity rarity = kitsu868::signal::Rarity::Common;
+  kitsu868::signal::CodeOutcome codeOutcome =
+      kitsu868::signal::CodeOutcome::NotApplicable;
+  if (record.encounterOccurred != 0U) {
+    rarity = static_cast<kitsu868::signal::Rarity>(record.rarity);
+    codeOutcome =
+        static_cast<kitsu868::signal::CodeOutcome>(record.codeOutcome);
+  } else {
+    if (!kitsu868::signal::rarityForRoll(
+            SIGNAL_ENCOUNTER_CONFIGURATION,
+            record.rarityRollBasisPoints, rarity)) {
+      (void)signalEncounterCoordinator.restore(previous);
+      (void)signalTrail.restore(previousTrail);
+      Serial.println("KITSU_WARN signal_trail=rarity_resolution_failed");
+      return;
+    }
+    codeOutcome = kitsu868::signal::codeOutcomeForRoll(
+        SIGNAL_ENCOUNTER_CONFIGURATION, rarity,
+        record.codeRollBasisPoints);
+  }
   kitsu868::wild::Creature creature{};
   if (!kitsu868::wild::creatureForRarity(rarity, record.entropy, creature)) {
+    (void)signalEncounterCoordinator.restore(previous);
+    (void)signalTrail.restore(previousTrail);
     Serial.println("KITSU_WARN wild_encounter=catalog_missing");
     return;
   }
+
+  pendingWildOperationId = event.operationId;
+  pendingWildEntropy = record.entropy;
+  pendingWildCodeOutcome = codeOutcome;
+  pendingWildMaterialized = false;
   wildEncounterView = WildEncounterView{};
   wildEncounterView.available = true;
-  wildEncounterView.guaranteed = record.guaranteed != 0U;
+  wildEncounterView.guaranteed = trailResult.guaranteed != 0U;
   wildEncounterView.creature = creature;
   wildEncounterView.source = kind;
-  wildEncounterView.codeRevealed =
-      record.codeOutcome ==
-          static_cast<uint8_t>(kitsu868::signal::CodeOutcome::Revealed) &&
-      addEncounterCode(creature, kind);
+
+  // Prepare the final outcome first, then commit the signal operation. On a
+  // reset between these writes, boot compares operation IDs and discards an
+  // uncommitted prepared record. Once both exist, the reward is recoverable.
+  if (!persistPendingWildEncounter()) {
+    (void)signalEncounterCoordinator.restore(previous);
+    (void)signalTrail.restore(previousTrail);
+    wildEncounterView = WildEncounterView{};
+    pendingWildOperationId = 0U;
+    pendingWildEntropy = 0U;
+    pendingWildCodeOutcome = kitsu868::signal::CodeOutcome::NotApplicable;
+    Serial.println("KITSU_WARN pending_wild=prepare_failed");
+    return;
+  }
+  if (!persistSignalEncounterState()) {
+    (void)signalEncounterCoordinator.restore(previous);
+    (void)signalTrail.restore(previousTrail);
+    if (!clearPendingWildEncounter()) {
+      Serial.println("KITSU_WARN pending_wild=rollback_remove_failed");
+    }
+    wildEncounterView = WildEncounterView{};
+    pendingWildOperationId = 0U;
+    pendingWildEntropy = 0U;
+    pendingWildCodeOutcome = kitsu868::signal::CodeOutcome::NotApplicable;
+    Serial.println("KITSU_WARN signal_state=flush_failed");
+    return;
+  }
+  recordSessionGoal(kitsu868::fun::SessionActivity::Signal);
+  pendingWildMaterialized = materializePendingWildEncounter();
   lastMemory = "Something is approaching.";
+  showMoment(kitsu868::fun::MomentTrigger::Encounter, true);
   companionBleRefreshDirty = true;
   Serial.printf(
       "KITSU_WILD_ENCOUNTER {\"protocol\":1,\"source\":\"%s\","
@@ -6535,7 +7519,9 @@ void printSelfTest() {
                              ? "signal"
                              : activeGame == ActiveGame::PounceFetch
                                    ? "pounce"
-                                   : "none";
+                                   : activeGame == ActiveGame::EchoBeat
+                                         ? "echo"
+                                         : "none";
   Serial.printf(
       "KITSU_SELFTEST {\"firmware\":\"%s\",\"version\":\"%s\","
       "\"board\":\"heltec-v3.2\",\"oled\":%s,\"radio\":%s,"
@@ -7958,6 +8944,7 @@ void executeSerialCommand(String command) {
   else if (command == "play") playKitsu();
   else if (command == "game signal") startGame(ActiveGame::SignalCatch);
   else if (command == "game pounce") startGame(ActiveGame::PounceFetch);
+  else if (command == "game echo") startGame(ActiveGame::EchoBeat);
   else if (command == "game tap") {
     if (screen == Screen::Game) handleShortPress(millis());
     else Serial.println("KITSU_ERROR game_inactive");
@@ -8012,7 +8999,7 @@ void executeSerialCommand(String command) {
     }
   } else if (command == "help") {
     Serial.println(
-        "KITSU_HELP selftest|sync|journal|pet|feed|play|game <signal|pounce|tap|cancel>|listen|sleep|wake|stop|inject <38hex>|anim <role>|mesh <status|config|time|tx|location|introduce|publish-map>|chat <status|contacts|channels|inbox|contact|channel|send>|help");
+        "KITSU_HELP selftest|sync|journal|pet|feed|play|game <signal|pounce|echo|tap|cancel>|listen|sleep|wake|stop|inject <38hex>|anim <role>|mesh <status|config|time|tx|location|introduce|publish-map>|chat <status|contacts|channels|inbox|contact|channel|send>|help");
   } else if (command.length()) {
     Serial.printf("KITSU_ERROR unknown_command=%s\n", command.c_str());
   }
@@ -8231,6 +9218,7 @@ void setup() {
                     legacyConnectivityRetirementResultName(legacyRetirement),
                 legacyConnectivityRetirementReady ? "true" : "false");
   loadState();
+  loadNearbySequenceCursor();
   nearbySessionNonce = esp_random();
   if (nearbySessionNonce == 0U) nearbySessionNonce = 1U;
   initLocalSecurityStorage();
@@ -8344,6 +9332,10 @@ void setup() {
   delay(300);
   lastEnergyTickAt = lastBrainMinuteAt = millis();
   lastInteractionAt = millis();
+  kitsu868::fun::resetSessionChallenges(sessionChallenges);
+  sessionAuraActive = false;
+  sleepStartedAt = wisp.sleeping ? millis() : 0U;
+  scheduleRareReaction(millis());
   cancelAmbientAnimation();
   const bool meetingNewPack = startMeetForNewPack();
   if (!meetingNewPack) startBaseAnimation();
@@ -8393,6 +9385,7 @@ void loop() {
   tickCreature();
   tickProgression();
   tickGame();
+  tickFun(now);
   tickAnimation();
   sampleBattery();
 
@@ -8401,8 +9394,8 @@ void loop() {
     stopListening();
   }
   if ((screen == Screen::Menu || screen == Screen::Inbox ||
-       screen == Screen::GameMenu ||
-       screen == Screen::Status) &&
+       screen == Screen::GameMenu || screen == Screen::Status ||
+       screen == Screen::FieldGuide || screen == Screen::Goals) &&
       !rawButton && !stableButton &&
       now - screenEnteredAt >= SCREEN_TIMEOUT_MS) {
     enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);

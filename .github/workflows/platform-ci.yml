@@ -79,12 +79,14 @@ jobs:
           call tools\test_encounter_protocol.cmd || exit /b 1
           call tools\test_kitsu_nearby_protocol.cmd || exit /b 1
           call tools\test_signal_encounter.cmd || exit /b 1
+          call tools\test_signal_trail.cmd || exit /b 1
           call tools\test_kitsu_unlock_codes.cmd || exit /b 1
           call tools\test_wild_creature_catalog.cmd || exit /b 1
           call tools\test_kitsu_chat_contract.cmd || exit /b 1
           call tools\test_kitsu_mesh_config.cmd || exit /b 1
           call tools\test_kitsu_mesh_messages.cmd || exit /b 1
           call tools\test_mini_games.cmd || exit /b 1
+          call tools\test_companion_fun.cmd || exit /b 1
           call tools\test_portrait_ui_layout.cmd || exit /b 1
           call tools\test_kitsu_companion_protocol.cmd || exit /b 1
           call tools\test_kitsu_device_security.cmd || exit /b 1

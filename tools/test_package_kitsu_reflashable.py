@@ -842,7 +842,7 @@ def test_historical_stable_offset_imports_remain_defined() -> None:
 def test_runner_pins_candidate_and_reviewed_runtime() -> None:
     runner = (TOOLS / "package_kitsu_reflashable.cmd").read_text(encoding="utf-8")
     normalized = runner.replace("/", "\\").lower()
-    assert 'if "%firmware_version%"=="" set "firmware_version=0.17.4"' in normalized
+    assert 'if "%firmware_version%"=="" set "firmware_version=0.18.0"' in normalized
     assert "platformio-core-runtime\\scripts\\python.exe" in normalized
     assert (
         "private\\tooling\\platformio-core\\packages\\tool-esptoolpy"

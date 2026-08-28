@@ -76,22 +76,22 @@ void testPetMissingPackAndHatch() {
 
 void testMainAndGameMenus() {
   static const char* const mainItems[] = {
-      "CONNECT", "FEED", "PLAY", "GAMES", "INBOX", "RADIO", "SLEEP",
-      "INFO", "BACK"};
+      "CONNECT", "FEED", "PLAY", "GAMES", "CREATURES", "GOALS",
+      "INBOX", "RADIO", "SLEEP", "INFO", "BACK"};
   for (const char* item : mainItems) assertLabel({item, 39, 2});
   assertLabel({"MENU", 8, 1});
   assertLabel({"TAP NEXT", 91, 1});
   assertLabel({"HOLD SELECT", 108, 1});
 
-  const DotPlan mainDots = kitsu868::portrait::planDots(9, 60);
-  assert(mainDots.valid && mainDots.width == 59);
+  const DotPlan mainDots = kitsu868::portrait::planDots(11, 60);
+  assert(mainDots.valid);
   assert(kitsu868::portrait::rectangleFits(
       (64 - mainDots.width) / 2, 72, mainDots.width, mainDots.size));
 
-  static const char* const gameItems[] = {"SIGNAL", "POUNCE", "BACK"};
+  static const char* const gameItems[] = {"SIGNAL", "POUNCE", "ECHO", "BACK"};
   for (const char* item : gameItems) assertLabel({item, 39, 2});
   assertLabel({"GAMES", 8, 1});
-  const DotPlan gameDots = kitsu868::portrait::planDots(3, 60);
+  const DotPlan gameDots = kitsu868::portrait::planDots(4, 60);
   assert(gameDots.valid);
   assert(kitsu868::portrait::rectangleFits(
       (64 - gameDots.width) / 2, 72, gameDots.width, gameDots.size));
@@ -190,7 +190,7 @@ void testInboxVariants() {
 
 void testActiveGames() {
   const Label labels[] = {
-      {"SIGNAL", 4, 1},       {"POUNCE", 4, 1},
+      {"SIGNAL", 4, 1},       {"POUNCE", 4, 1}, {"ECHO", 4, 1},
       {"12/12", 18, 1},       {"PERFECT", 34, 1},
       {"DONE", 34, 2},        {"SCORE 65535", 96, 1},
       {"TAP", 113, 1},        {"WAIT", 113, 1},
@@ -202,6 +202,7 @@ void testActiveGames() {
   assert(kitsu868::portrait::rectangleFits(3, 72, 58, 3));
   assert(kitsu868::portrait::rectangleFits(25, 64, 14, 9));
   assert(kitsu868::portrait::rectangleFits(3, 75, 58, 3));
+  assert(kitsu868::portrait::rectangleFits(19, 45, 26, 26));
 }
 
 void testListenAndSleep() {
@@ -261,15 +262,43 @@ void testStatusPages() {
       {"OLED ERR", 59, 1}, {"MESH ERR", 75, 1},
       {"STORE ERR", 91, 1}, {"NO PACK", 107, 1},
   };
+  const Label rewards[] = {
+      {"REWARDS", 6, 2}, {"DREAMS 65535", 25, 1},
+      {"WOKE INSIDE", 39, 1}, {"A GOOD DREAM", 50, 1},
+      {"DREAM #12", 45, 1}, {"NO DREAMS", 45, 1},
+      {"R65535 C21", 65, 1}, {"SESSION AURA", 82, 1},
+      {"FINAL FORM", 99, 1},
+  };
   assertScreen(identity);
   assertScreen(vitals);
   assertScreen(memory);
+  assertScreen(rewards);
   assertScreen(diagnostics);
   assert(kitsu868::portrait::rectangleFits(10, 49, 44, 5));
-  const DotPlan dots = kitsu868::portrait::planDots(4, 60);
+  const DotPlan dots = kitsu868::portrait::planDots(5, 60);
   assert(dots.valid);
   assert(kitsu868::portrait::rectangleFits(
       (64 - dots.width) / 2, 121, dots.width, dots.size));
+}
+
+void testFieldGuideAndGoals() {
+  const Label guide[] = {
+      {"FIELD GUIDE", 2, 1}, {"TASMANIAN DEVIL", 14, 1},
+      {"UNDISCOVERED", 66, 1}, {"FOLLOW SIGNALS", 80, 1},
+      {"NOT OWNED", 94, 1}, {"ROSTER 21/21", 106, 1},
+      {"TRAIL 20/20", 118, 1},
+  };
+  const Label goals[] = {
+      {"SESSION GOALS", 5, 1}, {"CARE 2/2", 29, 1},
+      {"GAME 1/1", 47, 1}, {"SIGNAL 1/1", 65, 1},
+      {"AURA ACTIVE", 87, 2}, {"HOLD BACK", 113, 1},
+  };
+  assertScreen(guide);
+  assertScreen(goals);
+  assert(kitsu868::portrait::rectangleFits(16, 27, 32, 36));
+  assert(kitsu868::portrait::rectangleFits(27, 30, 10, 10));
+  assert(kitsu868::portrait::rectangleFits(22, 40, 20, 20));
+  assert(kitsu868::portrait::rectangleFits(18, 48, 28, 8));
 }
 
 void testPairPhoneVariants() {
@@ -325,9 +354,10 @@ int main() {
   testStatusPages();
   testPairPhoneVariants();
   testControllerRecoveryVariants();
+  testFieldGuideAndGoals();
   puts("PASS portrait_ui_layout_host");
   puts("  canvas: 64x128; content: 60px");
-  puts("  screens: pet menu connect inbox game-menu game listen sleep wild-encounter status phone controller-recovery");
+  puts("  screens: pet menu connect inbox game-menu game listen sleep wild-encounter field-guide goals status phone controller-recovery");
   puts("  phone states: unavailable compare grant authenticated securing open closed");
   return 0;
 }
