@@ -14,6 +14,7 @@ constexpr uint8_t kPartyCapacity = 4U;
 constexpr uint8_t kRecentSessionCapacity = 8U;
 constexpr uint8_t kStoryChoiceCount = 3U;
 constexpr uint8_t kModeCount = 11U;
+constexpr uint8_t kRewardPeerCapacity = kPartyCapacity - 1U;
 constexpr uint8_t kStateSchemaVersion = 1U;
 constexpr uint32_t kMinimumTrustedEpoch = UINT32_C(1577836800);
 constexpr uint32_t kRewardCooldownSeconds = 900U;
@@ -146,6 +147,20 @@ struct RewardOutcome {
   uint8_t challengeCompleted = 0U;
 };
 
+struct PartyRewardRequest {
+  uint32_t sessionNonce = 0U;
+  uint32_t dayId = 0U;
+  uint32_t epochSeconds = 0U;
+  uint16_t score = 0U;
+  uint8_t peerCount = 0U;
+  uint16_t peerUids[kRewardPeerCapacity]{};
+};
+
+struct PartyRewardBatchOutcome {
+  uint8_t peerCount = 0U;
+  RewardOutcome peers[kRewardPeerCapacity]{};
+};
+
 struct PartyMember {
   uint16_t uid = 0U;
   uint8_t ready = 0U;
@@ -188,6 +203,8 @@ class SocialProgression {
                              FriendOutcome& output);
   SocialStatus recordSessionReward(const SessionReward& reward,
                                    RewardOutcome& output);
+  SocialStatus recordPartyRewards(const PartyRewardRequest& reward,
+                                  PartyRewardBatchOutcome& output);
   SocialStatus contributeDailyChallenge(uint32_t dayId, uint16_t amount,
                                         uint16_t target,
                                         uint8_t& completedNow);

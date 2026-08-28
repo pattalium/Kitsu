@@ -304,44 +304,80 @@ void SocialProgression::rememberSession(uint32_t nonce) {
 
 SocialStatus SocialProgression::recordSessionReward(
     const SessionReward& reward, RewardOutcome& output) {
+  PartyRewardRequest batch{};
+  batch.sessionNonce = reward.sessionNonce;
+  batch.dayId = reward.dayId;
+  batch.epochSeconds = reward.epochSeconds;
+  batch.score = reward.score;
+  batch.peerCount = 1U;
+  batch.peerUids[0] = reward.uid;
+  PartyRewardBatchOutcome batchOutput{};
+  const SocialStatus status = recordPartyRewards(batch, batchOutput);
+  if (status == SocialStatus::Ok) output = batchOutput.peers[0];
+  return status;
+}
+
+SocialStatus SocialProgression::recordPartyRewards(
+    const PartyRewardRequest& reward, PartyRewardBatchOutcome& output) {
   if (!available_) return SocialStatus::StateUnavailable;
-  if (reward.uid == 0U || reward.score > 1000U ||
-      reward.sessionNonce == 0U || reward.dayId == 0U ||
+  if (reward.peerCount == 0U || reward.peerCount > kRewardPeerCapacity ||
+      reward.score > 1000U || reward.sessionNonce == 0U || reward.dayId == 0U ||
       reward.epochSeconds < kMinimumTrustedEpoch) {
     return SocialStatus::InvalidInput;
   }
-  if (seenSession(reward.sessionNonce)) return SocialStatus::Duplicate;
-  PeerState* peer = findPeer(reward.uid);
-  if (!peer) return SocialStatus::NotJoined;
-  if (state_.currentDay > reward.dayId ||
-      peer->lastRewardDay > reward.dayId) {
-    return SocialStatus::ClockRegression;
+  for (uint8_t index = 0U; index < kRewardPeerCapacity; ++index) {
+    if ((index < reward.peerCount && reward.peerUids[index] == 0U) ||
+        (index >= reward.peerCount && reward.peerUids[index] != 0U)) {
+      return SocialStatus::InvalidInput;
+    }
+    for (uint8_t other = 0U; other < index && index < reward.peerCount;
+         ++other) {
+      if (reward.peerUids[other] == reward.peerUids[index]) {
+        return SocialStatus::InvalidInput;
+      }
+    }
   }
-  if (peer->lastRewardEpoch != 0U) {
-    if (reward.epochSeconds < peer->lastRewardEpoch) {
+  if (seenSession(reward.sessionNonce)) return SocialStatus::Duplicate;
+  PeerState* peers[kRewardPeerCapacity]{};
+  for (uint8_t index = 0U; index < reward.peerCount; ++index) {
+    peers[index] = findPeer(reward.peerUids[index]);
+    if (!peers[index]) return SocialStatus::NotJoined;
+  }
+  if (state_.currentDay > reward.dayId) return SocialStatus::ClockRegression;
+  for (uint8_t index = 0U; index < reward.peerCount; ++index) {
+    const PeerState& peer = *peers[index];
+    if (peer.lastRewardDay > reward.dayId ||
+        (peer.lastRewardEpoch != 0U &&
+         reward.epochSeconds < peer.lastRewardEpoch)) {
       return SocialStatus::ClockRegression;
     }
-    if (reward.dayId == peer->lastRewardDay ||
-        reward.epochSeconds - peer->lastRewardEpoch < kRewardCooldownSeconds) {
+    if (peer.lastRewardEpoch != 0U &&
+        (reward.dayId == peer.lastRewardDay ||
+         reward.epochSeconds - peer.lastRewardEpoch <
+             kRewardCooldownSeconds)) {
       return SocialStatus::RateLimited;
     }
   }
   beginDay(reward.dayId);
-  const bool firstSuccess = peer->successfulParties == 0U;
   const uint8_t points = static_cast<uint8_t>(
       2U + (reward.score >= 750U ? 2U : reward.score >= 400U ? 1U : 0U));
-  peer->friendshipPoints = saturatingAdd16(peer->friendshipPoints, points);
-  peer->successfulParties = saturatingAdd16(peer->successfulParties, 1U);
-  if (reward.score > peer->bestPartyScore) peer->bestPartyScore = reward.score;
-  peer->lastRewardDay = reward.dayId;
-  peer->lastRewardEpoch = reward.epochSeconds;
+  PartyRewardBatchOutcome candidate{};
+  candidate.peerCount = reward.peerCount;
+  for (uint8_t index = 0U; index < reward.peerCount; ++index) {
+    PeerState& peer = *peers[index];
+    const bool firstSuccess = peer.successfulParties == 0U;
+    peer.friendshipPoints = saturatingAdd16(peer.friendshipPoints, points);
+    peer.successfulParties = saturatingAdd16(peer.successfulParties, 1U);
+    if (reward.score > peer.bestPartyScore) peer.bestPartyScore = reward.score;
+    peer.lastRewardDay = reward.dayId;
+    peer.lastRewardEpoch = reward.epochSeconds;
+    candidate.peers[index].pointsAwarded = points;
+    candidate.peers[index].friendshipLevel =
+        friendshipLevel(peer.friendshipPoints);
+    candidate.peers[index].firstSuccess = firstSuccess ? 1U : 0U;
+  }
   if (state_.completedParties != UINT32_MAX) ++state_.completedParties;
   rememberSession(reward.sessionNonce);
-
-  RewardOutcome candidate{};
-  candidate.pointsAwarded = points;
-  candidate.friendshipLevel = friendshipLevel(peer->friendshipPoints);
-  candidate.firstSuccess = firstSuccess ? 1U : 0U;
   output = candidate;
   refreshCrc();
   return SocialStatus::Ok;

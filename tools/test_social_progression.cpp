@@ -25,6 +25,14 @@ social::FriendObservation observation(uint16_t uid, uint32_t day,
   return value;
 }
 
+const social::PeerState* peerState(const social::SocialState& state,
+                                   uint16_t uid) {
+  for (uint8_t index = 0U; index < state.peerCount; ++index) {
+    if (state.peers[index].uid == uid) return &state.peers[index];
+  }
+  return nullptr;
+}
+
 void testFriendshipAndFairness() {
   social::SocialProgression progression;
   social::FriendOutcome result{};
@@ -305,6 +313,155 @@ void testIntegrityEdges() {
         "75 CRC-valid malformed session ring is rejected");
 }
 
+void testAtomicPartyRewards() {
+  social::SocialProgression progression;
+  social::FriendOutcome friendResult{};
+  for (uint16_t uid = 1U; uid <= social::kPeerCapacity; ++uid) {
+    check(progression.observeFriend(
+              observation(uid, 27000U, 1821000000U + uid), friendResult) ==
+              social::SocialStatus::Ok,
+          "batch reward peer table fills");
+  }
+
+  social::PartyRewardRequest request{};
+  request.sessionNonce = 800U;
+  request.dayId = 27001U;
+  request.epochSeconds = 1821086400U;
+  request.score = 800U;
+  request.peerCount = 1U;  // One remote peer is a two-person party.
+  request.peerUids[0] = 1U;
+  social::PartyRewardBatchOutcome outcome{};
+  check(progression.recordPartyRewards(request, outcome) ==
+            social::SocialStatus::Ok &&
+            outcome.peerCount == 1U && outcome.peers[0].pointsAwarded == 4U &&
+            progression.snapshot().completedParties == 1U &&
+            peerState(progression.snapshot(), 1U)->successfulParties == 1U,
+        "53 two-person party rewards one peer and counts one party");
+
+  request = social::PartyRewardRequest{};
+  request.sessionNonce = 801U;
+  request.dayId = 27002U;
+  request.epochSeconds = 1821172800U;
+  request.score = 600U;
+  request.peerCount = 2U;  // Two remote peers are a three-person party.
+  request.peerUids[0] = 2U;
+  request.peerUids[1] = 3U;
+  check(progression.recordPartyRewards(request, outcome) ==
+            social::SocialStatus::Ok &&
+            outcome.peerCount == 2U &&
+            progression.snapshot().completedParties == 2U &&
+            peerState(progression.snapshot(), 2U)->successfulParties == 1U &&
+            peerState(progression.snapshot(), 3U)->successfulParties == 1U,
+        "53 three-person party rewards two peers and counts one party");
+
+  request = social::PartyRewardRequest{};
+  request.sessionNonce = 802U;
+  request.dayId = 27003U;
+  request.epochSeconds = 1821259200U;
+  request.score = 1000U;
+  request.peerCount = 3U;  // Three remote peers are a four-person party.
+  request.peerUids[0] = 4U;
+  request.peerUids[1] = 5U;
+  request.peerUids[2] = 6U;
+  check(progression.recordPartyRewards(request, outcome) ==
+            social::SocialStatus::Ok &&
+            outcome.peerCount == 3U &&
+            progression.snapshot().completedParties == 3U &&
+            progression.snapshot().recentSessionCount == 3U &&
+            peerState(progression.snapshot(), 4U)->successfulParties == 1U &&
+            peerState(progression.snapshot(), 5U)->successfulParties == 1U &&
+            peerState(progression.snapshot(), 6U)->successfulParties == 1U,
+        "53 four-person party rewards three peers but counts one party");
+
+  const social::SocialState afterFourPlayer = progression.snapshot();
+  const social::SocialStatus duplicateStatus =
+      progression.recordPartyRewards(request, outcome);
+  const social::SocialState afterDuplicate = progression.snapshot();
+  check(duplicateStatus == social::SocialStatus::Duplicate &&
+            std::memcmp(&afterFourPlayer, &afterDuplicate,
+                        sizeof(social::SocialState)) == 0,
+        "75 one batch nonce is consumed once for the whole party");
+
+  request.sessionNonce = 803U;
+  request.peerCount = 2U;
+  request.peerUids[0] = 4U;
+  request.peerUids[1] = 7U;
+  request.peerUids[2] = 0U;
+  social::PartyRewardBatchOutcome untouched{};
+  untouched.peerCount = 99U;
+  const social::SocialState beforeRateLimit = progression.snapshot();
+  const social::SocialStatus rateStatus =
+      progression.recordPartyRewards(request, untouched);
+  const social::SocialState afterRateLimit = progression.snapshot();
+  check(rateStatus == social::SocialStatus::RateLimited &&
+            untouched.peerCount == 99U &&
+            std::memcmp(&beforeRateLimit, &afterRateLimit,
+                        sizeof(social::SocialState)) == 0 &&
+            social::validateSocialState(afterRateLimit),
+        "75 one ineligible peer rolls back the entire batch");
+
+  request = social::PartyRewardRequest{};
+  request.sessionNonce = 804U;
+  request.dayId = 27002U;
+  request.epochSeconds = 1821345600U;
+  request.score = 500U;
+  request.peerCount = 1U;
+  request.peerUids[0] = 7U;
+  const social::SocialState beforeRollback = progression.snapshot();
+  const social::SocialStatus rollbackStatus =
+      progression.recordPartyRewards(request, outcome);
+  const social::SocialState afterRollback = progression.snapshot();
+  check(rollbackStatus == social::SocialStatus::ClockRegression &&
+            std::memcmp(&beforeRollback, &afterRollback,
+                        sizeof(social::SocialState)) == 0,
+        "75 batch day rollback is atomic");
+
+  request.dayId = 27004U;
+  request.sessionNonce = 805U;
+  request.peerCount = 2U;
+  request.peerUids[0] = 7U;
+  request.peerUids[1] = 7U;
+  const social::SocialStatus repeatedUidStatus =
+      progression.recordPartyRewards(request, outcome);
+  const social::SocialState afterRepeatedUid = progression.snapshot();
+  check(repeatedUidStatus == social::SocialStatus::InvalidInput &&
+            std::memcmp(&beforeRollback, &afterRepeatedUid,
+                        sizeof(social::SocialState)) == 0,
+        "75 duplicate UIDs cannot receive the same party reward twice");
+
+  request = social::PartyRewardRequest{};
+  request.sessionNonce = 806U;
+  request.dayId = 27004U;
+  request.epochSeconds = 1821345600U;
+  request.score = 700U;
+  request.peerCount = 3U;
+  request.peerUids[0] = 10U;
+  request.peerUids[1] = 11U;
+  request.peerUids[2] = 12U;
+  check(progression.recordPartyRewards(request, outcome) ==
+            social::SocialStatus::Ok &&
+            progression.snapshot().peerCount == social::kPeerCapacity &&
+            progression.snapshot().completedParties == 4U,
+        "53 full peer table still rewards three existing peers atomically");
+
+  request.sessionNonce = 807U;
+  request.dayId = 27005U;
+  request.epochSeconds += 86400U;
+  request.peerCount = 2U;
+  request.peerUids[0] = 8U;
+  request.peerUids[1] = 99U;
+  request.peerUids[2] = 0U;
+  const social::SocialState beforeUnknown = progression.snapshot();
+  const social::SocialStatus unknownStatus =
+      progression.recordPartyRewards(request, outcome);
+  const social::SocialState afterUnknown = progression.snapshot();
+  check(unknownStatus == social::SocialStatus::NotJoined &&
+            std::memcmp(&beforeUnknown, &afterUnknown,
+                        sizeof(social::SocialState)) == 0 &&
+            social::validateSocialState(afterUnknown),
+        "53 unknown peer at capacity fails without a partial reward or CRC drift");
+}
+
 }  // namespace
 
 int main() {
@@ -313,6 +470,7 @@ int main() {
   testCooperativeActivities();
   testLeaderboard();
   testIntegrityEdges();
+  testAtomicPartyRewards();
   if (failures != 0) {
     std::cerr << "TEST_FAIL social_progression failures=" << failures << '\n';
     return 1;
