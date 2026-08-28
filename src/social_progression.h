@@ -208,6 +208,9 @@ class SocialProgression {
   SocialStatus contributeDailyChallenge(uint32_t dayId, uint16_t amount,
                                         uint16_t target,
                                         uint8_t& completedNow);
+  SocialStatus recordCooperativeRareEncounter(uint32_t sessionNonce);
+  SocialStatus recordSharedTrailResult(uint32_t sessionNonce,
+                                       uint8_t mergedMisses);
   SocialStatus mergeSharedTrail(uint32_t sessionNonce, uint8_t localMisses,
                                 uint8_t peerMisses, uint8_t& mergedMisses);
   bool cooperativeRareEncounterEligible(uint8_t uniquePeers,

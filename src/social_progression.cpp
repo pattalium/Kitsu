@@ -8,6 +8,8 @@ namespace social {
 namespace {
 
 constexpr uint32_t kMagic = UINT32_C(0x31434F53);
+constexpr uint32_t kRareEncounterSessionDomain = UINT32_C(0x52415245);
+constexpr uint32_t kSharedTrailSessionDomain = UINT32_C(0x54524149);
 
 uint32_t crc32Bytes(const uint8_t* bytes, size_t length) {
   uint32_t crc = UINT32_C(0xFFFFFFFF);
@@ -34,6 +36,14 @@ uint32_t mix32(uint32_t value) {
   value *= UINT32_C(0x846CA68B);
   value ^= value >> 16U;
   return value;
+}
+
+uint32_t scopedSessionNonce(uint32_t nonce, uint32_t domain) {
+  const uint32_t scoped = mix32(nonce ^ domain);
+  // A zero nonce is reserved for an empty replay-ring slot. Since mix32 is a
+  // permutation, mix32(domain) is the one non-zero value otherwise absent
+  // from this domain when callers supply a non-zero nonce.
+  return scoped == 0U ? mix32(domain) : scoped;
 }
 
 uint8_t bitCount16(uint16_t value) {
@@ -415,13 +425,39 @@ SocialStatus SocialProgression::mergeSharedTrail(
   if (sessionNonce == 0U || localMisses > 20U || peerMisses > 20U) {
     return SocialStatus::InvalidInput;
   }
-  if (seenSession(sessionNonce)) return SocialStatus::Duplicate;
   mergedMisses = sharedTrailMisses(localMisses, peerMisses);
+  return recordSharedTrailResult(sessionNonce, mergedMisses);
+}
+
+SocialStatus SocialProgression::recordCooperativeRareEncounter(
+    uint32_t sessionNonce) {
+  if (!available_) return SocialStatus::StateUnavailable;
+  if (sessionNonce == 0U) return SocialStatus::InvalidInput;
+  const uint32_t replayNonce =
+      scopedSessionNonce(sessionNonce, kRareEncounterSessionDomain);
+  if (seenSession(replayNonce)) return SocialStatus::Duplicate;
+  if (state_.cooperativeRareEncounters != UINT32_MAX) {
+    ++state_.cooperativeRareEncounters;
+  }
+  rememberSession(replayNonce);
+  refreshCrc();
+  return SocialStatus::Ok;
+}
+
+SocialStatus SocialProgression::recordSharedTrailResult(
+    uint32_t sessionNonce, uint8_t mergedMisses) {
+  if (!available_) return SocialStatus::StateUnavailable;
+  if (sessionNonce == 0U || mergedMisses > 20U) {
+    return SocialStatus::InvalidInput;
+  }
+  const uint32_t replayNonce =
+      scopedSessionNonce(sessionNonce, kSharedTrailSessionDomain);
+  if (seenSession(replayNonce)) return SocialStatus::Duplicate;
   state_.sharedTrailProgress = state_.sharedTrailProgress >
           UINT32_MAX - mergedMisses
       ? UINT32_MAX
       : state_.sharedTrailProgress + mergedMisses;
-  rememberSession(sessionNonce);
+  rememberSession(replayNonce);
   refreshCrc();
   return SocialStatus::Ok;
 }

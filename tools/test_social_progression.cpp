@@ -212,6 +212,104 @@ void testCooperativeActivities() {
         "72/74 challenge board completes exactly once per shared day");
 }
 
+void testPersistedCooperativeOutcomes() {
+  social::SocialProgression progression;
+  social::FriendOutcome friendResult{};
+  check(progression.observeFriend(
+            observation(0x2222U, 22100U, 1816000000U), friendResult) ==
+            social::SocialStatus::Ok,
+        "M8 persistence test peer is known");
+
+  social::SessionReward reward{};
+  reward.uid = 0x2222U;
+  reward.score = 800U;
+  reward.sessionNonce = 900U;
+  reward.dayId = 22101U;
+  reward.epochSeconds = 1816086400U;
+  social::RewardOutcome rewardResult{};
+  const social::SocialStatus partyStatus =
+      progression.recordSessionReward(reward, rewardResult);
+  const social::SocialStatus rareStatus =
+      progression.recordCooperativeRareEncounter(900U);
+  const social::SocialStatus trailStatus =
+      progression.recordSharedTrailResult(900U, 17U);
+  check(partyStatus == social::SocialStatus::Ok &&
+            rareStatus == social::SocialStatus::Ok &&
+            trailStatus == social::SocialStatus::Ok,
+        "M8 party, rare, and trail outcomes can consume their own domain once");
+
+  const social::SocialState completed = progression.snapshot();
+  check(completed.completedParties == 1U &&
+            completed.cooperativeRareEncounters == 1U &&
+            completed.sharedTrailProgress == 17U &&
+            social::validateSocialState(completed),
+        "M8 host outcome values persist with the existing schema and CRC");
+
+  uint8_t recomputed = 0U;
+  const social::SocialStatus partyReplay =
+      progression.recordSessionReward(reward, rewardResult);
+  const social::SocialStatus rareReplay =
+      progression.recordCooperativeRareEncounter(900U);
+  const social::SocialStatus trailReplay =
+      progression.recordSharedTrailResult(900U, 17U);
+  const social::SocialStatus legacyReplay =
+      progression.mergeSharedTrail(900U, 1U, 1U, recomputed);
+  const social::SocialState afterReplays = progression.snapshot();
+  check(partyReplay == social::SocialStatus::Duplicate &&
+            rareReplay == social::SocialStatus::Duplicate &&
+            trailReplay == social::SocialStatus::Duplicate &&
+            legacyReplay == social::SocialStatus::Duplicate &&
+            recomputed == 2U &&
+            std::memcmp(&completed, &afterReplays,
+                        sizeof(social::SocialState)) == 0,
+        "M8 outcome replays do not double-count and legacy merge reports its input");
+
+  social::SocialProgression restored;
+  check(restored.restore(completed) == social::SocialStatus::Ok &&
+            restored.recordCooperativeRareEncounter(900U) ==
+                social::SocialStatus::Duplicate &&
+            restored.recordSharedTrailResult(900U, 17U) ==
+                social::SocialStatus::Duplicate,
+        "M8 replay protection survives persistence restore");
+
+  const social::SocialState beforeInvalid = restored.snapshot();
+  const social::SocialStatus invalidRare =
+      restored.recordCooperativeRareEncounter(0U);
+  const social::SocialStatus invalidTrailNonce =
+      restored.recordSharedTrailResult(0U, 0U);
+  const social::SocialStatus invalidTrailValue =
+      restored.recordSharedTrailResult(901U, 21U);
+  const social::SocialState afterInvalid = restored.snapshot();
+  check(invalidRare == social::SocialStatus::InvalidInput &&
+            invalidTrailNonce == social::SocialStatus::InvalidInput &&
+            invalidTrailValue == social::SocialStatus::InvalidInput &&
+            std::memcmp(&beforeInvalid, &afterInvalid,
+                        sizeof(social::SocialState)) == 0,
+        "M8 invalid cooperative results leave persistence untouched");
+
+  check(restored.recordSharedTrailResult(901U, 0U) ==
+            social::SocialStatus::Ok &&
+            restored.recordSharedTrailResult(901U, 0U) ==
+                social::SocialStatus::Duplicate &&
+            restored.snapshot().sharedTrailProgress == 17U,
+        "M8 zero trail result is still consumed exactly once");
+
+  social::SocialProgression saturated;
+  social::SocialState saturatedState = saturated.snapshot();
+  saturatedState.cooperativeRareEncounters = UINT32_MAX;
+  saturatedState.sharedTrailProgress = UINT32_MAX - 5U;
+  saturatedState.crc32 = social::socialStateCrc(saturatedState);
+  check(saturated.restore(saturatedState) == social::SocialStatus::Ok &&
+            saturated.recordCooperativeRareEncounter(902U) ==
+                social::SocialStatus::Ok &&
+            saturated.recordSharedTrailResult(902U, 20U) ==
+                social::SocialStatus::Ok &&
+            saturated.snapshot().cooperativeRareEncounters == UINT32_MAX &&
+            saturated.snapshot().sharedTrailProgress == UINT32_MAX &&
+            social::validateSocialState(saturated.snapshot()),
+        "M8 cooperative counters saturate without wrapping");
+}
+
 void testLeaderboard() {
   social::SocialProgression progression;
   social::FriendOutcome friendResult{};
@@ -468,6 +566,7 @@ int main() {
   testFriendshipAndFairness();
   testLobbyAndRotatingModes();
   testCooperativeActivities();
+  testPersistedCooperativeOutcomes();
   testLeaderboard();
   testIntegrityEdges();
   testAtomicPartyRewards();
