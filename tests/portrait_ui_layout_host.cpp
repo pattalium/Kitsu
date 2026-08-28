@@ -59,12 +59,16 @@ void testTextPlanner() {
 
 void testPetMissingPackAndHatch() {
   const Label pet[] = {{"LISTENING", 93, 1}};
+  const Label wrappedMoment[] = {
+      {"RESONANT", 97, 1}, {"SIGNAL", 105, 1},
+      {"EVERYONE", 113, 1}, {"SYNCED", 121, 1}};
   const Label missing[] = {
       {"NO", 32, 2}, {"PACK", 52, 2}, {"INSTALL", 82, 1}, {"USB", 97, 1}};
   const Label hatch[] = {
       {"SIGNAL", 20, 1}, {"(...)" , 56, 2}, {"FOUND", 101, 1}};
   const Label boot[] = {{"KITSU", 36, 2}, {"868", 65, 2}};
   assertScreen(pet);
+  assertScreen(wrappedMoment);
   assertScreen(missing);
   assertScreen(hatch);
   assertScreen(boot);
@@ -72,6 +76,10 @@ void testPetMissingPackAndHatch() {
   assert(kitsu868::portrait::rectangleFits(15, 110, 34, 5));
   assert(kitsu868::portrait::rectangleFits(52, 3, 10, 7));
   assert(kitsu868::portrait::rectangleFits(58, 12, 4, 4));
+  assert(kitsu868::portrait::lineCapacity(
+             kitsu868::portrait::kContentWidth, 1,
+             kitsu868::portrait::compactAdvance(1)) == 12U);
+  assert(kitsu868::portrait::rectangleFits(2, 97, 60, 31));
 }
 
 void testMainAndGameMenus() {

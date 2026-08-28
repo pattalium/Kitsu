@@ -5753,12 +5753,13 @@ void commitControllerRecovery(uint32_t now) {
   enterScreen(Screen::ControllerResult);
 }
 
-void uiWrappedText(const char* rawText, int16_t y, uint8_t maxLines) {
+void uiWrappedText(const char* rawText, int16_t y, uint8_t maxLines,
+                   uint8_t lineSpacing = 10U) {
   String remaining = oledSafeText(rawText);
   remaining.trim();
   const size_t charactersPerLine = kitsu868::portrait::lineCapacity(
       kitsu868::portrait::kContentWidth, 1,
-      kitsu868::portrait::regularAdvance(1));
+      kitsu868::portrait::compactAdvance(1));
   for (uint8_t lineIndex = 0;
        lineIndex < maxLines && remaining.length() > 0U; ++lineIndex) {
     String line;
@@ -5781,7 +5782,7 @@ void uiWrappedText(const char* rawText, int16_t y, uint8_t maxLines) {
       }
       line += "..";
     }
-    uiTextCentered(line, y + lineIndex * 10);
+    uiTextCentered(line, y + lineIndex * lineSpacing);
   }
 }
 
@@ -6032,8 +6033,12 @@ void renderPet() {
   uiMailBadge();
   const bool highResolution = companionPack.formatVersion() == KITSU_PACK_V2;
   if (momentView.active) {
-    uiTextCenteredFit(momentView.line1, highResolution ? 98 : 92, 1);
-    uiTextCenteredFit(momentView.line2, highResolution ? 110 : 104, 1);
+    String momentText = momentView.line1 ? momentView.line1 : "";
+    if (momentView.line2 && momentView.line2[0] != '\0') {
+      if (momentText.length() > 0U) momentText += ' ';
+      momentText += momentView.line2;
+    }
+    uiWrappedText(momentText.c_str(), highResolution ? 97 : 92, 4U, 8U);
   } else {
     uiTextCentered(moodText(), highResolution ? 99 : 93);
     uiEnergyBar(wisp.energy, highResolution ? 113 : 110);
