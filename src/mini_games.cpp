@@ -14,6 +14,12 @@ uint8_t clampU8(uint8_t value, uint8_t low, uint8_t high) {
   return value;
 }
 
+uint16_t clampU16(uint16_t value, uint16_t low, uint16_t high) {
+  if (value < low) return low;
+  if (value > high) return high;
+  return value;
+}
+
 uint16_t saturatingAdd(uint16_t value, uint8_t increment) {
   const uint16_t room = static_cast<uint16_t>(0xffffU - value);
   return increment > room ? 0xffffU : static_cast<uint16_t>(value + increment);
@@ -62,6 +68,17 @@ const char* miniGameResultLabel(MiniGameResult result) {
 
 const char* pounceFetchTitle(PounceFetchVerb verb) {
   return verb == PounceFetchVerb::Fetch ? "FETCH" : "POUNCE";
+}
+
+const char* echoBeatStageLabel(EchoBeatStage stage) {
+  switch (stage) {
+    case EchoBeatStage::Inactive: return "READY";
+    case EchoBeatStage::Presenting: return "LISTEN";
+    case EchoBeatStage::Replay: return "REPEAT";
+    case EchoBeatStage::Result: return "RESULT";
+    case EchoBeatStage::Finished: return "DONE";
+  }
+  return "READY";
 }
 
 SignalCatchGame::SignalCatchGame(const SignalCatchConfig& config) : config_(config) {
@@ -402,6 +419,262 @@ PounceFetchView PounceFetchGame::view(uint32_t nowMs) const {
   value.pointsAwarded = pointsAwarded_;
   value.score = score_;
   value.travelMs = travelDuration();
+  value.remainingMs = remainingAt(nowMs);
+  return value;
+}
+
+EchoBeatGame::EchoBeatGame(const EchoBeatConfig& config) : config_(config) {
+  sanitizeConfig();
+}
+
+void EchoBeatGame::sanitizeConfig() {
+  config_.minimumBeats = clampU8(config_.minimumBeats, 3, kMaximumBeats);
+  config_.maximumBeats =
+      clampU8(config_.maximumBeats, config_.minimumBeats, kMaximumBeats);
+  config_.leadInMs = clampU16(config_.leadInMs, 100, 5000);
+
+  config_.perfectWindowMs = clampU16(config_.perfectWindowMs, 20, 400);
+  config_.goodWindowMs =
+      clampU16(config_.goodWindowMs, config_.perfectWindowMs, 600);
+  config_.hitWindowMs =
+      clampU16(config_.hitWindowMs, config_.goodWindowMs, 800);
+
+  const uint16_t requiredGap =
+      static_cast<uint16_t>(config_.hitWindowMs * 2U + 1U);
+  config_.minimumGapMs = clampU16(config_.minimumGapMs, 200, 3000);
+  if (config_.minimumGapMs < requiredGap) config_.minimumGapMs = requiredGap;
+  config_.maximumGapMs =
+      clampU16(config_.maximumGapMs, config_.minimumGapMs, 3000);
+  config_.flashMs = clampU16(config_.flashMs, 40, config_.minimumGapMs);
+  config_.intermissionMs = clampU16(config_.intermissionMs, 100, 5000);
+  config_.resultMs = clampU16(config_.resultMs, 100, 5000);
+}
+
+uint32_t EchoBeatGame::nextRandom() {
+  uint32_t value = rng_;
+  value ^= value << 13;
+  value ^= value >> 17;
+  value ^= value << 5;
+  rng_ = value == 0 ? kFallbackSeed : value;
+  return rng_;
+}
+
+void EchoBeatGame::generatePattern() {
+  const uint8_t choices =
+      static_cast<uint8_t>(config_.maximumBeats - config_.minimumBeats + 1U);
+  beatCount_ = static_cast<uint8_t>(config_.minimumBeats + nextRandom() % choices);
+  beatOffsetsMs_[0] = config_.leadInMs;
+
+  const uint16_t middleGap = static_cast<uint16_t>(
+      (static_cast<uint32_t>(config_.minimumGapMs) + config_.maximumGapMs) / 2U);
+  for (uint8_t index = 1; index < beatCount_; ++index) {
+    const uint32_t choice = nextRandom() % 3U;
+    const uint16_t gap = choice == 0U
+        ? config_.minimumGapMs
+        : (choice == 1U ? middleGap : config_.maximumGapMs);
+    beatOffsetsMs_[index] =
+        static_cast<uint16_t>(beatOffsetsMs_[index - 1] + gap);
+  }
+  for (uint8_t index = beatCount_; index < kMaximumBeats; ++index) {
+    beatOffsetsMs_[index] = 0;
+  }
+}
+
+void EchoBeatGame::start(uint32_t nowMs, uint32_t seed) {
+  phase_ = MiniGamePhase::Playing;
+  stage_ = EchoBeatStage::Presenting;
+  result_ = MiniGameResult::None;
+  lastBeatResult_ = MiniGameResult::None;
+  rng_ = seed == 0 ? kFallbackSeed : seed;
+  phaseStartedAt_ = nowMs;
+  score_ = 0;
+  lastTimingErrorMs_ = 0;
+  replayIndex_ = 0;
+  perfectBeats_ = 0;
+  goodBeats_ = 0;
+  hitBeats_ = 0;
+  missedBeats_ = 0;
+  generatePattern();
+}
+
+void EchoBeatGame::cancel() {
+  phase_ = MiniGamePhase::Inactive;
+  stage_ = EchoBeatStage::Inactive;
+  result_ = MiniGameResult::None;
+  lastBeatResult_ = MiniGameResult::None;
+  lastTimingErrorMs_ = 0;
+}
+
+uint32_t EchoBeatGame::presentationDuration() const {
+  if (beatCount_ == 0) return 0;
+  return static_cast<uint32_t>(beatOffsetsMs_[beatCount_ - 1]) +
+         config_.flashMs + config_.intermissionMs;
+}
+
+void EchoBeatGame::beginReplay(uint32_t atMs) {
+  stage_ = EchoBeatStage::Replay;
+  phaseStartedAt_ = atMs;
+  replayIndex_ = 0;
+  lastBeatResult_ = MiniGameResult::None;
+  lastTimingErrorMs_ = 0;
+}
+
+void EchoBeatGame::finishReplay(uint32_t atMs) {
+  if (missedBeats_ == 0 && perfectBeats_ == beatCount_) {
+    result_ = MiniGameResult::Perfect;
+  } else if (score_ >= static_cast<uint16_t>(beatCount_) * 2U) {
+    result_ = MiniGameResult::Good;
+  } else if (score_ != 0) {
+    result_ = MiniGameResult::Hit;
+  } else {
+    result_ = MiniGameResult::Miss;
+  }
+  phase_ = MiniGamePhase::Result;
+  stage_ = EchoBeatStage::Result;
+  phaseStartedAt_ = atMs;
+}
+
+void EchoBeatGame::recordBeat(MiniGameResult result, uint8_t points,
+                              int16_t timingErrorMs, uint32_t atMs) {
+  lastBeatResult_ = result;
+  lastTimingErrorMs_ = timingErrorMs;
+  switch (result) {
+    case MiniGameResult::Perfect: ++perfectBeats_; break;
+    case MiniGameResult::Good: ++goodBeats_; break;
+    case MiniGameResult::Hit: ++hitBeats_; break;
+    default: ++missedBeats_; break;
+  }
+  score_ = saturatingAdd(score_, points);
+  ++replayIndex_;
+  if (replayIndex_ >= beatCount_) finishReplay(atMs);
+}
+
+bool EchoBeatGame::cueOnAt(uint32_t nowMs) const {
+  if (stage_ != EchoBeatStage::Presenting) return false;
+  const uint32_t elapsed = nowMs - phaseStartedAt_;
+  for (uint8_t index = 0; index < beatCount_; ++index) {
+    if (elapsed >= beatOffsetsMs_[index] &&
+        elapsed - beatOffsetsMs_[index] < config_.flashMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint8_t EchoBeatGame::presentedAt(uint32_t nowMs) const {
+  if (stage_ != EchoBeatStage::Presenting) {
+    return stage_ == EchoBeatStage::Inactive ? 0 : beatCount_;
+  }
+  const uint32_t elapsed = nowMs - phaseStartedAt_;
+  uint8_t presented = 0;
+  while (presented < beatCount_ && elapsed >= beatOffsetsMs_[presented]) {
+    ++presented;
+  }
+  return presented;
+}
+
+uint32_t EchoBeatGame::nextBeatInMsAt(uint32_t nowMs) const {
+  if (stage_ != EchoBeatStage::Replay || replayIndex_ >= beatCount_) return 0;
+  const uint32_t elapsed = nowMs - phaseStartedAt_;
+  return elapsed < beatOffsetsMs_[replayIndex_]
+      ? beatOffsetsMs_[replayIndex_] - elapsed
+      : 0;
+}
+
+uint32_t EchoBeatGame::remainingAt(uint32_t nowMs) const {
+  if (stage_ == EchoBeatStage::Presenting) {
+    return timeRemaining(nowMs, phaseStartedAt_, presentationDuration());
+  }
+  if (stage_ == EchoBeatStage::Replay && beatCount_ != 0) {
+    const uint32_t duration =
+        static_cast<uint32_t>(beatOffsetsMs_[beatCount_ - 1]) +
+        config_.hitWindowMs + 1U;
+    return timeRemaining(nowMs, phaseStartedAt_, duration);
+  }
+  if (stage_ == EchoBeatStage::Result) {
+    return timeRemaining(nowMs, phaseStartedAt_, config_.resultMs);
+  }
+  return 0;
+}
+
+void EchoBeatGame::tick(uint32_t nowMs) {
+  // One call may cross presentation, all missed beats, and the result screen.
+  // The bounded loop preserves the true phase boundaries under sparse ticks.
+  for (uint8_t transitions = 0; transitions < kMaximumBeats + 3U; ++transitions) {
+    if (phase_ == MiniGamePhase::Playing &&
+        stage_ == EchoBeatStage::Presenting) {
+      const uint32_t duration = presentationDuration();
+      if (nowMs - phaseStartedAt_ < duration) return;
+      beginReplay(phaseStartedAt_ + duration);
+      continue;
+    }
+    if (phase_ == MiniGamePhase::Playing && stage_ == EchoBeatStage::Replay) {
+      if (replayIndex_ >= beatCount_) return;
+      const uint32_t deadline =
+          static_cast<uint32_t>(beatOffsetsMs_[replayIndex_]) +
+          config_.hitWindowMs;
+      if (nowMs - phaseStartedAt_ <= deadline) return;
+      const uint32_t missedAt = phaseStartedAt_ + deadline + 1U;
+      recordBeat(MiniGameResult::Miss, 0,
+                 static_cast<int16_t>(config_.hitWindowMs + 1U), missedAt);
+      continue;
+    }
+    if (phase_ == MiniGamePhase::Result) {
+      if (nowMs - phaseStartedAt_ < config_.resultMs) return;
+      phaseStartedAt_ += config_.resultMs;
+      phase_ = MiniGamePhase::Finished;
+      stage_ = EchoBeatStage::Finished;
+      return;
+    }
+    return;
+  }
+}
+
+MiniGameInput EchoBeatGame::tap(uint32_t nowMs) {
+  tick(nowMs);
+  if (phase_ != MiniGamePhase::Playing || stage_ != EchoBeatStage::Replay ||
+      replayIndex_ >= beatCount_) {
+    return MiniGameInput::Ignored;
+  }
+
+  const int32_t timingError = static_cast<int32_t>(nowMs - phaseStartedAt_) -
+                              beatOffsetsMs_[replayIndex_];
+  const uint32_t absoluteError = static_cast<uint32_t>(
+      timingError < 0 ? -timingError : timingError);
+  const int16_t recordedError = static_cast<int16_t>(timingError);
+  if (absoluteError <= config_.perfectWindowMs) {
+    recordBeat(MiniGameResult::Perfect, 3, recordedError, nowMs);
+  } else if (absoluteError <= config_.goodWindowMs) {
+    recordBeat(MiniGameResult::Good, 2, recordedError, nowMs);
+  } else if (absoluteError <= config_.hitWindowMs) {
+    recordBeat(MiniGameResult::Hit, 1, recordedError, nowMs);
+  } else {
+    recordBeat(MiniGameResult::Miss, 0, recordedError, nowMs);
+  }
+  return MiniGameInput::Accepted;
+}
+
+EchoBeatView EchoBeatGame::view(uint32_t nowMs) const {
+  EchoBeatView value;
+  value.phase = phase_;
+  value.stage = stage_;
+  value.result = result_;
+  value.lastBeatResult = lastBeatResult_;
+  value.cueOn = cueOnAt(nowMs);
+  value.presentedBeats = presentedAt(nowMs);
+  value.replayedBeats = stage_ == EchoBeatStage::Presenting ||
+                                stage_ == EchoBeatStage::Inactive
+      ? 0
+      : replayIndex_;
+  value.totalBeats = phase_ == MiniGamePhase::Inactive ? 0 : beatCount_;
+  value.perfectBeats = perfectBeats_;
+  value.goodBeats = goodBeats_;
+  value.hitBeats = hitBeats_;
+  value.missedBeats = missedBeats_;
+  value.score = score_;
+  value.maximumScore = static_cast<uint16_t>(value.totalBeats) * 3U;
+  value.lastTimingErrorMs = lastTimingErrorMs_;
+  value.nextBeatInMs = nextBeatInMsAt(nowMs);
   value.remainingMs = remainingAt(nowMs);
   return value;
 }

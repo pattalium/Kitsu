@@ -40,9 +40,18 @@ enum class PounceFetchVerb : uint8_t {
   Fetch,
 };
 
+enum class EchoBeatStage : uint8_t {
+  Inactive = 0,
+  Presenting,
+  Replay,
+  Result,
+  Finished,
+};
+
 const char* miniGamePhaseLabel(MiniGamePhase phase);
 const char* miniGameResultLabel(MiniGameResult result);
 const char* pounceFetchTitle(PounceFetchVerb verb);
+const char* echoBeatStageLabel(EchoBeatStage stage);
 
 struct SignalCatchConfig {
   uint8_t rounds = 5;
@@ -173,6 +182,90 @@ class PounceFetchGame {
   uint8_t streak_ = 0;
   uint8_t pointsAwarded_ = 0;
   uint8_t objectX_ = 0;
+};
+
+struct EchoBeatConfig {
+  uint8_t minimumBeats = 3;
+  uint8_t maximumBeats = 6;
+  uint16_t leadInMs = 500;
+  uint16_t minimumGapMs = 360;
+  uint16_t maximumGapMs = 680;
+  uint16_t flashMs = 160;
+  uint16_t intermissionMs = 700;
+  uint16_t perfectWindowMs = 80;
+  uint16_t goodWindowMs = 160;
+  uint16_t hitWindowMs = 260;
+  uint16_t resultMs = 1200;
+};
+
+struct EchoBeatView {
+  MiniGamePhase phase = MiniGamePhase::Inactive;
+  EchoBeatStage stage = EchoBeatStage::Inactive;
+  MiniGameResult result = MiniGameResult::None;
+  MiniGameResult lastBeatResult = MiniGameResult::None;
+  bool cueOn = false;
+  uint8_t presentedBeats = 0;
+  uint8_t replayedBeats = 0;
+  uint8_t totalBeats = 0;
+  uint8_t perfectBeats = 0;
+  uint8_t goodBeats = 0;
+  uint8_t hitBeats = 0;
+  uint8_t missedBeats = 0;
+  uint16_t score = 0;
+  uint16_t maximumScore = 0;
+  int16_t lastTimingErrorMs = 0;
+  uint32_t nextBeatInMs = 0;
+  uint32_t remainingMs = 0;
+};
+
+class EchoBeatGame {
+ public:
+  static constexpr uint8_t kMaximumBeats = 6;
+
+  explicit EchoBeatGame(const EchoBeatConfig& config = EchoBeatConfig());
+
+  void start(uint32_t nowMs, uint32_t seed);
+  void cancel();
+  void tick(uint32_t nowMs);
+  MiniGameInput tap(uint32_t nowMs);
+  EchoBeatView view(uint32_t nowMs) const;
+
+  MiniGamePhase phase() const { return phase_; }
+  EchoBeatStage stage() const { return stage_; }
+  bool finished() const { return phase_ == MiniGamePhase::Finished; }
+  uint16_t score() const { return score_; }
+  uint8_t beatCount() const { return beatCount_; }
+
+ private:
+  void sanitizeConfig();
+  uint32_t nextRandom();
+  void generatePattern();
+  void beginReplay(uint32_t atMs);
+  void recordBeat(MiniGameResult result, uint8_t points,
+                  int16_t timingErrorMs, uint32_t atMs);
+  void finishReplay(uint32_t atMs);
+  uint32_t presentationDuration() const;
+  bool cueOnAt(uint32_t nowMs) const;
+  uint8_t presentedAt(uint32_t nowMs) const;
+  uint32_t nextBeatInMsAt(uint32_t nowMs) const;
+  uint32_t remainingAt(uint32_t nowMs) const;
+
+  EchoBeatConfig config_;
+  uint16_t beatOffsetsMs_[kMaximumBeats] = {};
+  MiniGamePhase phase_ = MiniGamePhase::Inactive;
+  EchoBeatStage stage_ = EchoBeatStage::Inactive;
+  MiniGameResult result_ = MiniGameResult::None;
+  MiniGameResult lastBeatResult_ = MiniGameResult::None;
+  uint32_t rng_ = 1;
+  uint32_t phaseStartedAt_ = 0;
+  uint16_t score_ = 0;
+  int16_t lastTimingErrorMs_ = 0;
+  uint8_t beatCount_ = 0;
+  uint8_t replayIndex_ = 0;
+  uint8_t perfectBeats_ = 0;
+  uint8_t goodBeats_ = 0;
+  uint8_t hitBeats_ = 0;
+  uint8_t missedBeats_ = 0;
 };
 
 }  // namespace kitsu868

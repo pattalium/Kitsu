@@ -35,7 +35,7 @@ if errorlevel 1 (
   popd
   exit /b %RESULT%
 )
-echo TEST_PASS mini_games deterministic_scoring rollover sparse_tick
+echo TEST_PASS mini_games deterministic_scoring echo_beat rollover sparse_tick
 set "RESULT=0"
 popd
 exit /b %RESULT%

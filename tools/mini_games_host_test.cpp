@@ -32,12 +32,39 @@ uint32_t findPounceCatch(PounceFetchGame& game, uint32_t fromMs,
   return fromMs;
 }
 
+uint32_t advanceToEchoReplay(EchoBeatGame& game, uint32_t fromMs,
+                             uint32_t searchMs) {
+  for (uint32_t offset = 0; offset <= searchMs; ++offset) {
+    const uint32_t now = fromMs + offset;
+    game.tick(now);
+    if (game.stage() == EchoBeatStage::Replay) return now;
+  }
+  assert(false && "echo pattern never entered replay");
+  return fromMs;
+}
+
+uint32_t tapEchoWithError(EchoBeatGame& game, uint32_t nowMs,
+                          int16_t timingErrorMs) {
+  const EchoBeatView before = game.view(nowMs);
+  assert(before.stage == EchoBeatStage::Replay);
+  assert(before.nextBeatInMs >
+         static_cast<uint32_t>(timingErrorMs < 0 ? -timingErrorMs : 0));
+  const uint32_t targetAt = nowMs + before.nextBeatInMs;
+  const uint32_t tapAt = timingErrorMs < 0
+      ? targetAt - static_cast<uint32_t>(-timingErrorMs)
+      : targetAt + static_cast<uint32_t>(timingErrorMs);
+  assert(game.tap(tapAt) == MiniGameInput::Accepted);
+  return tapAt;
+}
+
 void testLabels() {
   assert(strcmp(miniGamePhaseLabel(MiniGamePhase::Playing), "TAP!") == 0);
   assert(strcmp(miniGameResultLabel(MiniGameResult::Perfect), "PERFECT") == 0);
   assert(strcmp(miniGameResultLabel(MiniGameResult::TooEarly), "EARLY") == 0);
   assert(strcmp(pounceFetchTitle(PounceFetchVerb::Pounce), "POUNCE") == 0);
   assert(strcmp(pounceFetchTitle(PounceFetchVerb::Fetch), "FETCH") == 0);
+  assert(strcmp(echoBeatStageLabel(EchoBeatStage::Presenting), "LISTEN") == 0);
+  assert(strcmp(echoBeatStageLabel(EchoBeatStage::Replay), "REPEAT") == 0);
 }
 
 void testSignalDeterminismAndScoring() {
@@ -228,6 +255,149 @@ void testPounceEarlyTimeoutAndWrap() {
   }
 }
 
+EchoBeatConfig quickEchoConfig() {
+  EchoBeatConfig config;
+  config.minimumBeats = 4;
+  config.maximumBeats = 4;
+  config.leadInMs = 100;
+  config.minimumGapMs = 200;
+  config.maximumGapMs = 400;
+  config.flashMs = 50;
+  config.intermissionMs = 100;
+  config.perfectWindowMs = 20;
+  config.goodWindowMs = 40;
+  config.hitWindowMs = 60;
+  config.resultMs = 100;
+  return config;
+}
+
+void testEchoDefaultBeatBounds() {
+  EchoBeatGame game;
+  for (uint32_t seed = 1; seed <= 64; ++seed) {
+    game.start(seed * 10U, seed);
+    assert(game.beatCount() >= 3);
+    assert(game.beatCount() <= 6);
+  }
+}
+
+void testEchoPresentationDeterminismAndPerfectReplay() {
+  const EchoBeatConfig config = quickEchoConfig();
+  EchoBeatGame first(config);
+  EchoBeatGame second(config);
+  first.start(1000, 0x13572468);
+  second.start(1000, 0x13572468);
+
+  assert(first.beatCount() == 4);
+  assert(second.beatCount() == first.beatCount());
+  assert(first.tap(1000) == MiniGameInput::Ignored);
+  uint32_t replayAt = 0;
+  for (uint32_t now = 1000; now < 3000; now += 13) {
+    first.tick(now);
+    second.tick(now);
+    const EchoBeatView a = first.view(now);
+    const EchoBeatView b = second.view(now);
+    assert(a.stage == b.stage);
+    assert(a.cueOn == b.cueOn);
+    assert(a.presentedBeats == b.presentedBeats);
+    assert(a.remainingMs == b.remainingMs);
+    assert(a.nextBeatInMs == b.nextBeatInMs);
+    if (a.stage == EchoBeatStage::Replay) {
+      replayAt = now;
+      break;
+    }
+  }
+
+  assert(replayAt != 0);
+  uint32_t now = replayAt;
+  assert(first.view(now).presentedBeats == 4);
+  for (uint8_t beat = 0; beat < 4; ++beat) {
+    now = tapEchoWithError(first, now, 0);
+    const EchoBeatView after = first.view(now);
+    assert(after.replayedBeats == static_cast<uint8_t>(beat + 1));
+    assert(after.lastBeatResult == MiniGameResult::Perfect);
+    assert(after.lastTimingErrorMs == 0);
+  }
+
+  const EchoBeatView result = first.view(now);
+  assert(result.phase == MiniGamePhase::Result);
+  assert(result.stage == EchoBeatStage::Result);
+  assert(result.result == MiniGameResult::Perfect);
+  assert(result.perfectBeats == 4);
+  assert(result.missedBeats == 0);
+  assert(result.score == 12);
+  assert(result.maximumScore == 12);
+  first.tick(now + config.resultMs);
+  assert(first.finished());
+  assert(first.stage() == EchoBeatStage::Finished);
+  assert(first.tap(now + config.resultMs) == MiniGameInput::Ignored);
+}
+
+void testEchoAccuracyBandsAndAggregateResult() {
+  const EchoBeatConfig config = quickEchoConfig();
+  EchoBeatGame game(config);
+  game.start(500, 0x24681357);
+  uint32_t now = advanceToEchoReplay(game, 500, 5000);
+
+  now = tapEchoWithError(game, now, 0);
+  assert(game.view(now).lastBeatResult == MiniGameResult::Perfect);
+  now = tapEchoWithError(game, now, 21);
+  assert(game.view(now).lastBeatResult == MiniGameResult::Good);
+  now = tapEchoWithError(game, now, 41);
+  assert(game.view(now).lastBeatResult == MiniGameResult::Hit);
+  now = tapEchoWithError(game, now, -61);
+
+  const EchoBeatView result = game.view(now);
+  assert(result.phase == MiniGamePhase::Result);
+  assert(result.result == MiniGameResult::Hit);
+  assert(result.perfectBeats == 1);
+  assert(result.goodBeats == 1);
+  assert(result.hitBeats == 1);
+  assert(result.missedBeats == 1);
+  assert(result.score == 6);
+  assert(result.lastTimingErrorMs == -61);
+}
+
+void testEchoSparseTimeoutCancelAndWrap() {
+  EchoBeatConfig config = quickEchoConfig();
+  config.minimumBeats = 3;
+  config.maximumBeats = 3;
+
+  EchoBeatGame sparse(config);
+  sparse.start(50, 7);
+  sparse.tick(30050);
+  const EchoBeatView timedOut = sparse.view(30050);
+  assert(timedOut.phase == MiniGamePhase::Finished);
+  assert(timedOut.stage == EchoBeatStage::Finished);
+  assert(timedOut.result == MiniGameResult::Miss);
+  assert(timedOut.missedBeats == 3);
+  assert(timedOut.score == 0);
+
+  sparse.start(100, 7);
+  sparse.cancel();
+  assert(sparse.phase() == MiniGamePhase::Inactive);
+  assert(sparse.stage() == EchoBeatStage::Inactive);
+  assert(sparse.view(100).totalBeats == 0);
+  assert(sparse.tap(100) == MiniGameInput::Ignored);
+
+  EchoBeatGame wrapped(config);
+  EchoBeatGame normal(config);
+  const uint32_t wrappedStart = 0xffffff00UL;
+  wrapped.start(wrappedStart, 0x10203040);
+  normal.start(500, 0x10203040);
+  for (uint32_t offset = 0; offset <= 2400; offset += 37) {
+    wrapped.tick(wrappedStart + offset);
+    normal.tick(500 + offset);
+    const EchoBeatView a = wrapped.view(wrappedStart + offset);
+    const EchoBeatView b = normal.view(500 + offset);
+    assert(a.stage == b.stage);
+    assert(a.cueOn == b.cueOn);
+    assert(a.presentedBeats == b.presentedBeats);
+    assert(a.replayedBeats == b.replayedBeats);
+    assert(a.nextBeatInMs == b.nextBeatInMs);
+    assert(a.remainingMs == b.remainingMs);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -235,6 +405,8 @@ int main() {
                 "Signal Catch state unexpectedly grew");
   static_assert(sizeof(PounceFetchGame) <= 48,
                 "Pounce/Fetch state unexpectedly grew");
+  static_assert(sizeof(EchoBeatGame) <= 64,
+                "Echo Beat state unexpectedly grew");
 
   testLabels();
   testSignalDeterminismAndScoring();
@@ -243,6 +415,10 @@ int main() {
   testPounceDeterminismAndScoring();
   testPouncePerfectOwnsTopBaseScore();
   testPounceEarlyTimeoutAndWrap();
+  testEchoDefaultBeatBounds();
+  testEchoPresentationDeterminismAndPerfectReplay();
+  testEchoAccuracyBandsAndAggregateResult();
+  testEchoSparseTimeoutCancelAndWrap();
 
   return 0;
 }
