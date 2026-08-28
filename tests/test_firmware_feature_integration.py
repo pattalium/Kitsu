@@ -27,6 +27,31 @@ def cpp_function(source: str, signature: str) -> str:
 
 
 class FirmwareFeatureIntegrationSourceTests(unittest.TestCase):
+    def test_action_follow_up_and_all_weekly_chapters_are_presented(self):
+        action = cpp_function(MAIN, "void recordCompanionAction(")
+        self.assertIn('"TRY NEXT"', action)
+        self.assertIn("progressionActionDisplayName(result.followUp)", action)
+        self.assertIn("sessionResult = companionProgression.startSession(", action)
+        self.assertIn("if (startedNewDay) queueProgressionSession(", action)
+
+        session = cpp_function(MAIN, "void queueProgressionSession(")
+        self.assertIn("weeklyChapterLine(\n          result.weeklyChapter)", session)
+        self.assertNotIn("result.weeklyChapter != 0U", session)
+
+    def test_continuously_powered_friends_are_observed_once_per_day(self):
+        presence = cpp_function(MAIN, "void processNearbyPresence(")
+        observation = presence.index("socialProgression.observeFriend(")
+        same_session_return = presence.index("if (!newMeeting)")
+        self.assertLess(observation, same_session_return)
+        for required in (
+            "before.peers[index].uid == packet.sourceUid",
+            "before.peers[index].lastSeenDay == socialDay",
+            "socialObservationRecorded = true",
+            "if (socialObservationRecorded && companionProgressionReady)",
+            "greetingLine1(\n          socialOutcome.greeting)",
+        ):
+            self.assertIn(required, presence)
+
     def test_progression_tick_is_transactional_and_does_not_drop_callbacks(self):
         tick = cpp_function(MAIN, "void tickCompanionProgression(")
         for required in (
@@ -38,7 +63,8 @@ class FirmwareFeatureIntegrationSourceTests(unittest.TestCase):
             "progressionLastSessionDay = previousDay",
             "progressionLastMinute = previousMinute",
             "callbackReady = canPresent && !havePending",
-            "progressionPendingLine = sessionLine",
+            "queueProgressionLine(",
+            "queueProgressionSession(result, day)",
         ):
             self.assertIn(required, tick)
 

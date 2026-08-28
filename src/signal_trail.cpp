@@ -3,16 +3,26 @@
 namespace kitsu868 {
 namespace signal {
 
+namespace {
+
+constexpr uint8_t kSharedProgressWithoutLocalOperation = 1U;
+
+}  // namespace
+
 bool validateSignalTrailState(const SignalTrailState& state) {
   if (state.schemaVersion != kSignalTrailStateSchemaVersion ||
       state.missCount > kSignalTrailMaximumMisses ||
-      state.hasLastOperation > 1U || state.reserved != 0U) {
+      state.hasLastOperation > 1U ||
+      state.reserved > kSharedProgressWithoutLocalOperation) {
     return false;
   }
   if (state.hasLastOperation == 0U) {
-    return state.lastOperationId == 0U && state.missCount == 0U;
+    if (state.lastOperationId != 0U) return false;
+    return state.missCount == 0U
+               ? state.reserved == 0U
+               : state.reserved == kSharedProgressWithoutLocalOperation;
   }
-  return state.lastOperationId != 0U;
+  return state.lastOperationId != 0U && state.reserved == 0U;
 }
 
 SignalTrailHint signalTrailHintForMissCount(uint8_t missCount) {
@@ -94,6 +104,23 @@ SignalTrailProcessStatus SignalTrail::process(
   output = candidate;
   return occurred ? SignalTrailProcessStatus::RecordedEncounter
                   : SignalTrailProcessStatus::RecordedMiss;
+}
+
+SignalTrailMergeStatus SignalTrail::mergeSharedMissCount(
+    uint8_t mergedMissCount) {
+  if (!available_) return SignalTrailMergeStatus::StateUnavailable;
+  if (mergedMissCount > kSignalTrailMaximumMisses) {
+    return SignalTrailMergeStatus::InvalidMissCount;
+  }
+  if (mergedMissCount <= state_.missCount) {
+    return SignalTrailMergeStatus::Unchanged;
+  }
+
+  state_.missCount = mergedMissCount;
+  if (state_.hasLastOperation == 0U) {
+    state_.reserved = kSharedProgressWithoutLocalOperation;
+  }
+  return SignalTrailMergeStatus::Applied;
 }
 
 SignalTrailState SignalTrail::snapshot() const {

@@ -40,6 +40,15 @@ bool sameResult(const signal::SignalTrailResult& left,
          left.missesAfter == right.missesAfter;
 }
 
+bool sameState(const signal::SignalTrailState& left,
+               const signal::SignalTrailState& right) {
+  return left.schemaVersion == right.schemaVersion &&
+         left.missCount == right.missCount &&
+         left.hasLastOperation == right.hasLastOperation &&
+         left.reserved == right.reserved &&
+         left.lastOperationId == right.lastOperationId;
+}
+
 void testTwentyMissGuaranteeAndDedupe() {
   signal::SignalTrail trail;
   signal::SignalTrailResult result{};
@@ -247,6 +256,79 @@ void testCoordinatorIntegrationKeepsOriginalRolls() {
   }
 }
 
+void testSharedMissMergeIsMonotonicAndKeepsReplayCursor() {
+  signal::SignalTrail trail;
+  check(trail.mergeSharedMissCount(12U) ==
+                signal::SignalTrailMergeStatus::Applied &&
+            trail.missCount() == 12U &&
+            trail.hint() == signal::SignalTrailHint::TracksNearby,
+        "shared misses can initialize an empty live trail");
+  const signal::SignalTrailState sharedOnly = trail.snapshot();
+  check(signal::validateSignalTrailState(sharedOnly) &&
+            sharedOnly.hasLastOperation == 0U &&
+            sharedOnly.lastOperationId == 0U,
+        "shared-only progress persists without inventing a replay cursor");
+
+  const signal::SignalTrailState beforeLower = trail.snapshot();
+  check(trail.mergeSharedMissCount(0U) ==
+                signal::SignalTrailMergeStatus::Unchanged &&
+            trail.mergeSharedMissCount(7U) ==
+                signal::SignalTrailMergeStatus::Unchanged &&
+            sameState(beforeLower, trail.snapshot()),
+        "valid lower-bound and lower shared results cannot reduce progress");
+  check(trail.mergeSharedMissCount(20U) ==
+                signal::SignalTrailMergeStatus::Applied &&
+            trail.nextEligibleGuaranteed() &&
+            trail.snapshot().lastOperationId == 0U,
+        "a capped shared result arms the guarantee without changing the cursor");
+
+  signal::SignalTrail restored;
+  check(restored.restore(sharedOnly) ==
+                signal::SignalTrailRestoreStatus::Ok &&
+            restored.missCount() == 12U,
+        "shared-only progress survives strict persistence validation");
+  signal::SignalTrailResult result{};
+  check(restored.process(event(50U), 0U, result) ==
+                signal::SignalTrailProcessStatus::RecordedMiss &&
+            restored.snapshot().lastOperationId == 50U,
+        "the first later local operation establishes the normal replay cursor");
+  const uint64_t cursor = restored.snapshot().lastOperationId;
+  check(restored.mergeSharedMissCount(18U) ==
+                signal::SignalTrailMergeStatus::Applied &&
+            restored.snapshot().lastOperationId == cursor,
+        "shared progress never advances an established replay cursor");
+  check(restored.process(event(cursor), 1U, result) ==
+                signal::SignalTrailProcessStatus::DuplicateOperation &&
+            restored.missCount() == 18U,
+        "shared merging preserves local duplicate protection");
+}
+
+void testSharedMissMergeRejectsWithoutMutation() {
+  signal::SignalTrail trail;
+  signal::SignalTrailResult result{};
+  (void)trail.process(event(75U), 0U, result);
+  const signal::SignalTrailState beforeInvalid = trail.snapshot();
+  check(trail.mergeSharedMissCount(21U) ==
+                signal::SignalTrailMergeStatus::InvalidMissCount &&
+            sameState(beforeInvalid, trail.snapshot()),
+        "out-of-range shared progress is rejected atomically");
+  check(trail.mergeSharedMissCount(255U) ==
+                signal::SignalTrailMergeStatus::InvalidMissCount &&
+            sameState(beforeInvalid, trail.snapshot()),
+        "maximum byte input is rejected atomically");
+
+  signal::SignalTrailState corrupt = beforeInvalid;
+  corrupt.missCount = 21U;
+  check(trail.restore(corrupt) ==
+            signal::SignalTrailRestoreStatus::InvalidState,
+        "invalid restore quarantines before merge testing");
+  const signal::SignalTrailState quarantined = trail.snapshot();
+  check(trail.mergeSharedMissCount(20U) ==
+                signal::SignalTrailMergeStatus::StateUnavailable &&
+            sameState(quarantined, trail.snapshot()),
+        "quarantined trail rejects valid shared input without mutation");
+}
+
 }  // namespace
 
 int main() {
@@ -254,6 +336,8 @@ int main() {
   testNaturalAndRepeaterResets();
   testHintsPersistenceAndFailClosedRestore();
   testCoordinatorIntegrationKeepsOriginalRolls();
+  testSharedMissMergeIsMonotonicAndKeepsReplayCursor();
+  testSharedMissMergeRejectsWithoutMutation();
 
   if (failures != 0) {
     std::cerr << "TEST_FAIL signal_trail failures=" << failures << '\n';
@@ -261,6 +345,6 @@ int main() {
   }
   std::cout << "TEST_PASS signal_trail cap=20 hints=5,10,15,20 "
                "dedupe=monotonic restore=fail_closed repeater=immediate "
-               "coordinator_rolls=preserved\n";
+               "coordinator_rolls=preserved shared_merge=monotonic\n";
   return 0;
 }

@@ -63,6 +63,13 @@ enum class SignalTrailRestoreStatus : uint8_t {
   InvalidState,
 };
 
+enum class SignalTrailMergeStatus : uint8_t {
+  Applied = 0,
+  Unchanged,
+  InvalidMissCount,
+  StateUnavailable,
+};
+
 bool validateSignalTrailState(const SignalTrailState& state);
 SignalTrailHint signalTrailHintForMissCount(uint8_t missCount);
 const char* signalTrailHintName(SignalTrailHint hint);
@@ -78,6 +85,10 @@ class SignalTrail {
   SignalTrailProcessStatus process(const LogicalOperationEvent& event,
                                    uint8_t naturallyOccurred,
                                    SignalTrailResult& output);
+
+  // Imports an already-bounded peer/group trail result without advancing the
+  // local logical-operation replay cursor. The live meter only moves forward.
+  SignalTrailMergeStatus mergeSharedMissCount(uint8_t mergedMissCount);
 
   SignalTrailState snapshot() const;
 

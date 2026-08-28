@@ -1,6 +1,7 @@
 #include "kitsu_mesh_transport.h"
 #include "kitsu_nearby_protocol.h"
 #include "kitsu_party_hotspot.h"
+#include "kitsu_party_modes.h"
 #include "kitsu_advert_repeat_tracker.h"
 #include "kitsu_channel_repeat_tracker.h"
 #include "kitsu_endpoint_rx_policy.h"
@@ -119,6 +120,8 @@ static_assert(nearby::kWireBytes <= kNearbyRadioFrameBytes,
               "nearby frame no longer fits direct-radio capture");
 static_assert(party::kWireBytes <= kNearbyRadioFrameBytes,
               "party frame no longer fits direct-radio capture");
+static_assert(party_modes::kWireBytes <= kNearbyRadioFrameBytes,
+              "multiplayer mode frame no longer fits direct-radio capture");
 
 enum class DirectRadioFrameKind : uint8_t {
   Invalid = 0U,
@@ -137,7 +140,12 @@ bool isKitsuDirectRadioCandidate(const uint8_t* bytes, size_t byteCount) {
   const bool partyCandidate =
       byteCount == party::kWireBytes && bytes[0] == party::kMagic0 &&
       bytes[1] == party::kMagic1 && bytes[2] == party::kProtocolVersion;
-  return nearbyCandidate || partyCandidate;
+  const bool partyModeCandidate =
+      byteCount == party_modes::kWireBytes &&
+      bytes[0] == party_modes::kMagic0 &&
+      bytes[1] == party_modes::kMagic1 &&
+      bytes[2] == party_modes::kProtocolVersion;
+  return nearbyCandidate || partyCandidate || partyModeCandidate;
 }
 
 DirectRadioFrameKind classifyKitsuDirectRadioFrame(const uint8_t* bytes,
@@ -160,6 +168,18 @@ DirectRadioFrameKind classifyKitsuDirectRadioFrame(const uint8_t* bytes,
       return DirectRadioFrameKind::Invalid;
     }
     return packet.type == party::PacketType::Beacon
+               ? DirectRadioFrameKind::PartyBeacon
+               : DirectRadioFrameKind::PartySession;
+  }
+  if (byteCount == party_modes::kWireBytes &&
+      bytes[0] == party_modes::kMagic0 &&
+      bytes[1] == party_modes::kMagic1) {
+    party_modes::Packet packet{};
+    if (party_modes::decode(bytes, byteCount, packet) !=
+        party_modes::Status::Ok) {
+      return DirectRadioFrameKind::Invalid;
+    }
+    return packet.type == party_modes::PacketType::Beacon
                ? DirectRadioFrameKind::PartyBeacon
                : DirectRadioFrameKind::PartySession;
   }

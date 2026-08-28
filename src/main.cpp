@@ -2,18 +2,24 @@
 #include <cstring>
 #include <Preferences.h>
 #include <SSD1306Wire.h>
+#include <WiFi.h>
+#include <esp_sntp.h>
 #include <sys/time.h>
 #include <time.h>
 #include <Wire.h>
 
+#include "activity_suite.h"
+#include "adventure_progression.h"
 #include "companion_brain.h"
 #include "companion_dialogue.h"
 #include "companion_fun.h"
+#include "companion_progression.h"
 #include "companion_pack.h"
 #include "companion_replacement_intent.h"
 #include "encounter_protocol.h"
 #include "expedition_core.h"
 #include "kitsu_chat_contract.h"
+#include "kitsu_clock.h"
 #include "kitsu_ble_action.h"
 #include "kitsu_ble_bond_recovery.h"
 #include "kitsu_ble_gatt.h"
@@ -27,6 +33,7 @@
 #include "kitsu_mesh_transport.h"
 #include "kitsu_nearby_protocol.h"
 #include "kitsu_party_hotspot.h"
+#include "kitsu_party_modes.h"
 #include "kitsu_rx_rearm_policy.h"
 #include "kitsu_transport_scope.h"
 #include "kitsu_unlock_codes.h"
@@ -36,12 +43,13 @@
 #include "portrait_ui_layout.h"
 #include "signal_encounter.h"
 #include "signal_trail.h"
+#include "social_progression.h"
 #include "wild_creature_catalog.h"
 
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.19.0";
+constexpr char FIRMWARE_VERSION[] = "0.20.0";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 constexpr uint32_t SIGNAL_STATE_MAGIC = 0x4b534731;  // "KSG1"
@@ -50,6 +58,8 @@ constexpr uint32_t FUN_STATE_MAGIC = 0x4b465531;  // "KFU1"
 constexpr uint32_t PENDING_WILD_STATE_MAGIC = 0x4b505731;  // "KPW1"
 constexpr uint32_t DIALOGUE_STATE_MAGIC = 0x4b444731;  // "KDG1"
 constexpr uint32_t PARTY_REWARD_STATE_MAGIC = 0x4b505231;  // "KPR1"
+constexpr uint32_t CLOCK_NTP_STABILITY_MS = 2000UL;
+constexpr uint32_t CLOCK_NTP_RESYNC_MS = 6UL * 60UL * 60UL * 1000UL;
 
 constexpr int16_t UI_WIDTH = 64;
 constexpr int16_t UI_HEIGHT = 128;
@@ -107,6 +117,9 @@ kitsu868::CompanionBrain companionBrain;
 kitsu868::SignalCatchGame signalCatchGame;
 kitsu868::PounceFetchGame pounceFetchGame;
 kitsu868::EchoBeatGame echoBeatGame;
+kitsu868::activities::ActivitySuite activitySuite;
+kitsu868::timekeeping::KitsuClock kitsuClock;
+kitsu868::timekeeping::OneButtonClockEditor clockEditor;
 kitsu868::mesh::KitsuMeshTransport meshTransport;
 kitsu868::mesh::SettingsStore meshSettingsStore;
 kitsu868::mesh::Settings meshSettings = kitsu868::mesh::defaultSettings();
@@ -186,6 +199,9 @@ enum class Screen : uint8_t {
   WildEncounter,
   FieldGuide,
   Goals,
+  Clock,
+  Adventure,
+  Activity,
 };
 
 enum class ConnectionAction : uint8_t {
@@ -367,9 +383,15 @@ static_assert(sizeof(PartyRewardStateV1) == 224U,
 WispState wisp;
 Screen screen = Screen::Pet;
 const char* const MENU_ITEMS[] = {
-    "CONNECT", "FEED", "PLAY", "GAMES", "CREATURES", "GOALS",
-    "INBOX", "RADIO", "SLEEP", "INFO", "BACK"};
-const char* const GAME_ITEMS[] = {"SIGNAL", "POUNCE", "ECHO", "BACK"};
+    "CONNECT", "FEED", "PLAY", "GAMES", "ADVENTURE", "CREATURES",
+    "GOALS", "INBOX", "RADIO", "CLOCK", "SLEEP", "INFO", "BACK"};
+const char* const GAME_ITEMS[] = {
+    "SIGNAL", "POUNCE", "ECHO", "MORSE", "TUNER", "FLASH",
+    "STEADY", "BREATHE", "DAILY", "GHOST", "BACK"};
+const char* const ADVENTURE_ITEMS[] = {
+    "SHORT TRIP", "MEDIUM TRIP", "LONG TRIP", "START ROUTE",
+    "+250 STEPS", "CONTINUE", "DETOUR", "HELP", "RETURN EARLY",
+    "TERRAIN", "OBJECTIVE", "RISK", "WEATHER", "REPORT", "BACK"};
 uint8_t menuIndex = 0;
 uint8_t gameMenuIndex = 0;
 uint8_t statusPage = 0;
@@ -472,8 +494,13 @@ bool sessionAuraActive = false;
 kitsu868::dialogue::ActionState dialogueActions{};
 kitsu868::dialogue::StoryState dialogueStories{};
 kitsu868::expedition::ExpeditionCore expeditionCore;
+kitsu868::progression::CompanionProgression companionProgression;
+kitsu868::adventure::AdventureProgression adventureProgression;
+kitsu868::social::SocialProgression socialProgression;
 kitsu868::party::HostSession partyHost;
 kitsu868::party::ParticipantSession partyParticipant;
+kitsu868::party_modes::HostSession modePartyHost;
+kitsu868::party_modes::ParticipantSession modePartyParticipant;
 kitsu868::party::PartyRewardLedger partyRewards;
 kitsu868::dialogue::StoryResolution lastStoryResolution{};
 kitsu868::party::RewardOutcome lastPartyReward{};
@@ -483,6 +510,37 @@ uint32_t lastClaimedExpeditionId = 0U;
 bool dialogueStateReady = false;
 bool expeditionStateReady = false;
 bool partyRewardStateReady = false;
+bool clockStateReady = false;
+bool companionProgressionReady = false;
+bool adventureProgressionReady = false;
+bool socialProgressionReady = false;
+bool activityStateReady = false;
+bool activityResumePending = false;
+uint32_t clockSnapshotGeneration = 0U;
+uint8_t clockSnapshotSlot = 0U;
+bool clockNtpStarted = false;
+bool clockNtpCandidate = false;
+uint32_t clockNtpCandidateAt = 0U;
+int64_t clockNtpCandidateEpoch = 0;
+uint32_t clockNtpLastAcceptedAt = 0U;
+uint8_t adventureMenuIndex = 0U;
+kitsu868::adventure::Terrain adventureTerrain =
+    kitsu868::adventure::Terrain::Meadow;
+kitsu868::adventure::Objective adventureObjective =
+    kitsu868::adventure::Objective::Explore;
+kitsu868::adventure::Risk adventureRisk =
+    kitsu868::adventure::Risk::Balanced;
+kitsu868::adventure::Weather adventureWeather =
+    kitsu868::adventure::Weather::Unknown;
+bool activityRewarded = false;
+bool activityPressAccepted = false;
+uint32_t progressionLastSessionDay = 0U;
+uint16_t progressionLastMinute = UINT16_MAX;
+constexpr uint8_t PROGRESSION_LINE_CAPACITY = 10U;
+kitsu868::progression::DisplayLine
+    progressionPendingLines[PROGRESSION_LINE_CAPACITY]{};
+uint8_t progressionPendingLineHead = 0U;
+uint8_t progressionPendingLineCount = 0U;
 uint32_t lastPartyBeaconAt = 0U;
 uint32_t lastPartyTxAt = 0U;
 uint32_t lastPartyRewardAttemptAt = 0U;
@@ -495,6 +553,15 @@ bool partyWelcomeAccepted = false;
 kitsu868::party::Packet partyReplayPacket{};
 uint8_t partyReplayRemaining = 0U;
 uint32_t partyReplayAt = 0U;
+kitsu868::party_modes::Packet modePartyReplayPacket{};
+uint8_t modePartyReplayRemaining = 0U;
+uint32_t modePartyReplayAt = 0U;
+bool modePartyScanActive = false;
+bool modePartyJoinRequested = false;
+bool modePartyAutoReadyPending = false;
+uint32_t lastModePartyHandledSessionNonce = 0U;
+uint32_t lastModePartyBeaconTxAt = 0U;
+uint32_t lastModePartyTxAt = 0U;
 float partyHostRssi = 0.0f;
 float partyHostSnr = 0.0f;
 
@@ -657,6 +724,7 @@ bool startExpedition(kitsu868::expedition::Duration duration,
 bool claimExpedition(const char*& error);
 void tickExpedition(uint32_t now);
 void tickPartyHotspot(uint32_t now);
+void tickModeParty(uint32_t now);
 bool startPartyScan(const char*& error);
 bool startPartyHost(const char*& error);
 bool joinObservedParty(uint16_t hostUid, uint32_t sessionNonce,
@@ -665,9 +733,46 @@ bool beginHostedParty(const char*& error);
 bool choosePartySignal(kitsu868::party::SignalChoice choice,
                        uint8_t round, const char*& error);
 void leavePartyHotspot();
+void stopListeningSafely();
+bool partyRuntimeBusy();
 bool persistDialogueState();
 bool persistExpeditionState();
 bool persistPartyRewardState();
+bool persistClockState();
+bool commitClockMutation(
+    const kitsu868::timekeeping::KitsuClock& before,
+    uint32_t previousGeneration, uint8_t previousSlot, uint32_t now,
+    bool applyRuntime);
+bool persistCompanionProgression();
+bool persistAdventureProgression();
+bool persistSocialProgression();
+bool persistActivityState();
+void loadClockState();
+void loadCompanionProgression();
+void loadAdventureProgression();
+void loadSocialProgression();
+void loadActivityState();
+void serviceClockNetworkTime(uint32_t now);
+bool applyClockToRuntime(uint32_t now);
+bool currentLocalDayMinute(uint32_t& dayId, uint16_t& minuteOfDay,
+                           bool requireTrusted = true);
+bool executeClockCommand(const String& command);
+bool executeAdventureCommand(const String& command);
+bool executeProfileCommand(const String& command);
+bool executeActivityCommand(const String& command);
+bool executeSocialCommand(const String& command);
+void beginClockEditor();
+bool commitClockEditor();
+void tickActivity(uint32_t now);
+bool activityRuntimeBusy();
+bool foregroundTransitionBlocked(const char* action);
+void tickCompanionProgression(uint32_t now);
+void recordCompanionAction(kitsu868::dialogue::Action action);
+void queueProgressionSession(
+    const kitsu868::progression::SessionResult& result, uint32_t day);
+void replayLastDialogue();
+void executeQuickAction();
+kitsu868::adventure::ClockSample adventureClock(uint32_t now);
 void recordSuccessfulEncounterTrigger(
     kitsu868::signal::MeshOperationKind kind);
 bool materializePendingWildEncounter();
@@ -2606,21 +2711,22 @@ bool buildChatStorage(const uint8_t* payload, size_t payloadBytes,
 bool syncClock(const uint8_t* payload, size_t payloadBytes, String& output) {
   uint32_t epoch = 0U;
   if (!parseClockSync(payload, payloadBytes, epoch)) return false;
-  const kitsu868::mesh::TransportStatus status =
-      meshTransport.setEpoch(epoch);
-  if (status != kitsu868::mesh::TransportStatus::Ok) {
-    output = "{\"ok\":false,\"error\":\"";
-    output += kitsu868::mesh::transportStatusName(status);
-    output += "\"}";
-    return true;
-  }
-  const timeval wallClock{static_cast<time_t>(epoch), 0};
-  if (settimeofday(&wallClock, nullptr) != 0) {
+  const uint32_t now = millis();
+  const kitsu868::timekeeping::KitsuClock before = kitsuClock;
+  const uint32_t previousGeneration = clockSnapshotGeneration;
+  const uint8_t previousSlot = clockSnapshotSlot;
+  const kitsu868::timekeeping::ClockResult setResult =
+      kitsuClock.setFromUnixSeconds(
+          epoch, 0U, kitsu868::timekeeping::ClockSource::AuthenticatedApp,
+          kitsuClock.utcOffsetMinutes(), now);
+  if (setResult != kitsu868::timekeeping::ClockResult::Ok ||
+      !commitClockMutation(before, previousGeneration, previousSlot, now,
+                           true)) {
     output = "{\"ok\":false,\"error\":\"system_clock_failed\"}";
     return true;
   }
   output = "{\"schema\":\"kitsu.clock.v1\",\"epoch\":";
-  output += String(meshTransport.currentEpoch());
+  output += String(epoch);
   output += '}';
   return true;
 }
@@ -4605,6 +4711,24 @@ uint32_t crc32Prefix(const void* value, size_t bytes) {
   return ~crc;
 }
 
+template <typename T>
+bool writePreferenceRecord(const char* key, const T& value) {
+  if (!storageReady || !key) return false;
+  if (preferences.putBytes(key, &value, sizeof(value)) != sizeof(value) ||
+      preferences.getBytesLength(key) != sizeof(value)) {
+    return false;
+  }
+  T check{};
+  return preferences.getBytes(key, &check, sizeof(check)) == sizeof(check) &&
+         memcmp(&value, &check, sizeof(value)) == 0;
+}
+
+template <typename T>
+bool readPreferenceRecord(const char* key, T& value) {
+  return storageReady && key && preferences.getBytesLength(key) == sizeof(value) &&
+         preferences.getBytes(key, &value, sizeof(value)) == sizeof(value);
+}
+
 uint32_t coreStateCrc(const CoreStateV2& state) {
   return crc32Prefix(&state, offsetof(CoreStateV2, crc32));
 }
@@ -4794,6 +4918,558 @@ void loadPartyRewardState() {
     partyRewardStateReady = false;
     Serial.println("KITSU_WARN party_reward_state=invalid");
   }
+}
+
+bool clockReading(uint32_t now, kitsu868::timekeeping::ClockReading& output,
+                  bool requireTrusted) {
+  const kitsu868::timekeeping::ClockResult result = kitsuClock.read(now, output);
+  return result == kitsu868::timekeeping::ClockResult::Ok &&
+         (!requireTrusted || output.trusted());
+}
+
+bool applyClockToRuntime(uint32_t now) {
+  kitsu868::timekeeping::ClockReading reading{};
+  if (!clockReading(now, reading, true) || reading.unixSeconds > UINT32_MAX) {
+    return false;
+  }
+  const timeval systemTime{static_cast<time_t>(reading.unixSeconds),
+                           static_cast<suseconds_t>(reading.millisecond) * 1000};
+  if (settimeofday(&systemTime, nullptr) != 0) return false;
+  (void)meshTransport.setEpoch(static_cast<uint32_t>(reading.unixSeconds));
+  return true;
+}
+
+bool persistClockState() {
+  if (!storageReady || !clockStateReady || !kitsuClock.set()) return false;
+  kitsu868::timekeeping::ClockSnapshot snapshot{};
+  uint32_t generation = clockSnapshotGeneration + 1U;
+  if (generation == 0U) generation = 1U;
+  if (kitsuClock.makeSnapshot(millis(), generation, snapshot) !=
+      kitsu868::timekeeping::ClockResult::Ok) {
+    return false;
+  }
+  const uint8_t nextSlot = static_cast<uint8_t>(clockSnapshotSlot ^ 1U);
+  const char* key = nextSlot == 0U ? "clock_a" : "clock_b";
+  if (!writePreferenceRecord(key, snapshot)) return false;
+  clockSnapshotGeneration = generation;
+  clockSnapshotSlot = nextSlot;
+  return true;
+}
+
+bool commitClockMutation(
+    const kitsu868::timekeeping::KitsuClock& before,
+    uint32_t previousGeneration, uint8_t previousSlot, uint32_t now,
+    bool applyRuntime) {
+  if (clockStateReady && kitsuClock.set() && !persistClockState()) {
+    kitsuClock = before;
+    clockSnapshotGeneration = previousGeneration;
+    clockSnapshotSlot = previousSlot;
+    return false;
+  }
+  if (!applyRuntime || applyClockToRuntime(now)) return true;
+
+  kitsuClock = before;
+  clockSnapshotGeneration = previousGeneration;
+  clockSnapshotSlot = previousSlot;
+  if (clockStateReady) {
+    if (before.set()) {
+      if (!persistClockState()) {
+        Serial.println("KITSU_WARN clock_state=rollback_flush_failed");
+      }
+    } else {
+      (void)preferences.remove("clock_a");
+      (void)preferences.remove("clock_b");
+      clockSnapshotGeneration = 0U;
+      clockSnapshotSlot = 0U;
+    }
+  }
+  if (before.trusted() && !applyClockToRuntime(now)) {
+    Serial.println("KITSU_WARN clock_runtime=rollback_failed");
+  }
+  return false;
+}
+
+void loadClockState() {
+  kitsuClock.reset();
+  clockStateReady = storageReady;
+  clockSnapshotGeneration = 0U;
+  clockSnapshotSlot = 0U;
+  if (!storageReady) return;
+  kitsu868::timekeeping::ClockSnapshot first{};
+  kitsu868::timekeeping::ClockSnapshot second{};
+  const bool firstValid = readPreferenceRecord("clock_a", first) &&
+      kitsu868::timekeeping::KitsuClock::validateSnapshot(first) ==
+          kitsu868::timekeeping::ClockResult::Ok;
+  const bool secondValid = readPreferenceRecord("clock_b", second) &&
+      kitsu868::timekeeping::KitsuClock::validateSnapshot(second) ==
+          kitsu868::timekeeping::ClockResult::Ok;
+  if (!firstValid && !secondValid) return;
+  const bool useSecond = secondValid &&
+      (!firstValid || kitsu868::timekeeping::KitsuClock::generationAfter(
+                         second.generation, first.generation));
+  const kitsu868::timekeeping::ClockSnapshot& selected =
+      useSecond ? second : first;
+  if (kitsuClock.restore(selected, millis()) !=
+      kitsu868::timekeeping::ClockResult::Ok) {
+    kitsuClock.reset();
+    Serial.println("KITSU_WARN clock_state=invalid");
+    return;
+  }
+  clockSnapshotGeneration = selected.generation;
+  clockSnapshotSlot = useSecond ? 1U : 0U;
+  Serial.printf("KITSU_CLOCK restored=stale source=%s generation=%lu\n",
+                kitsu868::timekeeping::clockSourceName(kitsuClock.source()),
+                static_cast<unsigned long>(clockSnapshotGeneration));
+}
+
+bool persistCompanionProgression() {
+  if (!storageReady || !companionProgressionReady) return false;
+  uint8_t snapshot[kitsu868::progression::kSnapshotCapacity]{};
+  const size_t bytes = kitsu868::progression::CompanionProgression::snapshotSize();
+  if (bytes > sizeof(snapshot) ||
+      !companionProgression.writeSnapshot(snapshot, sizeof(snapshot))) {
+    return false;
+  }
+  if (preferences.putBytes("progress_v1", snapshot, bytes) != bytes ||
+      preferences.getBytesLength("progress_v1") != bytes) {
+    return false;
+  }
+  uint8_t check[kitsu868::progression::kSnapshotCapacity]{};
+  return preferences.getBytes("progress_v1", check, bytes) == bytes &&
+         memcmp(snapshot, check, bytes) == 0;
+}
+
+bool captureCompanionProgression(
+    uint8_t (&snapshot)[kitsu868::progression::kSnapshotCapacity]) {
+  return companionProgressionReady &&
+      companionProgression.writeSnapshot(snapshot, sizeof(snapshot));
+}
+
+void restoreCompanionProgression(
+    const uint8_t (&snapshot)[kitsu868::progression::kSnapshotCapacity]) {
+  (void)companionProgression.restoreSnapshot(
+      snapshot,
+      kitsu868::progression::CompanionProgression::snapshotSize(),
+      companionBrain.deviceFingerprint());
+}
+
+void loadCompanionProgression() {
+  companionProgressionReady = storageReady;
+  if (!storageReady) return;
+  const uint32_t fingerprint = companionBrain.deviceFingerprint();
+  const size_t expected =
+      kitsu868::progression::CompanionProgression::snapshotSize();
+  uint8_t snapshot[kitsu868::progression::kSnapshotCapacity]{};
+  const size_t bytes = preferences.getBytesLength("progress_v1");
+  if (bytes == expected &&
+      preferences.getBytes("progress_v1", snapshot, bytes) == bytes &&
+      companionProgression.restoreSnapshot(snapshot, bytes, fingerprint)) {
+    return;
+  }
+  uint32_t day = 1U;
+  uint16_t minute = 0U;
+  (void)currentLocalDayMinute(day, minute, true);
+  companionProgression.initialize(fingerprint, day);
+  if (bytes != 0U) Serial.println("KITSU_WARN progression_state=reset");
+  if (!persistCompanionProgression()) {
+    companionProgressionReady = false;
+    Serial.println("KITSU_WARN progression_state=unavailable");
+  }
+}
+
+bool persistAdventureProgression() {
+  if (!storageReady || !adventureProgressionReady) return false;
+  const kitsu868::adventure::ProgressState state =
+      adventureProgression.snapshot();
+  return kitsu868::adventure::validateProgressState(state) &&
+         writePreferenceRecord("advent_v1", state);
+}
+
+void loadAdventureProgression() {
+  adventureProgression.reset();
+  adventureProgressionReady = storageReady;
+  if (!storageReady) return;
+  kitsu868::adventure::ProgressState state{};
+  if (preferences.getBytesLength("advent_v1") == 0U) {
+    adventureProgressionReady = persistAdventureProgression();
+    if (!adventureProgressionReady) {
+      Serial.println("KITSU_WARN adventure_state=unavailable");
+    }
+    return;
+  }
+  if (!readPreferenceRecord("advent_v1", state) ||
+      adventureProgression.restore(state) !=
+          kitsu868::adventure::RestoreStatus::Ok) {
+    adventureProgression.reset();
+    Serial.println("KITSU_WARN adventure_state=invalid_reset");
+    adventureProgressionReady = persistAdventureProgression();
+    if (!adventureProgressionReady) {
+      Serial.println("KITSU_WARN adventure_state=unavailable");
+    }
+  }
+}
+
+bool persistSocialProgression() {
+  if (!storageReady || !socialProgressionReady) return false;
+  const kitsu868::social::SocialState state = socialProgression.snapshot();
+  return kitsu868::social::validateSocialState(state) &&
+         writePreferenceRecord("social_v1", state);
+}
+
+void loadSocialProgression() {
+  socialProgression.reset();
+  socialProgressionReady = storageReady;
+  if (!storageReady) return;
+  kitsu868::social::SocialState state{};
+  if (preferences.getBytesLength("social_v1") == 0U) {
+    socialProgressionReady = persistSocialProgression();
+    if (!socialProgressionReady) {
+      Serial.println("KITSU_WARN social_state=unavailable");
+    }
+    return;
+  }
+  if (!readPreferenceRecord("social_v1", state) ||
+      socialProgression.restore(state) != kitsu868::social::SocialStatus::Ok) {
+    socialProgression.reset();
+    Serial.println("KITSU_WARN social_state=invalid_reset");
+    socialProgressionReady = persistSocialProgression();
+    if (!socialProgressionReady) {
+      Serial.println("KITSU_WARN social_state=unavailable");
+    }
+  }
+}
+
+bool persistActivityState() {
+  if (!storageReady || !activityStateReady) return false;
+  const kitsu868::activities::ActivityState state = activitySuite.snapshot();
+  return kitsu868::activities::validateActivityState(state) &&
+         writePreferenceRecord("activity_v1", state);
+}
+
+bool persistActivityMutation(
+    const kitsu868::activities::ActivityState& before,
+    const char* operation) {
+  if (persistActivityState()) return true;
+  (void)activitySuite.restore(before);
+  Serial.printf("KITSU_ERROR activity=%s_store_failed\n",
+                operation ? operation : "state");
+  return false;
+}
+
+void loadActivityState() {
+  activitySuite.reset();
+  activityStateReady = storageReady;
+  activityResumePending = false;
+  if (!storageReady) return;
+  kitsu868::activities::ActivityState state{};
+  if (preferences.getBytesLength("activity_v1") == 0U) {
+    activityStateReady = persistActivityState();
+    if (!activityStateReady) {
+      Serial.println("KITSU_WARN activity_state=unavailable");
+    }
+    return;
+  }
+  if (!readPreferenceRecord("activity_v1", state) ||
+      !activitySuite.restore(state)) {
+    activitySuite.reset();
+    Serial.println("KITSU_WARN activity_state=invalid_reset");
+    activityStateReady = persistActivityState();
+    if (!activityStateReady) {
+      Serial.println("KITSU_WARN activity_state=unavailable");
+    }
+    return;
+  }
+  const kitsu868::activities::ActivityPhase phase =
+      activitySuite.view(millis()).phase;
+  if (phase == kitsu868::activities::ActivityPhase::Presenting ||
+      phase == kitsu868::activities::ActivityPhase::Playing ||
+      phase == kitsu868::activities::ActivityPhase::Result) {
+    activityResumePending = activitySuite.resumeAfterCrash(millis());
+    // A persisted result may already have paid its care reward immediately
+    // before power loss. Resume the visible result, but never duplicate that
+    // non-idempotent reward after reboot.
+    activityRewarded =
+        phase == kitsu868::activities::ActivityPhase::Result;
+    if (activityResumePending && !persistActivityState()) {
+      activitySuite.reset();
+      activityStateReady = false;
+      activityResumePending = false;
+      Serial.println("KITSU_WARN activity_state=resume_store_failed");
+    }
+  }
+}
+
+struct LocalClockSample {
+  uint32_t epochSeconds = 0U;
+  uint32_t dayId = 0U;
+  uint16_t minuteOfDay = 0U;
+};
+
+bool localClockSample(uint32_t now, bool requireTrusted,
+                      LocalClockSample& output) {
+  kitsu868::timekeeping::ClockReading reading{};
+  if (!clockReading(now, reading, requireTrusted) ||
+      reading.unixSeconds > UINT32_MAX) {
+    return false;
+  }
+  const int64_t localSeconds = static_cast<int64_t>(reading.unixSeconds) +
+      static_cast<int64_t>(reading.utcOffsetMinutes) * 60LL;
+  if (localSeconds < 0) return false;
+  const uint64_t localDay = static_cast<uint64_t>(localSeconds / 86400LL);
+  if (localDay == 0U || localDay > UINT32_MAX) return false;
+  LocalClockSample candidate{};
+  candidate.epochSeconds = static_cast<uint32_t>(reading.unixSeconds);
+  candidate.dayId = static_cast<uint32_t>(localDay);
+  candidate.minuteOfDay =
+      static_cast<uint16_t>((localSeconds % 86400LL) / 60LL);
+  output = candidate;
+  return true;
+}
+
+bool currentLocalDayMinute(uint32_t& dayId, uint16_t& minuteOfDay,
+                           bool requireTrusted) {
+  LocalClockSample sample{};
+  if (!localClockSample(millis(), requireTrusted, sample)) return false;
+  dayId = sample.dayId;
+  minuteOfDay = sample.minuteOfDay;
+  return true;
+}
+
+void serviceClockNetworkTime(uint32_t now) {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (clockNtpStarted) sntp_stop();
+    clockNtpStarted = false;
+    clockNtpCandidate = false;
+    return;
+  }
+  if (clockNtpLastAcceptedAt != 0U &&
+      static_cast<uint32_t>(now - clockNtpLastAcceptedAt) <
+          CLOCK_NTP_RESYNC_MS) {
+    return;
+  }
+  if (!clockNtpStarted) {
+    configTime(0, 0, "time.cloudflare.com", "time.google.com",
+               "pool.ntp.org");
+    clockNtpStarted = true;
+    clockNtpCandidate = false;
+    Serial.println("KITSU_CLOCK ntp=started");
+  }
+  const int64_t epoch = static_cast<int64_t>(time(nullptr));
+  if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED ||
+      epoch < static_cast<int64_t>(kitsu868::timekeeping::kMinimumClockUnixSeconds) ||
+      epoch > static_cast<int64_t>(kitsu868::timekeeping::kMaximumClockUnixSeconds)) {
+    clockNtpCandidate = false;
+    return;
+  }
+  if (!clockNtpCandidate) {
+    clockNtpCandidate = true;
+    clockNtpCandidateAt = now;
+    clockNtpCandidateEpoch = epoch;
+    return;
+  }
+  if (static_cast<uint32_t>(now - clockNtpCandidateAt) <
+      CLOCK_NTP_STABILITY_MS) {
+    return;
+  }
+  if (epoch < clockNtpCandidateEpoch || epoch > clockNtpCandidateEpoch + 30) {
+    clockNtpCandidate = false;
+    return;
+  }
+  kitsu868::timekeeping::NetworkTimeSample sample{};
+  sample.unixSeconds = static_cast<uint64_t>(epoch);
+  sample.synchronized = true;
+  const kitsu868::timekeeping::KitsuClock before = kitsuClock;
+  const uint32_t previousGeneration = clockSnapshotGeneration;
+  const uint8_t previousSlot = clockSnapshotSlot;
+  if (kitsuClock.acceptNetworkTime(sample, now) !=
+          kitsu868::timekeeping::ClockResult::Ok ||
+      !commitClockMutation(before, previousGeneration, previousSlot, now,
+                           true)) {
+    clockNtpCandidate = false;
+    return;
+  }
+  clockNtpLastAcceptedAt = now == 0U ? 1U : now;
+  clockNtpCandidate = false;
+  Serial.printf("KITSU_CLOCK ntp=accepted epoch=%lld\n",
+                static_cast<long long>(epoch));
+}
+
+bool parseUtcOffset(const String& text, int16_t& minutes) {
+  if (text.length() != 6U || (text[0] != '+' && text[0] != '-') ||
+      text[3] != ':' || !isDigit(text[1]) || !isDigit(text[2]) ||
+      !isDigit(text[4]) || !isDigit(text[5])) {
+    return false;
+  }
+  const uint16_t hours = static_cast<uint16_t>(
+      (text[1] - '0') * 10U + (text[2] - '0'));
+  const uint16_t remainder = static_cast<uint16_t>(
+      (text[4] - '0') * 10U + (text[5] - '0'));
+  if (remainder > 59U || hours > 14U || (hours == 14U && remainder != 0U)) {
+    return false;
+  }
+  int16_t value = static_cast<int16_t>(hours * 60U + remainder);
+  if (text[0] == '-') value = static_cast<int16_t>(-value);
+  minutes = value;
+  return true;
+}
+
+String utcOffsetText(int16_t minutes) {
+  const char sign = minutes < 0 ? '-' : '+';
+  uint16_t magnitude = static_cast<uint16_t>(minutes < 0 ? -minutes : minutes);
+  char buffer[8]{};
+  snprintf(buffer, sizeof(buffer), "%c%02u:%02u", sign,
+           magnitude / 60U, magnitude % 60U);
+  return String(buffer);
+}
+
+void printClockStatus(const char* action, const char* error = nullptr) {
+  kitsu868::timekeeping::ClockReading reading{};
+  const kitsu868::timekeeping::ClockResult result =
+      kitsuClock.read(millis(), reading);
+  char iso[kitsu868::timekeeping::kClockIso8601BufferBytes]{};
+  const bool formatted = result == kitsu868::timekeeping::ClockResult::Ok &&
+      kitsu868::timekeeping::KitsuClock::formatIso8601(
+          reading.unixSeconds, reading.millisecond,
+          reading.utcOffsetMinutes, iso, sizeof(iso)) ==
+          kitsu868::timekeeping::ClockResult::Ok;
+  Serial.printf(
+      "KITSU_CLOCK {\"action\":\"%s\",\"status\":\"%s\","
+      "\"error\":",
+      action, error ? "rejected" : "ok");
+  if (error) Serial.printf("\"%s\"", error);
+  else Serial.print("null");
+  Serial.printf(
+      ",\"set\":%s,\"trusted\":%s,\"source\":\"%s\","
+      "\"epoch\":",
+      reading.set() ? "true" : "false",
+      reading.trusted() ? "true" : "false",
+      kitsu868::timekeeping::clockSourceName(reading.source));
+  if (reading.set()) Serial.print(static_cast<unsigned long long>(reading.unixSeconds));
+  else Serial.print("null");
+  Serial.print(",\"iso\":");
+  if (formatted) Serial.printf("\"%s\"", iso);
+  else Serial.print("null");
+  Serial.printf(",\"offset\":\"%s\"}\n",
+                utcOffsetText(reading.utcOffsetMinutes).c_str());
+}
+
+bool commitClockEditor() {
+  uint64_t epoch = 0U;
+  int16_t offset = 0;
+  if (!clockEditor.value(epoch, offset)) return false;
+  const uint32_t now = millis();
+  const kitsu868::timekeeping::KitsuClock before = kitsuClock;
+  const uint32_t previousGeneration = clockSnapshotGeneration;
+  const uint8_t previousSlot = clockSnapshotSlot;
+  if (kitsuClock.setFromUnixSeconds(
+          epoch, 0U, kitsu868::timekeeping::ClockSource::ManualDevice,
+          offset, now) != kitsu868::timekeeping::ClockResult::Ok ||
+      !commitClockMutation(before, previousGeneration, previousSlot, now,
+                           true)) {
+    Serial.println("KITSU_ERROR clock=device_store_failed");
+    return false;
+  }
+  clockEditor.cancel();
+  momentView.active = true;
+  momentView.line1 = "CLOCK SET";
+  momentView.line2 = "TIME IS READY";
+  momentView.until = now + MOMENT_DISPLAY_MS;
+  printClockStatus("device");
+  enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
+  return true;
+}
+
+void beginClockEditor() {
+  if (foregroundTransitionBlocked("clock")) return;
+  kitsu868::timekeeping::ClockReading reading{};
+  uint64_t seed = kitsu868::timekeeping::kMinimumClockUnixSeconds;
+  int16_t offset = kitsuClock.utcOffsetMinutes();
+  if (clockReading(millis(), reading, false)) {
+    seed = reading.unixSeconds;
+    offset = reading.utcOffsetMinutes;
+  }
+  if (clockEditor.begin(seed, offset) !=
+      kitsu868::timekeeping::ClockResult::Ok) {
+    Serial.println("KITSU_ERROR clock=editor_unavailable");
+    return;
+  }
+  enterScreen(Screen::Clock);
+}
+
+bool executeClockCommand(const String& input) {
+  String command = input;
+  command.trim();
+  String lowered = command;
+  lowered.toLowerCase();
+  if (lowered == "clock status") {
+    printClockStatus("status");
+    return true;
+  }
+  if (lowered == "clock edit") {
+    beginClockEditor();
+    return true;
+  }
+  if (lowered == "clock ntp") {
+    if (WiFi.status() != WL_CONNECTED) {
+      printClockStatus("ntp", "wifi_not_connected");
+    } else {
+      clockNtpLastAcceptedAt = 0U;
+      clockNtpCandidate = false;
+      serviceClockNetworkTime(millis());
+      printClockStatus("ntp_start");
+    }
+    return true;
+  }
+  if (lowered.startsWith("clock offset ")) {
+    int16_t offset = 0;
+    if (!parseUtcOffset(command.substring(13), offset)) {
+      printClockStatus("offset", "invalid_offset");
+      return true;
+    }
+    const uint32_t now = millis();
+    const kitsu868::timekeeping::KitsuClock before = kitsuClock;
+    const uint32_t previousGeneration = clockSnapshotGeneration;
+    const uint8_t previousSlot = clockSnapshotSlot;
+    if (kitsuClock.setUtcOffsetMinutes(offset) !=
+            kitsu868::timekeeping::ClockResult::Ok) {
+      printClockStatus("offset", "invalid_offset");
+    } else if (!commitClockMutation(before, previousGeneration, previousSlot,
+                                    now, false)) {
+      printClockStatus("offset", "storage_failed");
+    } else {
+      printClockStatus("offset");
+    }
+    return true;
+  }
+  kitsu868::timekeeping::ClockResult result =
+      kitsu868::timekeeping::ClockResult::InvalidArgument;
+  const uint32_t now = millis();
+  const kitsu868::timekeeping::KitsuClock before = kitsuClock;
+  const uint32_t previousGeneration = clockSnapshotGeneration;
+  const uint8_t previousSlot = clockSnapshotSlot;
+  if (lowered.startsWith("clock set ")) {
+    result = kitsuClock.setFromIso8601(
+        command.substring(10).c_str(),
+        kitsu868::timekeeping::ClockSource::ManualSerial, now);
+  } else if (lowered.startsWith("clock unix ")) {
+    result = kitsuClock.setFromUnixText(
+        command.substring(11).c_str(),
+        kitsu868::timekeeping::ClockSource::ManualSerial,
+        kitsuClock.utcOffsetMinutes(), now);
+  } else {
+    return false;
+  }
+  if (result != kitsu868::timekeeping::ClockResult::Ok) {
+    printClockStatus("set", kitsu868::timekeeping::clockResultName(result));
+    return true;
+  }
+  if (!commitClockMutation(before, previousGeneration, previousSlot, now,
+                           true)) {
+    printClockStatus("set", "runtime_or_storage_failed");
+    return true;
+  }
+  printClockStatus("set");
+  return true;
 }
 
 bool persistSignalEncounterState() {
@@ -5292,12 +5968,16 @@ void loadState() {
   wisp.boots = preferences.getUInt("boots", 0) + 1;
   preferences.putUInt("boots", wisp.boots);
   companion_api::loadActionReplay();
+  loadClockState();
   loadSignalEncounterState();
   loadEncounterCodes();
   loadFunState();
   loadDialogueState();
   loadExpeditionState();
   loadPartyRewardState();
+  loadAdventureProgression();
+  loadSocialProgression();
+  loadActivityState();
   loadPendingWildEncounter();
 }
 
@@ -5855,6 +6535,8 @@ void sleepDisplay() {
       screen == Screen::Menu || screen == Screen::Connect ||
       screen == Screen::GameMenu ||
       (screen == Screen::Game && !gameRewarded) || screen == Screen::Status ||
+      screen == Screen::Clock ||
+      (screen == Screen::Activity && activityRuntimeBusy()) ||
       screen == Screen::WildEncounter ||
       screen == Screen::PairPhone || screen == Screen::ControllerManager ||
       screen == Screen::ControllerConfirm ||
@@ -6303,6 +6985,26 @@ void renderStatus() {
                        ? "FINAL FORM"
                        : "KEEP BONDING",
                    99);
+  } else if (statusPage == 4) {
+    uiTextCenteredFit(companionProgressionReady &&
+                          companionProgression.nickname()[0] != '\0'
+                          ? companionProgression.nickname()
+                          : "PROGRESSION",
+                      5, 2);
+    const kitsu868::progression::DailyGoal goal =
+        companionProgression.dailyGoal();
+    uiTextCentered("STREAK " +
+                       String(companionProgression.currentStreak()), 28);
+    uiTextCentered("GOAL " + String(goal.progress) + "/" +
+                       String(goal.target), 45);
+    uiTextCentered("LORE " +
+                       String(bitCount16(companionProgression.loreMask())) +
+                       "/10", 62);
+    const kitsu868::social::SocialState social = socialProgression.snapshot();
+    uiTextCentered("FRIENDS " + String(social.peerCount), 79);
+    uiTextCentered("P " + String(social.completedParties), 96);
+    uiTextCentered("PB" + String(static_cast<unsigned long>(
+                       partyRewards.state().partyBond)), 111);
   } else {
     uiTextCentered("KITSU", 5, 2);
     uiTextCentered(FIRMWARE_VERSION, 27);
@@ -6314,7 +7016,7 @@ void renderStatus() {
     uiTextCentered(storageReady ? "STORE OK" : "STORE ERR", 91);
     uiTextCentered(companionPack.valid() ? "PACK OK" : "NO PACK", 107);
   }
-  uiMenuDots(statusPage, 5, 121);
+  uiMenuDots(statusPage, 6, 121);
 }
 
 bool catalogCreatureOwned(const kitsu868::wild::Creature& creature) {
@@ -6400,6 +7102,245 @@ void renderGoals() {
                  65);
   uiTextCentered(sessionAuraActive ? "AURA ACTIVE" : "COMPLETE ALL", 87, 2);
   uiTextCentered("HOLD BACK", 113);
+}
+
+const char* clockFieldLabel(kitsu868::timekeeping::ClockEditorField field) {
+  using kitsu868::timekeeping::ClockEditorField;
+  switch (field) {
+    case ClockEditorField::Year: return "YEAR";
+    case ClockEditorField::Month: return "MONTH";
+    case ClockEditorField::Day: return "DAY";
+    case ClockEditorField::Hour: return "HOUR";
+    case ClockEditorField::Minute: return "MINUTE";
+    case ClockEditorField::UtcOffset: return "UTC OFFSET";
+    case ClockEditorField::Review: return "REVIEW";
+    case ClockEditorField::Inactive: return "CLOCK";
+  }
+  return "CLOCK";
+}
+
+void renderClock() {
+  const kitsu868::timekeeping::ClockEditorView view = clockEditor.view();
+  uiTextCentered("SET CLOCK", 5, 2);
+  if (!view.active) {
+    uiTextCentered("EDITOR OFF", 47, 2);
+    uiTextCentered("HOLD BACK", 104);
+    return;
+  }
+  uiTextCentered(clockFieldLabel(view.field), 27);
+  char date[16]{};
+  char timeText[10]{};
+  snprintf(date, sizeof(date), "%04u-%02u-%02u", view.year, view.month,
+           view.day);
+  snprintf(timeText, sizeof(timeText), "%02u:%02u", view.hour, view.minute);
+  uiTextCentered(date, 45, 1);
+  uiTextCentered(timeText, 61, 2);
+  uiTextCentered("UTC " + utcOffsetText(view.utcOffsetMinutes), 83);
+  uiTextCentered(view.field == kitsu868::timekeeping::ClockEditorField::Review
+                     ? "HOLD SAVE"
+                     : "TAP CHANGE",
+                 101);
+  uiTextCentered(view.field == kitsu868::timekeeping::ClockEditorField::Review
+                     ? "TAP REVISE"
+                     : "HOLD NEXT",
+                 114);
+}
+
+const char* terrainLabel(kitsu868::adventure::Terrain value) {
+  using kitsu868::adventure::Terrain;
+  switch (value) {
+    case Terrain::Meadow: return "MEADOW";
+    case Terrain::Forest: return "FOREST";
+    case Terrain::Ridge: return "RIDGE";
+    case Terrain::Waterfront: return "WATER";
+    case Terrain::Town: return "TOWN";
+    case Terrain::Count: break;
+  }
+  return "?";
+}
+
+const char* objectiveLabel(kitsu868::adventure::Objective value) {
+  using kitsu868::adventure::Objective;
+  switch (value) {
+    case Objective::Explore: return "EXPLORE";
+    case Objective::FollowSignal: return "SIGNAL";
+    case Objective::MeetCreature: return "CREATURE";
+    case Objective::Community: return "COMMUNITY";
+    case Objective::ReturnHome: return "HOME";
+    case Objective::Count: break;
+  }
+  return "?";
+}
+
+const char* riskLabel(kitsu868::adventure::Risk value) {
+  using kitsu868::adventure::Risk;
+  switch (value) {
+    case Risk::Careful: return "CAREFUL";
+    case Risk::Balanced: return "BALANCED";
+    case Risk::Bold: return "BOLD";
+    case Risk::Count: break;
+  }
+  return "?";
+}
+
+const char* weatherLabel(kitsu868::adventure::Weather value) {
+  using kitsu868::adventure::Weather;
+  switch (value) {
+    case Weather::Unknown: return "UNKNOWN";
+    case Weather::Clear: return "CLEAR";
+    case Weather::Rain: return "RAIN";
+    case Weather::Wind: return "WIND";
+    case Weather::Snow: return "SNOW";
+    case Weather::Count: break;
+  }
+  return "?";
+}
+
+const char* timeBandLabel(kitsu868::adventure::TimeBand value) {
+  using kitsu868::adventure::TimeBand;
+  switch (value) {
+    case TimeBand::Unknown: return "unknown";
+    case TimeBand::Dawn: return "dawn";
+    case TimeBand::Day: return "day";
+    case TimeBand::Dusk: return "dusk";
+    case TimeBand::Night: return "night";
+    case TimeBand::Count: break;
+  }
+  return "invalid";
+}
+
+const char* moonPhaseLabel(kitsu868::adventure::MoonPhase value) {
+  using kitsu868::adventure::MoonPhase;
+  switch (value) {
+    case MoonPhase::Unknown: return "unknown";
+    case MoonPhase::NewMoon: return "new";
+    case MoonPhase::Waxing: return "waxing";
+    case MoonPhase::FullMoon: return "full";
+    case MoonPhase::Waning: return "waning";
+    case MoonPhase::Count: break;
+  }
+  return "invalid";
+}
+
+void renderAdventure() {
+  uiTextCentered("ADVENTURE", 3, 2);
+  const kitsu868::expedition::ExpeditionView expedition = expeditionCore.view();
+  if (expedition.phase == kitsu868::expedition::Phase::Traveling) {
+    uiTextCentered(kitsu868::expedition::durationLabel(expedition.duration), 27);
+    uiProgressBar(expedition.progressPercent, 48);
+    uiTextCentered(String(expedition.progressPercent) + "%", 62, 2);
+    uiTextCentered(String(expedition.remainingSeconds / 60U) + " MIN LEFT", 86);
+    uiTextCentered("HOLD MENU", 110);
+    return;
+  }
+  if (expedition.phase == kitsu868::expedition::Phase::Ready) {
+    uiTextCentered("TRIP BACK", 31);
+    uiTextCentered("REPORT READY", 52, 2);
+    uiTextCentered("HOLD CLAIM", 91);
+    uiTextCentered("TAP MENU", 108);
+    return;
+  }
+  const kitsu868::adventure::RouteView route = adventureProgression.view();
+  if (route.phase == kitsu868::adventure::RoutePhase::Active ||
+      route.phase == kitsu868::adventure::RoutePhase::AwaitingRescue) {
+    uiTextCentered(route.phase == kitsu868::adventure::RoutePhase::AwaitingRescue
+                       ? "NEEDS PARTY"
+                       : terrainLabel(route.terrain),
+                   25);
+    uiProgressBar(route.progressPercent, 46);
+    uiTextCentered("STEPS " + String(route.progressPercent) + "%", 61);
+    uiTextCentered("CHOICES " + String(route.decisionCount) + "/3", 79);
+    uiTextCenteredFit(ADVENTURE_ITEMS[adventureMenuIndex], 98, 1);
+    uiTextCentered("TAP/HOLD", 113);
+    return;
+  }
+  if (route.phase == kitsu868::adventure::RoutePhase::Returned) {
+    kitsu868::adventure::TextPostcard postcard{};
+    uiTextCentered(route.outcome == kitsu868::adventure::Outcome::Complete
+                       ? "ROUTE DONE"
+                       : route.outcome == kitsu868::adventure::Outcome::Rescued
+                             ? "RESCUED"
+                             : "ROUTE BACK",
+                   25);
+    if (adventureProgression.currentPostcard(postcard)) {
+      uiTextCenteredFit(postcard.title, 46, 1);
+      uiWrappedText(postcard.line, 61, 3U, 10U);
+    }
+    uiTextCentered("TAP MENU", 98);
+    uiTextCentered("HOLD ACK", 113);
+    return;
+  }
+  uiTextCenteredFit(ADVENTURE_ITEMS[adventureMenuIndex], 33, 1);
+  if (adventureMenuIndex == 9U) {
+    uiTextCentered(terrainLabel(adventureTerrain), 56, 2);
+  } else if (adventureMenuIndex == 10U) {
+    uiTextCentered(objectiveLabel(adventureObjective), 56, 2);
+  } else if (adventureMenuIndex == 11U) {
+    uiTextCentered(riskLabel(adventureRisk), 56, 2);
+  } else if (adventureMenuIndex == 12U) {
+    uiTextCentered(weatherLabel(adventureWeather), 56, 2);
+  } else {
+    uiTextCentered(terrainLabel(adventureTerrain), 50);
+    uiTextCentered(objectiveLabel(adventureObjective), 64);
+    uiTextCentered(String(riskLabel(adventureRisk)[0]) + "/" +
+                       weatherLabel(adventureWeather), 78);
+  }
+  uiMenuDots(adventureMenuIndex,
+             sizeof(ADVENTURE_ITEMS) / sizeof(ADVENTURE_ITEMS[0]), 91);
+  uiTextCentered("TAP NEXT", 104);
+  uiTextCentered("HOLD SELECT", 116);
+}
+
+void renderActivity() {
+  const uint32_t now = millis();
+  const kitsu868::activities::ActivityView view = activitySuite.view(now);
+  uiTextCenteredFit(kitsu868::activities::activityName(view.kind), 4, 2);
+  using kitsu868::activities::ActivityKind;
+  using kitsu868::activities::ActivityPhase;
+  if (view.phase == ActivityPhase::Presenting) {
+    uiTextCentered("WATCH", 31);
+    uiTextCentered(view.cueOn ? "DASH" : "DOT", 51, 2);
+    uiTextCentered(String(view.progress + 1U) + "/" + String(view.total), 76);
+    uiTextCentered("THEN REPEAT", 102);
+  } else if (view.phase == ActivityPhase::Playing) {
+    if (view.kind == ActivityKind::MorseSignal) {
+      uiTextCentered("REPEAT", 29);
+      uiTextCentered(String(view.progress) + "/" + String(view.total), 49, 2);
+      uiTextCentered("TAP DOT", 78);
+      uiTextCentered("HOLD DASH", 96);
+    } else if (view.kind == ActivityKind::StaticTuner) {
+      uiTextCentered("TARGET " + String(view.target), 28);
+      uiProgressBar(view.marker, 52);
+      uiTextCentered("SIGNAL " + String(view.marker), 67);
+      uiTextCentered("TAP TO LOCK", 97);
+    } else if (view.kind == ActivityKind::ReactionFlash) {
+      uiTextCentered(view.cueOn ? "NOW!" : "WAIT", 39, 2);
+      uiTextCentered(view.cueOn ? "TAP" : "HANDS OFF", 79);
+    } else if (view.kind == ActivityKind::HoldSteady) {
+      uiTextCentered("HOLD PRG", 32, 2);
+      uiProgressBar(view.progress, 63);
+      uiTextCentered("RELEASE 100", 87);
+    } else {
+      uiTextCentered(view.marker < 50U ? "BREATHE IN" : "BREATHE OUT", 30);
+      uiProgressBar(view.marker, 54);
+      uiTextCentered("TAP AT PEAK", 76);
+      uiTextCentered(String(view.progress) + "/" + String(view.total), 97, 2);
+    }
+  } else if (view.phase == ActivityPhase::Result) {
+    uiTextCentered("SCORE", 31);
+    uiTextCentered(String(view.score), 51, 2);
+    if (view.ghostScore != 0U) {
+      uiTextCentered("BEST " + String(view.ghostScore), 78);
+    }
+    uiTextCentered("NICE SIGNAL", 101);
+  } else if (view.phase == ActivityPhase::Finished) {
+    uiTextCentered("FINISHED", 35, 2);
+    uiTextCentered(String(view.score) + "/" + String(view.maximumScore), 62);
+    uiTextCentered("TAP BACK", 100);
+  } else {
+    uiTextCentered("NO ACTIVITY", 44, 2);
+    uiTextCentered("TAP BACK", 100);
+  }
 }
 
 void renderPairPhone() {
@@ -6699,6 +7640,9 @@ void renderDisplay(bool force = false) {
     case Screen::WildEncounter: renderWildEncounter(); break;
     case Screen::FieldGuide: renderFieldGuide(); break;
     case Screen::Goals: renderGoals(); break;
+    case Screen::Clock: renderClock(); break;
+    case Screen::Adventure: renderAdventure(); break;
+    case Screen::Activity: renderActivity(); break;
     case Screen::PairPhone: renderPairPhone(); break;
     case Screen::ControllerManager: renderControllerManager(); break;
     case Screen::ControllerConfirm: renderControllerConfirm(); break;
@@ -6751,7 +7695,7 @@ bool requireCompanion() {
   if (companionPack.valid()) return true;
   lastMemory = "No companion pack is installed.";
   Serial.printf("KITSU_ERROR no_pack reason=%s\n", companionPack.error());
-  statusPage = 4;
+  statusPage = 5;
   enterScreen(Screen::Status);
   return false;
 }
@@ -6828,9 +7772,18 @@ void showActionDialogue(kitsu868::dialogue::Action action,
   momentView.line1 = line.line1;
   momentView.line2 = line.line2;
   momentView.until = millis() + MOMENT_DISPLAY_MS;
+  if (activityStateReady && line.id != 0U) {
+    activitySuite.rememberDialogue(line.id);
+    if (!persistActivityState()) {
+      Serial.println("KITSU_WARN dialogue_replay=flush_failed");
+    }
+  }
   if (dialogueStateReady && !persistDialogueState()) {
     dialogueActions = before;
     Serial.println("KITSU_WARN dialogue_state=flush_failed");
+  }
+  if (!nearby && outcome == kitsu868::dialogue::ActionOutcome::Success) {
+    recordCompanionAction(action);
   }
   if (!startPersonalityAnimation) return;
   kitsu868::fun::MomentTrigger trigger =
@@ -6860,6 +7813,281 @@ void showActionDialogue(kitsu868::dialogue::Action action,
   cancelAmbientAnimation();
   if (!startTransientAnimation(momentReactionRole(personality.reaction))) {
     startBaseAnimation();
+  }
+}
+
+kitsu868::progression::Season currentSeason(uint32_t now) {
+  kitsu868::timekeeping::ClockReading reading{};
+  if (!clockReading(now, reading, true)) {
+    return kitsu868::progression::Season::Spring;
+  }
+  const time_t local = static_cast<time_t>(
+      reading.unixSeconds + static_cast<int64_t>(reading.utcOffsetMinutes) *
+                                60LL);
+  tm broken{};
+  gmtime_r(&local, &broken);
+  const uint8_t month = static_cast<uint8_t>(broken.tm_mon + 1);
+  if (month >= 3U && month <= 5U) return kitsu868::progression::Season::Spring;
+  if (month >= 6U && month <= 8U) return kitsu868::progression::Season::Summer;
+  if (month >= 9U && month <= 11U) return kitsu868::progression::Season::Autumn;
+  return kitsu868::progression::Season::Winter;
+}
+
+void showProgressionLine(const kitsu868::progression::DisplayLine& line) {
+  if (!line.line1 || line.line1[0] == '\0') return;
+  momentView.active = true;
+  momentView.line1 = line.line1;
+  momentView.line2 = line.line2;
+  momentView.until = millis() + MOMENT_DISPLAY_MS;
+}
+
+void queueProgressionLine(const kitsu868::progression::DisplayLine& line) {
+  if (!line.line1 || line.line1[0] == '\0') return;
+  Serial.printf("KITSU_PROGRESSION line1=\"%s\" line2=\"%s\"\n",
+                line.line1, line.line2 ? line.line2 : "");
+  if (progressionPendingLineCount >= PROGRESSION_LINE_CAPACITY) {
+    progressionPendingLineHead = static_cast<uint8_t>(
+        (progressionPendingLineHead + 1U) % PROGRESSION_LINE_CAPACITY);
+    --progressionPendingLineCount;
+    Serial.println("KITSU_WARN progression_lines=oldest_dropped");
+  }
+  const uint8_t slot = static_cast<uint8_t>(
+      (progressionPendingLineHead + progressionPendingLineCount) %
+      PROGRESSION_LINE_CAPACITY);
+  progressionPendingLines[slot] = line;
+  ++progressionPendingLineCount;
+}
+
+bool takeProgressionLine(kitsu868::progression::DisplayLine& line) {
+  if (progressionPendingLineCount == 0U) return false;
+  line = progressionPendingLines[progressionPendingLineHead];
+  progressionPendingLines[progressionPendingLineHead] = {};
+  progressionPendingLineHead = static_cast<uint8_t>(
+      (progressionPendingLineHead + 1U) % PROGRESSION_LINE_CAPACITY);
+  --progressionPendingLineCount;
+  return true;
+}
+
+const char* progressionActionDisplayName(
+    kitsu868::dialogue::Action action) {
+  using kitsu868::dialogue::Action;
+  switch (action) {
+    case Action::Pet: return "PET";
+    case Action::Feed: return "FEED";
+    case Action::Play: return "PLAY";
+    case Action::Listen: return "LISTEN";
+    case Action::Sleep: return "SLEEP";
+    case Action::Wake: return "WAKE";
+    case Action::Meet: return "MEET";
+    case Action::Gift: return "GIFT";
+  }
+  return "ACTION";
+}
+
+void recordCompanionAction(kitsu868::dialogue::Action action) {
+  if (!companionProgressionReady) return;
+  uint32_t day = 0U;
+  uint16_t minute = 0U;
+  if (!currentLocalDayMinute(day, minute, true)) return;
+  uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+  if (!captureCompanionProgression(before)) return;
+  const uint32_t previousSessionDay = progressionLastSessionDay;
+  const uint8_t previousSpeech = companionProgression.speechStage();
+  const uint8_t previousBondBank =
+      companionProgression.bondDialogueBank(companionBrain.bondLevel());
+  kitsu868::progression::SessionResult sessionResult{};
+  bool startedNewDay = false;
+  if (progressionLastSessionDay != day) {
+    sessionResult = companionProgression.startSession(
+        day, minute, companionBrain.bondLevel(), companionVitals(),
+        currentSeason(millis()));
+    startedNewDay = sessionResult.valid;
+    progressionLastSessionDay = day;
+  }
+  const kitsu868::progression::ActionResult result =
+      companionProgression.recordAction(action, day, minute,
+                                        companionBrain.bondLevel());
+  if (!result.valid) {
+    restoreCompanionProgression(before);
+    progressionLastSessionDay = previousSessionDay;
+    return;
+  }
+  (void)companionProgression.observeBond(companionBrain.bondLevel(), day);
+  if (!persistCompanionProgression()) {
+    restoreCompanionProgression(before);
+    progressionLastSessionDay = previousSessionDay;
+    Serial.println("KITSU_WARN progression_action=flush_failed");
+    return;
+  }
+  if (startedNewDay) queueProgressionSession(sessionResult, day);
+  if (result.requestCompleted) {
+    queueProgressionLine({"YOU REMEMBERED", "THANK YOU"});
+  }
+  if (result.goalCompletedNow) {
+    queueProgressionLine({"DAILY GOAL", "COMPLETE"});
+  }
+  if (result.ritualRecognized) {
+    queueProgressionLine({"OUR RITUAL", "RIGHT ON TIME"});
+  }
+  if (result.favoriteChanged) {
+    queueProgressionLine({"NEW FAVORITE", "I LIKE THIS"});
+  }
+  if (result.secretHabitUnlocked) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::habitLine(
+            companionProgression.secretHabit()));
+  }
+  if (result.comforted) {
+    queueProgressionLine({"THAT HELPED", "THANK YOU"});
+  }
+  if (result.followedSuggestion) {
+    queueProgressionLine({"GOOD IDEA", "TOGETHER"});
+  }
+  queueProgressionLine(
+      {"TRY NEXT", progressionActionDisplayName(result.followUp)});
+  if (result.repeatNoticed) {
+    queueProgressionLine({"AGAIN?", "I NOTICE"});
+  }
+  if (result.speechStage > previousSpeech) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::speechLine(
+            result.speechStage));
+  }
+  if (result.bondDialogueBank > previousBondBank) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::bondLine(
+            result.bondDialogueBank));
+  }
+  companionBleRefreshDirty = true;
+}
+
+void replayLastDialogue() {
+  if (foregroundTransitionBlocked("replay")) return;
+  uint16_t id = 0U;
+  kitsu868::dialogue::ActionLine line{};
+  if (!activityStateReady || !activitySuite.replayDialogue(id) ||
+      !kitsu868::dialogue::actionLineById(id, line)) {
+    Serial.println("KITSU_ERROR replay=empty");
+    return;
+  }
+  momentView.active = true;
+  momentView.line1 = line.line1;
+  momentView.line2 = line.line2;
+  momentView.until = millis() + MOMENT_DISPLAY_MS;
+  enterScreen(Screen::Pet);
+  Serial.printf("KITSU_REPLAY dialogue_id=%u\n", id);
+}
+
+void queueProgressionSession(
+    const kitsu868::progression::SessionResult& result, uint32_t day) {
+  if (!result.valid) return;
+  if (result.greeting != kitsu868::progression::GreetingKind::Normal) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::greetingLine(
+            result.greeting));
+  }
+  if (result.requestOffered) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::requestLine(
+            companionProgression.requestedAction()));
+  }
+  if (result.questionOffered) {
+    kitsu868::progression::QuestionKind question{};
+    if (companionProgression.pendingQuestion(question)) {
+      queueProgressionLine(
+          kitsu868::progression::CompanionProgression::questionLine(
+              question));
+    }
+  }
+  if (result.comfort != kitsu868::progression::ComfortKind::None) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::comfortLine(
+            result.comfort));
+  }
+  if (result.rareMoment) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::rareMomentLine(
+            companionProgression.dailySeed(day)));
+  }
+  queueProgressionLine(
+      kitsu868::progression::CompanionProgression::weeklyChapterLine(
+          result.weeklyChapter));
+  if (result.seasonalMoment) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::seasonalLine(
+            result.season));
+  }
+  if (result.anniversary) {
+    queueProgressionLine({"ANNIVERSARY", "STILL TOGETHER"});
+  }
+  if (result.previousDayPerfect) {
+    queueProgressionLine({"PERFECT DAY", "I REMEMBER"});
+  }
+}
+
+void tickCompanionProgression(uint32_t now) {
+  if (!companionProgressionReady) return;
+  uint32_t day = 0U;
+  uint16_t minute = 0U;
+  if (!currentLocalDayMinute(day, minute, true)) return;
+  const bool quiet = activityStateReady && activitySuite.quietAt(minute);
+  const bool canPresent = !quiet && screen == Screen::Pet &&
+      !momentView.active;
+  const bool havePending = progressionPendingLineCount != 0U;
+  if (canPresent && havePending) {
+    kitsu868::progression::DisplayLine pending{};
+    if (takeProgressionLine(pending)) showProgressionLine(pending);
+    return;
+  }
+  if (progressionLastSessionDay == day && progressionLastMinute == minute) {
+    return;
+  }
+  uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+  const size_t snapshotBytes =
+      kitsu868::progression::CompanionProgression::snapshotSize();
+  if (snapshotBytes > sizeof(before) ||
+      !companionProgression.writeSnapshot(before, sizeof(before))) {
+    Serial.println("KITSU_WARN progression_session=snapshot_failed");
+    return;
+  }
+  const uint32_t previousDay = progressionLastSessionDay;
+  const uint16_t previousMinute = progressionLastMinute;
+  progressionLastMinute = minute;
+  const bool newDay = progressionLastSessionDay != day;
+  const kitsu868::progression::SessionResult result =
+      companionProgression.startSession(
+          day, minute, companionBrain.bondLevel(), companionVitals(),
+          currentSeason(now));
+  progressionLastSessionDay = day;
+  kitsu868::progression::Callback callback{};
+  const bool callbackReady = canPresent && !havePending &&
+      companionProgression.takeCallback(day, callback);
+  uint8_t after[kitsu868::progression::kSnapshotCapacity]{};
+  if (!companionProgression.writeSnapshot(after, sizeof(after))) {
+    (void)companionProgression.restoreSnapshot(
+        before, snapshotBytes, companionBrain.deviceFingerprint());
+    progressionLastSessionDay = previousDay;
+    progressionLastMinute = previousMinute;
+    Serial.println("KITSU_WARN progression_session=snapshot_failed");
+    return;
+  }
+  const bool changed = memcmp(before, after, snapshotBytes) != 0;
+  if (changed && !persistCompanionProgression()) {
+    (void)companionProgression.restoreSnapshot(
+        before, snapshotBytes, companionBrain.deviceFingerprint());
+    progressionLastSessionDay = previousDay;
+    progressionLastMinute = previousMinute;
+    Serial.println("KITSU_WARN progression_session=flush_failed");
+    return;
+  }
+  if (callbackReady) {
+    queueProgressionLine(
+        kitsu868::progression::CompanionProgression::callbackLine(callback));
+  }
+  if (newDay) queueProgressionSession(result, day);
+  if (canPresent && progressionPendingLineCount != 0U) {
+    kitsu868::progression::DisplayLine pending{};
+    if (takeProgressionLine(pending)) showProgressionLine(pending);
   }
 }
 
@@ -6896,6 +8124,19 @@ bool recordDreamAfterSleep(uint32_t now) {
   momentView.until = now + MOMENT_DISPLAY_MS;
   Serial.printf("KITSU_DREAM index=%u total=%u\n", dream.index,
                 funDiscovery.completedDreams);
+  if (companionProgressionReady) {
+    uint32_t day = 0U;
+    uint16_t minute = 0U;
+    uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+    if (captureCompanionProgression(before) &&
+        currentLocalDayMinute(day, minute, true) &&
+        companionProgression.rememberDream(dream.index, day) &&
+        !persistCompanionProgression()) {
+      restoreCompanionProgression(before);
+      Serial.println("KITSU_WARN dream_memory=store_failed");
+    }
+    (void)minute;
+  }
   companionBleRefreshDirty = true;
   return true;
 }
@@ -6986,8 +8227,38 @@ bool playKitsu() {
   return true;
 }
 
+bool activityRuntimeBusy() {
+  const kitsu868::activities::ActivityPhase phase =
+      activitySuite.view(millis()).phase;
+  return phase == kitsu868::activities::ActivityPhase::Presenting ||
+      phase == kitsu868::activities::ActivityPhase::Playing ||
+      phase == kitsu868::activities::ActivityPhase::Result;
+}
+
+bool foregroundTransitionBlocked(const char* action) {
+  const char* reason = nullptr;
+  if (activeGame != ActiveGame::None) reason = "game";
+  else if (radioListening) reason = "radio";
+  else if (activityRuntimeBusy()) reason = "activity";
+  if (!reason) return false;
+  Serial.printf("KITSU_ERROR %s=busy_%s\n",
+                action ? action : "action", reason);
+  return true;
+}
+
+void cancelActivityForSleep() {
+  if (!activityRuntimeBusy()) return;
+  activitySuite.cancel();
+  activityRewarded = false;
+  activityPressAccepted = false;
+  if (activityStateReady && !persistActivityState()) {
+    Serial.println("KITSU_WARN activity_state=sleep_cancel_flush_failed");
+  }
+}
+
 void setSleeping(bool sleeping) {
   if (sleeping && !requireCompanion()) return;
+  if (sleeping) cancelActivityForSleep();
   wisp.sleeping = sleeping;
   const uint32_t now = millis();
   if (sleeping) {
@@ -7033,6 +8304,10 @@ void startGame(ActiveGame game) {
   }
   if (activeGame != ActiveGame::None) {
     Serial.println("KITSU_ERROR busy=game");
+    return;
+  }
+  if (activityRuntimeBusy()) {
+    Serial.println("KITSU_ERROR busy=activity");
     return;
   }
   if (ensureAwake()) persistProgress();
@@ -7145,6 +8420,123 @@ void tickGame() {
   rewardFinishedGame();
 }
 
+kitsu868::activities::CompanionModifier currentActivityModifier() {
+  return kitsu868::activities::companionModifier(
+      companionBrain.personality().kind, companionBrain.mood(companionVitals()));
+}
+
+bool startActivity(kitsu868::activities::ActivityKind kind, bool daily,
+                   bool ghost) {
+  if (!requireCompanion() || !activityStateReady) {
+    Serial.println("KITSU_ERROR activity=unavailable");
+    return false;
+  }
+  if (radioListening || activeGame != ActiveGame::None) {
+    Serial.println("KITSU_ERROR activity=busy");
+    return false;
+  }
+  if (ensureAwake()) persistProgress();
+  const uint32_t now = millis();
+  bool started = false;
+  if (daily || ghost) {
+    uint32_t day = 0U;
+    uint16_t minute = 0U;
+    if (!currentLocalDayMinute(day, minute, true)) {
+      Serial.println("KITSU_ERROR activity=clock_unavailable");
+      beginClockEditor();
+      return false;
+    }
+    const kitsu868::activities::DailyActivity challenge =
+        kitsu868::activities::proceduralDailyActivity(
+            day, companionBrain.deviceFingerprint());
+    if (daily) {
+      started = activitySuite.startDaily(
+          day, companionBrain.deviceFingerprint(), now,
+          currentActivityModifier());
+    } else {
+      started = activitySuite.startGhost(challenge.kind, now,
+                                          currentActivityModifier());
+      kind = challenge.kind;
+    }
+  } else {
+    const uint8_t difficulty = static_cast<uint8_t>(
+        1U + min<uint8_t>(4U, companionBrain.bondLevel() / 2U));
+    uint32_t seed = esp_random() ^ companionBrain.deviceFingerprint() ^ now;
+    if (seed == 0U) seed = 1U;
+    started = activitySuite.start(kind, now, seed, difficulty,
+                                  currentActivityModifier());
+  }
+  if (!started) {
+    Serial.printf("KITSU_ERROR activity=%s_start_failed\n",
+                  kitsu868::activities::activityName(kind));
+    return false;
+  }
+  activityRewarded = false;
+  activityPressAccepted = false;
+  if (!persistActivityState()) {
+    activitySuite.cancel();
+    Serial.println("KITSU_ERROR activity=storage_failed");
+    return false;
+  }
+  enterScreen(Screen::Activity);
+  Serial.printf("KITSU_ACTIVITY start=%s mode=%s\n",
+                kitsu868::activities::activityName(kind),
+                daily ? "daily" : ghost ? "ghost" : "normal");
+  return true;
+}
+
+void leaveActivity() {
+  const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+  activitySuite.cancel();
+  activityRewarded = false;
+  activityPressAccepted = false;
+  if (activityStateReady && !persistActivityMutation(before, "cancel")) {
+    return;
+  }
+  enterScreen(Screen::GameMenu);
+}
+
+void rewardFinishedActivity(const kitsu868::activities::ActivityView& view) {
+  if (activityRewarded ||
+      view.phase != kitsu868::activities::ActivityPhase::Result) {
+    return;
+  }
+  activityRewarded = true;
+  const uint16_t maximum = max<uint16_t>(1U, view.maximumScore);
+  const uint8_t percent = static_cast<uint8_t>(min<uint32_t>(
+      100U, (static_cast<uint32_t>(view.score) * 100U + maximum / 2U) /
+                maximum));
+  const bool perfect = view.score >= maximum;
+  wisp.energy = wisp.energy > 3U ? wisp.energy - 3U : 1U;
+  wisp.curiosity = min<uint8_t>(100U, wisp.curiosity + 4U);
+  wisp.affection = min<uint8_t>(100U,
+      wisp.affection + static_cast<uint8_t>(perfect ? 4U : 2U));
+  const kitsu868::BrainEventResult result =
+      companionBrain.onGame(percent, perfect);
+  logBrainResult(result);
+  recordSessionGoal(kitsu868::fun::SessionActivity::Game);
+  recordCompanionAction(kitsu868::dialogue::Action::Play);
+  lastMemory = String(kitsu868::activities::activityName(view.kind)) +
+      " scored " + String(view.score) + ".";
+  if (!saveState()) Serial.println("KITSU_WARN activity_reward=store_failed");
+  Serial.printf("KITSU_ACTIVITY finish=%s score=%u/%u\n",
+                kitsu868::activities::activityName(view.kind), view.score,
+                maximum);
+}
+
+void tickActivity(uint32_t now) {
+  if (!activityStateReady) return;
+  const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+  if (!rawButton && !stableButton) activitySuite.tick(now);
+  const kitsu868::activities::ActivityView view = activitySuite.view(now);
+  rewardFinishedActivity(view);
+  const kitsu868::activities::ActivityState after = activitySuite.snapshot();
+  if (memcmp(&before, &after, sizeof(after)) != 0 &&
+      !persistActivityState()) {
+    Serial.println("KITSU_WARN activity_state=flush_failed");
+  }
+}
+
 void scheduleRareReaction(uint32_t now) {
   nextRareReactionAt = now + 20UL * 60UL * 1000UL +
       (esp_random() % (20UL * 60UL * 1000UL));
@@ -7156,9 +8548,14 @@ void tickFun(uint32_t now) {
   }
   if (nextRareReactionAt == 0U) scheduleRareReaction(now);
   if (static_cast<int32_t>(now - nextRareReactionAt) < 0) return;
+  uint32_t quietDay = 0U;
+  uint16_t quietMinute = 0U;
+  const bool quiet = activityStateReady &&
+      currentLocalDayMinute(quietDay, quietMinute, true) &&
+      activitySuite.quietAt(quietMinute);
   if ((companionBrain.unlockMask() & kitsu868::UnlockRareReaction) == 0U ||
       screen != Screen::Pet || wisp.sleeping || radioListening ||
-      activeGame != ActiveGame::None || momentView.active) {
+      activeGame != ActiveGame::None || momentView.active || quiet) {
     nextRareReactionAt = now + 5UL * 60UL * 1000UL;
     return;
   }
@@ -7180,11 +8577,203 @@ kitsu868::expedition::ClockSample expeditionClock(uint32_t now) {
   kitsu868::expedition::ClockSample sample{};
   sample.bootId = wisp.boots == 0U ? 1U : wisp.boots;
   sample.monotonicMillis = now;
-  if (meshTransport.timeValid()) {
+  kitsu868::timekeeping::ClockReading reading{};
+  if (clockReading(now, reading, true)) {
     sample.unixValid = 1U;
-    sample.unixSeconds = meshTransport.currentEpoch();
+    sample.unixSeconds = reading.unixSeconds;
   }
   return sample;
+}
+
+kitsu868::adventure::ClockSample adventureClock(uint32_t now) {
+  kitsu868::adventure::ClockSample sample{};
+  kitsu868::timekeeping::ClockReading reading{};
+  if (!clockReading(now, reading, true)) return sample;
+  const int64_t localSeconds = static_cast<int64_t>(reading.unixSeconds) +
+      static_cast<int64_t>(reading.utcOffsetMinutes) * 60LL;
+  if (localSeconds < 0) return sample;
+  sample.unixSeconds = reading.unixSeconds;
+  sample.dayId = static_cast<uint32_t>(localSeconds / 86400LL);
+  sample.minuteOfDay = static_cast<uint16_t>(
+      (localSeconds % 86400LL) / 60LL);
+  sample.trusted = 1U;
+  return sample;
+}
+
+bool persistAdventureMutation(
+    const kitsu868::adventure::ProgressState& before,
+    const char* operation) {
+  if (persistAdventureProgression()) return true;
+  (void)adventureProgression.restore(before);
+  Serial.printf("KITSU_ERROR adventure=%s_store_failed\n",
+                operation ? operation : "state");
+  return false;
+}
+
+bool beginAdventureRoute(bool commuteSafe = false) {
+  if (!adventureProgressionReady || !requireCompanion()) return false;
+  kitsu868::adventure::RouteRequest request{};
+  request.terrain = adventureTerrain;
+  request.objective = adventureObjective;
+  request.risk = adventureRisk;
+  request.personality = companionBrain.personality().kind;
+  request.weather = adventureWeather;
+  request.baseTargetSteps = 1000U;
+  request.commuteSafe = commuteSafe ? 1U : 0U;
+  const kitsu868::adventure::ProgressState before =
+      adventureProgression.snapshot();
+  const kitsu868::adventure::Status status = adventureProgression.begin(
+      request, adventureClock(millis()),
+      esp_random() ^ companionBrain.deviceFingerprint());
+  if (status != kitsu868::adventure::Status::Ok) {
+    Serial.printf("KITSU_ADVENTURE start=rejected error=%s\n",
+                  kitsu868::adventure::statusName(status));
+    if (status == kitsu868::adventure::Status::InvalidClock) {
+      beginClockEditor();
+    }
+    return false;
+  }
+  if (!persistAdventureMutation(before, "start")) return false;
+  momentView.active = true;
+  momentView.line1 = "ROUTE STARTED";
+  momentView.line2 = "TAKE IT WITH YOU";
+  momentView.until = millis() + MOMENT_DISPLAY_MS;
+  Serial.printf("KITSU_ADVENTURE start=ok route=%lu terrain=%s objective=%s risk=%s\n",
+                static_cast<unsigned long>(adventureProgression.view().routeId),
+                terrainLabel(adventureTerrain), objectiveLabel(adventureObjective),
+                riskLabel(adventureRisk));
+  adventureMenuIndex = 4U;
+  return true;
+}
+
+bool applyAdventureDecision(kitsu868::adventure::MidDecision decision) {
+  const kitsu868::adventure::ProgressState before =
+      adventureProgression.snapshot();
+  const kitsu868::adventure::Status status =
+      adventureProgression.decide(decision);
+  if (status != kitsu868::adventure::Status::Ok) {
+    Serial.printf("KITSU_ADVENTURE decision=rejected error=%s\n",
+                  kitsu868::adventure::statusName(status));
+    return false;
+  }
+  return persistAdventureMutation(before, "decision");
+}
+
+void executeAdventureMenuItem() {
+  const kitsu868::expedition::ExpeditionView expedition = expeditionCore.view();
+  if (expedition.phase == kitsu868::expedition::Phase::Traveling) {
+    enterScreen(Screen::Menu);
+    return;
+  }
+  if (expedition.phase == kitsu868::expedition::Phase::Ready) {
+    const char* error = nullptr;
+    if (!claimExpedition(error)) {
+      Serial.printf("KITSU_ERROR expedition=%s\n", error ? error : "claim");
+    }
+    return;
+  }
+  const kitsu868::adventure::RouteView route = adventureProgression.view();
+  if (route.phase == kitsu868::adventure::RoutePhase::Returned) {
+    const kitsu868::adventure::ProgressState before =
+        adventureProgression.snapshot();
+    const kitsu868::adventure::Status status =
+        adventureProgression.acknowledge(route.routeId);
+    if (status == kitsu868::adventure::Status::Ok &&
+        persistAdventureMutation(before, "acknowledge")) {
+      Serial.printf("KITSU_ADVENTURE acknowledged=%lu\n",
+                    static_cast<unsigned long>(route.routeId));
+    }
+    return;
+  }
+  const char* error = nullptr;
+  if (adventureMenuIndex <= 2U) {
+    const kitsu868::expedition::Duration duration =
+        static_cast<kitsu868::expedition::Duration>(adventureMenuIndex);
+    if (!startExpedition(duration, error)) {
+      Serial.printf("KITSU_ERROR expedition=%s\n", error ? error : "start");
+      if (error && strcmp(error, "clock_unavailable") == 0) {
+        beginClockEditor();
+      }
+    }
+  } else if (adventureMenuIndex == 3U) {
+    (void)beginAdventureRoute(false);
+  } else if (adventureMenuIndex == 4U) {
+    const kitsu868::adventure::ProgressState before =
+        adventureProgression.snapshot();
+    const kitsu868::adventure::Status status =
+        adventureProgression.addSteps(250U);
+    if (status == kitsu868::adventure::Status::Ok) {
+      if (adventureProgression.view().progressPercent >= 100U) {
+        (void)adventureProgression.finish(adventureClock(millis()));
+      }
+      (void)persistAdventureMutation(before, "steps");
+    } else {
+      Serial.printf("KITSU_ADVENTURE steps=rejected error=%s\n",
+                    kitsu868::adventure::statusName(status));
+    }
+  } else if (adventureMenuIndex >= 5U && adventureMenuIndex <= 8U) {
+    const kitsu868::adventure::MidDecision decision =
+        static_cast<kitsu868::adventure::MidDecision>(
+            adventureMenuIndex - 5U);
+    if (applyAdventureDecision(decision) &&
+        decision == kitsu868::adventure::MidDecision::ReturnEarly) {
+      const kitsu868::adventure::ProgressState beforeFinish =
+          adventureProgression.snapshot();
+      const kitsu868::adventure::Status finishStatus =
+          adventureProgression.finish(adventureClock(millis()));
+      if (finishStatus == kitsu868::adventure::Status::Ok ||
+          finishStatus == kitsu868::adventure::Status::RescueRequired) {
+        (void)persistAdventureMutation(beforeFinish, "finish");
+      }
+    }
+  } else if (adventureMenuIndex == 9U) {
+    adventureTerrain = static_cast<kitsu868::adventure::Terrain>(
+        (static_cast<uint8_t>(adventureTerrain) + 1U) %
+        static_cast<uint8_t>(kitsu868::adventure::Terrain::Count));
+  } else if (adventureMenuIndex == 10U) {
+    adventureObjective = static_cast<kitsu868::adventure::Objective>(
+        (static_cast<uint8_t>(adventureObjective) + 1U) %
+        static_cast<uint8_t>(kitsu868::adventure::Objective::Count));
+  } else if (adventureMenuIndex == 11U) {
+    adventureRisk = static_cast<kitsu868::adventure::Risk>(
+        (static_cast<uint8_t>(adventureRisk) + 1U) %
+        static_cast<uint8_t>(kitsu868::adventure::Risk::Count));
+  } else if (adventureMenuIndex == 12U) {
+    adventureWeather = static_cast<kitsu868::adventure::Weather>(
+        (static_cast<uint8_t>(adventureWeather) + 1U) %
+        static_cast<uint8_t>(kitsu868::adventure::Weather::Count));
+  } else if (adventureMenuIndex == 13U) {
+    kitsu868::adventure::JournalEntry entry{};
+    if (adventureProgression.journalNewest(0U, entry)) {
+      kitsu868::adventure::TextPostcard postcard{};
+      if (kitsu868::adventure::postcardForId(entry.postcardId, postcard)) {
+        momentView.active = true;
+        momentView.line1 = postcard.title;
+        momentView.line2 = postcard.line;
+        momentView.until = millis() + MOMENT_DISPLAY_MS;
+      } else {
+        momentView.active = true;
+        momentView.line1 = "ROUTE REPORT";
+        momentView.line2 = "NO POSTCARD";
+        momentView.until = millis() + MOMENT_DISPLAY_MS;
+      }
+      enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
+      Serial.printf("KITSU_ADVENTURE_JOURNAL route=%lu day=%lu outcome=%u terrain=%u objective=%u\n",
+                    static_cast<unsigned long>(entry.routeId),
+                    static_cast<unsigned long>(entry.dayId), entry.outcome,
+                    entry.terrain, entry.objective);
+    } else {
+      Serial.println("KITSU_ADVENTURE_JOURNAL empty=true");
+      momentView.active = true;
+      momentView.line1 = "NO REPORTS";
+      momentView.line2 = "TRY A ROUTE";
+      momentView.until = millis() + MOMENT_DISPLAY_MS;
+      enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
+    }
+  } else {
+    enterScreen(Screen::Menu);
+  }
+  screenEnteredAt = millis();
 }
 
 bool startExpedition(kitsu868::expedition::Duration duration,
@@ -7247,6 +8836,42 @@ bool claimExpedition(const char*& error) {
   if (!kitsu868::expedition::reportForIndex(readyView.reportIndex, report)) {
     error = "expedition_report_invalid";
     return false;
+  }
+
+  if (adventureProgressionReady) {
+    const kitsu868::adventure::ProgressState adventureBefore =
+        adventureProgression.snapshot();
+    const kitsu868::adventure::Status adventureStatus =
+        adventureProgression.applyExpedition(hooks);
+    if ((adventureStatus == kitsu868::adventure::Status::Ok ||
+         adventureStatus == kitsu868::adventure::Status::Duplicate) &&
+        !persistAdventureProgression()) {
+      (void)adventureProgression.restore(adventureBefore);
+      error = "adventure_progress_store_failed";
+      return false;
+    }
+  }
+  if (companionProgressionReady &&
+      lastClaimedExpeditionId != hooks.expeditionId) {
+    uint32_t day = 0U;
+    uint16_t minute = 0U;
+    uint8_t progressionBefore[kitsu868::progression::kSnapshotCapacity]{};
+    const bool progressionCaptured =
+        captureCompanionProgression(progressionBefore);
+    const bool memoryClockReady =
+        currentLocalDayMinute(day, minute, true);
+    if (memoryClockReady && !progressionCaptured) {
+      error = "expedition_memory_snapshot_failed";
+      return false;
+    }
+    if (memoryClockReady &&
+        companionProgression.rememberExpedition(
+            readyView.reportIndex, day) &&
+        !persistCompanionProgression()) {
+      restoreCompanionProgression(progressionBefore);
+      error = "expedition_memory_store_failed";
+      return false;
+    }
   }
 
   if (lastClaimedExpeditionId != hooks.expeditionId) {
@@ -7416,8 +9041,16 @@ void stopListening() {
 
 bool startListening(uint32_t durationMs) {
   if (!requireCompanion()) return false;
+  if (partyRuntimeBusy() || partyScanActive || partyJoinRequested) {
+    Serial.println("KITSU_ERROR busy=party");
+    return false;
+  }
   if (activeGame != ActiveGame::None) {
     Serial.println("KITSU_ERROR busy=game");
+    return false;
+  }
+  if (activityRuntimeBusy()) {
+    Serial.println("KITSU_ERROR busy=activity");
     return false;
   }
   if (ensureAwake()) persistProgress();
@@ -7466,24 +9099,37 @@ void executeMenuItem() {
       enterScreen(Screen::GameMenu);
       break;
     case 4:
+      adventureMenuIndex =
+          (adventureProgression.view().phase ==
+               kitsu868::adventure::RoutePhase::Active ||
+           adventureProgression.view().phase ==
+               kitsu868::adventure::RoutePhase::AwaitingRescue)
+              ? 4U
+              : 0U;
+      enterScreen(Screen::Adventure);
+      break;
+    case 5:
       fieldGuideIndex = 0U;
       enterScreen(Screen::FieldGuide);
       break;
-    case 5:
+    case 6:
       enterScreen(Screen::Goals);
       break;
-    case 6:
+    case 7:
       inboxSelection = 0;
       markChatJournalRead();
       enterScreen(Screen::Inbox);
       break;
-    case 7: startListening(); break;
-    case 8:
+    case 8: startListening(); break;
+    case 9:
+      beginClockEditor();
+      break;
+    case 10:
       if (!requireCompanion()) break;
       setSleeping(true);
       enterScreen(Screen::Sleep);
       break;
-    case 9:
+    case 11:
       statusPage = 0;
       sampleBattery(true);
       enterScreen(Screen::Status);
@@ -7521,12 +9167,22 @@ void executeGameMenuItem() {
   if (gameMenuIndex == 0) startGame(ActiveGame::SignalCatch);
   else if (gameMenuIndex == 1) startGame(ActiveGame::PounceFetch);
   else if (gameMenuIndex == 2) startGame(ActiveGame::EchoBeat);
+  else if (gameMenuIndex >= 3U && gameMenuIndex <= 7U) {
+    startActivity(static_cast<kitsu868::activities::ActivityKind>(
+                      gameMenuIndex - 2U), false, false);
+  } else if (gameMenuIndex == 8U) {
+    startActivity(kitsu868::activities::ActivityKind::MorseSignal, true,
+                  false);
+  } else if (gameMenuIndex == 9U) {
+    startActivity(kitsu868::activities::ActivityKind::MorseSignal, false,
+                  true);
+  }
   else enterScreen(Screen::Menu);
 }
 
 void handleShortPress(uint32_t actionAt) {
   switch (screen) {
-    case Screen::Pet: petWisp(); break;
+    case Screen::Pet: executeQuickAction(); break;
     case Screen::Menu:
       menuIndex = (menuIndex + 1) % (sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]));
       screenEnteredAt = millis();
@@ -7559,13 +9215,13 @@ void handleShortPress(uint32_t actionAt) {
         echoBeatGame.tap(actionAt);
       }
       break;
-    case Screen::Listen: stopListening(); break;
+    case Screen::Listen: stopListeningSafely(); break;
     case Screen::Sleep:
       setSleeping(false);
       enterScreen(Screen::Pet);
       break;
     case Screen::Status:
-      statusPage = (statusPage + 1U) % 5U;
+      statusPage = (statusPage + 1U) % 6U;
       screenEnteredAt = millis();
       break;
     case Screen::FieldGuide:
@@ -7576,6 +9232,52 @@ void handleShortPress(uint32_t actionAt) {
     case Screen::Goals:
       screenEnteredAt = millis();
       break;
+    case Screen::Clock:
+      (void)clockEditor.shortPress();
+      screenEnteredAt = millis();
+      break;
+    case Screen::Adventure:
+      if (expeditionCore.view().phase ==
+              kitsu868::expedition::Phase::Traveling ||
+          expeditionCore.view().phase == kitsu868::expedition::Phase::Ready ||
+          adventureProgression.view().phase ==
+              kitsu868::adventure::RoutePhase::Returned) {
+        enterScreen(Screen::Menu);
+      } else {
+        const kitsu868::adventure::RoutePhase routePhase =
+            adventureProgression.view().phase;
+        if (routePhase == kitsu868::adventure::RoutePhase::Active ||
+            routePhase == kitsu868::adventure::RoutePhase::AwaitingRescue) {
+          adventureMenuIndex = adventureMenuIndex < 4U ||
+                                   adventureMenuIndex >= 8U
+                               ? 4U
+                               : static_cast<uint8_t>(adventureMenuIndex + 1U);
+        } else {
+          adventureMenuIndex = static_cast<uint8_t>(
+              (adventureMenuIndex + 1U) %
+              (sizeof(ADVENTURE_ITEMS) / sizeof(ADVENTURE_ITEMS[0])));
+        }
+      }
+      screenEnteredAt = millis();
+      break;
+    case Screen::Activity: {
+      const kitsu868::activities::ActivityView view =
+          activitySuite.view(millis());
+      if (view.phase == kitsu868::activities::ActivityPhase::Finished ||
+          view.phase == kitsu868::activities::ActivityPhase::Idle) {
+        leaveActivity();
+      } else {
+        const kitsu868::activities::ActivityState before =
+            activitySuite.snapshot();
+        const kitsu868::activities::InputResult result =
+            activitySuite.tap(actionAt);
+        if (result != kitsu868::activities::InputResult::Ignored &&
+            result != kitsu868::activities::InputResult::Invalid) {
+          (void)persistActivityMutation(before, "tap");
+        }
+      }
+      break;
+    }
     case Screen::WildEncounter: dismissWildEncounter(); break;
     case Screen::PairPhone:
       companionBle.closePairing();
@@ -7619,7 +9321,7 @@ void handleLongPress() {
       break;
     case Screen::GameMenu: executeGameMenuItem(); break;
     case Screen::Game: leaveGame(gameRewarded); break;
-    case Screen::Listen: stopListening(); break;
+    case Screen::Listen: stopListeningSafely(); break;
     case Screen::Sleep:
       setSleeping(false);
       enterScreen(Screen::Pet);
@@ -7629,6 +9331,17 @@ void handleLongPress() {
     case Screen::Goals:
       enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
       break;
+    case Screen::Clock: {
+      const kitsu868::timekeeping::ClockEditorEvent event =
+          clockEditor.longPress();
+      if (event == kitsu868::timekeeping::ClockEditorEvent::CommitRequested) {
+        (void)commitClockEditor();
+      }
+      screenEnteredAt = millis();
+      break;
+    }
+    case Screen::Adventure: executeAdventureMenuItem(); break;
+    case Screen::Activity: leaveActivity(); break;
     case Screen::WildEncounter: dismissWildEncounter(); break;
     case Screen::PairPhone: {
       const uint32_t now = millis();
@@ -7696,12 +9409,35 @@ void pollButton() {
     wakeDisplay();
     buttonHoldConsumed = false;
     buttonPressedAt = millis();
+    if (screen == Screen::Activity) {
+      const kitsu868::activities::ActivityState before =
+          activitySuite.snapshot();
+      const kitsu868::activities::InputResult result =
+          activitySuite.press(buttonPressedAt);
+      activityPressAccepted =
+          result == kitsu868::activities::InputResult::Accepted;
+      if (result != kitsu868::activities::InputResult::Ignored &&
+          result != kitsu868::activities::InputResult::Invalid &&
+          !persistActivityMutation(before, "press")) {
+        activityPressAccepted = false;
+      }
+    }
     Serial.println("KITSU_BUTTON pressed");
   } else {
     const uint32_t duration = millis() - buttonPressedAt;
     Serial.printf("KITSU_BUTTON released duration_ms=%lu\n",
                   static_cast<unsigned long>(duration));
-    if (buttonHoldConsumed) {
+    if (screen == Screen::Activity && activityPressAccepted) {
+      const kitsu868::activities::ActivityState before =
+          activitySuite.snapshot();
+      const kitsu868::activities::InputResult result =
+          activitySuite.release(millis());
+      activityPressAccepted = false;
+      if (result != kitsu868::activities::InputResult::Ignored &&
+          result != kitsu868::activities::InputResult::Invalid) {
+        (void)persistActivityMutation(before, "release");
+      }
+    } else if (buttonHoldConsumed) {
       buttonHoldConsumed = false;
     } else if (duration >= BUTTON_HOLD_MS) {
       handleLongPress();
@@ -7765,17 +9501,54 @@ bool partyPhaseInProgress(kitsu868::party::SessionPhase phase) {
       partyPhaseRunning(phase);
 }
 
+bool modePartyHostInProgress(kitsu868::party_modes::HostPhase phase) {
+  using kitsu868::party_modes::HostPhase;
+  return phase == HostPhase::Lobby || phase == HostPhase::Active;
+}
+
+bool modePartyGuestInProgress(
+    kitsu868::party_modes::ParticipantPhase phase) {
+  using kitsu868::party_modes::ParticipantPhase;
+  return phase == ParticipantPhase::Observed ||
+      phase == ParticipantPhase::Joining || phase == ParticipantPhase::Lobby ||
+      phase == ParticipantPhase::Active;
+}
+
 bool partyRuntimeBusy() {
-  return partyPhaseInProgress(static_cast<kitsu868::party::SessionPhase>(
+  return partyScanActive || partyJoinRequested || partyWelcomeAccepted ||
+      modePartyScanActive || modePartyJoinRequested ||
+      modePartyAutoReadyPending ||
+      partyPhaseInProgress(static_cast<kitsu868::party::SessionPhase>(
              partyHost.state().phase)) ||
       partyPhaseInProgress(static_cast<kitsu868::party::SessionPhase>(
-             partyParticipant.state().phase));
+             partyParticipant.state().phase)) ||
+      modePartyHostInProgress(
+          static_cast<kitsu868::party_modes::HostPhase>(
+              modePartyHost.state().phase)) ||
+      modePartyGuestInProgress(
+          static_cast<kitsu868::party_modes::ParticipantPhase>(
+              modePartyParticipant.state().phase));
 }
 
 void clearPartyReplay() {
   partyReplayPacket = kitsu868::party::Packet{};
   partyReplayRemaining = 0U;
   partyReplayAt = 0U;
+}
+
+void clearModePartyReplay() {
+  modePartyReplayPacket = kitsu868::party_modes::Packet{};
+  modePartyReplayRemaining = 0U;
+  modePartyReplayAt = 0U;
+}
+
+void resetModePartyRuntimeView() {
+  modePartyScanActive = false;
+  modePartyJoinRequested = false;
+  modePartyAutoReadyPending = false;
+  lastModePartyBeaconTxAt = 0U;
+  lastModePartyTxAt = 0U;
+  clearModePartyReplay();
 }
 
 void resetPartyRuntimeView() {
@@ -7866,6 +9639,9 @@ bool startPartyScan(const char*& error) {
     error = "party_radio_unavailable";
     return false;
   }
+  modePartyHost.reset();
+  modePartyParticipant.reset();
+  resetModePartyRuntimeView();
   partyHost.reset();
   partyParticipant.reset();
   resetPartyRuntimeView();
@@ -7891,6 +9667,9 @@ bool startPartyHost(const char*& error) {
     error = "party_radio_unavailable";
     return false;
   }
+  modePartyHost.reset();
+  modePartyParticipant.reset();
+  resetModePartyRuntimeView();
   partyHost.reset();
   partyParticipant.reset();
   resetPartyRuntimeView();
@@ -7965,6 +9744,7 @@ bool joinObservedParty(uint16_t hostUid, uint32_t sessionNonce,
   // failed send leaves the observed hotspot selectable for a retry.
   lastPartyBeaconAt = 0U;
   partyScanActive = false;
+  modePartyScanActive = false;
   partyJoinRequested = true;
   partyWelcomeAccepted = false;
   partyRewardAvailable = false;
@@ -8079,6 +9859,416 @@ bool choosePartySignal(kitsu868::party::SignalChoice choice,
   return true;
 }
 
+bool parseModePartyName(const String& name,
+                        kitsu868::party_modes::Mode& mode) {
+  using kitsu868::party_modes::Mode;
+  if (name == "signal" || name == "hunt") mode = Mode::SignalHunt;
+  else if (name == "triangulation" || name == "tri") {
+    mode = Mode::Triangulation;
+  } else if (name == "hotcold" || name == "hot-cold") {
+    mode = Mode::HotCold;
+  } else if (name == "hide" || name == "hide-seek") {
+    mode = Mode::HideAndSeek;
+  } else if (name == "sync" || name == "rhythm") {
+    mode = Mode::SyncRhythm;
+  } else if (name == "echo") {
+    mode = Mode::CoopEcho;
+  } else if (name == "relay") {
+    mode = Mode::AsyncRelay;
+  } else if (name == "rare") {
+    mode = Mode::RareEncounter;
+  } else if (name == "trail") {
+    mode = Mode::SharedTrail;
+  } else if (name == "story" || name == "vote") {
+    mode = Mode::StoryVote;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool sendModePartyPacketNow(const kitsu868::party_modes::Packet& packet) {
+  uint8_t wire[kitsu868::party_modes::kWireBytes]{};
+  size_t wireBytes = 0U;
+  const kitsu868::party_modes::Status encoded =
+      kitsu868::party_modes::encode(packet, wire, sizeof(wire), &wireBytes);
+  if (encoded != kitsu868::party_modes::Status::Ok) {
+    Serial.printf("KITSU_MODE_PARTY_TX encode=%s type=%u\n",
+                  kitsu868::party_modes::statusName(encoded),
+                  static_cast<unsigned>(packet.type));
+    return false;
+  }
+  lastModePartyTxAt = millis();
+  const kitsu868::mesh::TransportStatus status =
+      meshTransport.sendNearbyRadioFrame(meshSettings, wire, wireBytes, true);
+  memset(wire, 0, sizeof(wire));
+  if (status != kitsu868::mesh::TransportStatus::Ok) {
+    Serial.printf("KITSU_MODE_PARTY_TX result=%s type=%u\n",
+                  kitsu868::mesh::transportStatusName(status),
+                  static_cast<unsigned>(packet.type));
+    return false;
+  }
+  Serial.printf("KITSU_MODE_PARTY_TX result=ok type=%u sequence=%u\n",
+                static_cast<unsigned>(packet.type), packet.sequence);
+  return true;
+}
+
+void armModePartyReplay(const kitsu868::party_modes::Packet& packet) {
+  if (packet.type == kitsu868::party_modes::PacketType::Beacon ||
+      PARTY_PACKET_REPLAYS == 0U) {
+    return;
+  }
+  modePartyReplayPacket = packet;
+  modePartyReplayRemaining = PARTY_PACKET_REPLAYS;
+  modePartyReplayAt = millis() + PARTY_REPLAY_INTERVAL_MS;
+}
+
+bool sendModePartyPacket(const kitsu868::party_modes::Packet& packet,
+                         bool replay) {
+  if (!sendModePartyPacketNow(packet)) return false;
+  if (replay) armModePartyReplay(packet);
+  return true;
+}
+
+void printModePartyPrompt(kitsu868::party_modes::Mode mode, uint32_t seed,
+                          uint8_t round, bool privatePrompt) {
+  const kitsu868::party_modes::RoundPrompt prompt =
+      kitsu868::party_modes::promptFor(mode, seed, round);
+  Serial.printf("KITSU_MODE_PARTY prompt=%s round=%u input=",
+                kitsu868::party_modes::modeName(mode), round);
+  using kitsu868::party_modes::Mode;
+  switch (mode) {
+    case Mode::Triangulation:
+    case Mode::HotCold:
+      Serial.println("rssi_-140_to_0");
+      break;
+    case Mode::HideAndSeek:
+      if (privatePrompt) {
+        Serial.printf("slot_0_to_7 hidden=%u\n", prompt.hideSlot);
+      } else {
+        Serial.println("slot_0_to_7");
+      }
+      break;
+    case Mode::SyncRhythm:
+      Serial.printf("tap_offset_ms_0_to_2000 perfect=%u\n",
+                    prompt.syncPerfectMs);
+      break;
+    case Mode::CoopEcho:
+      Serial.printf("bit_pattern beats=%u pattern=%u\n", prompt.echoBeats,
+                    prompt.echoPattern);
+      break;
+    case Mode::AsyncRelay:
+    case Mode::RareEncounter:
+      Serial.println("score_0_to_1000");
+      break;
+    case Mode::SharedTrail:
+      Serial.println("misses_0_to_20");
+      break;
+    case Mode::StoryVote:
+      Serial.println("choice_0_to_2");
+      break;
+    case Mode::SignalHunt:
+    case Mode::Count:
+      Serial.println("unsupported");
+      break;
+  }
+}
+
+bool startModePartyScan(const char*& error) {
+  error = nullptr;
+  if (partyRuntimeBusy()) {
+    error = "party_busy";
+    return false;
+  }
+  if (!activatePartyListening()) {
+    error = "party_radio_unavailable";
+    return false;
+  }
+  partyHost.reset();
+  partyParticipant.reset();
+  resetPartyRuntimeView();
+  modePartyHost.reset();
+  modePartyParticipant.reset();
+  resetModePartyRuntimeView();
+  modePartyScanActive = true;
+  lastMemory = "Scanning for multiplayer hotspots.";
+  companionBleRefreshDirty = true;
+  Serial.println("KITSU_MODE_PARTY scan=started");
+  return true;
+}
+
+bool startModePartyHost(kitsu868::party_modes::Mode mode,
+                        const char*& error) {
+  error = nullptr;
+  if (mode == kitsu868::party_modes::Mode::SignalHunt) {
+    return startPartyHost(error);
+  }
+  if (partyRuntimeBusy()) {
+    error = "party_busy";
+    return false;
+  }
+  const uint16_t selfUid = ownUidSuffix();
+  if (selfUid == 0U) {
+    error = "party_identity_unavailable";
+    return false;
+  }
+  if (!activatePartyListening()) {
+    error = "party_radio_unavailable";
+    return false;
+  }
+  partyHost.reset();
+  partyParticipant.reset();
+  resetPartyRuntimeView();
+  modePartyHost.reset();
+  modePartyParticipant.reset();
+  resetModePartyRuntimeView();
+  const uint32_t sessionNonce =
+      nonZeroPartyEntropy(UINT32_C(0x4D38534E));
+  const uint32_t seed =
+      nonZeroPartyEntropy(sessionNonce ^ UINT32_C(0x4D4F4445));
+  const kitsu868::party_modes::Status status = modePartyHost.start(
+      selfUid, sessionNonce, mode, seed, millis(),
+      PARTY_LOBBY_WINDOW_SECONDS, PARTY_ROUND_WINDOW_SECONDS);
+  if (status != kitsu868::party_modes::Status::Ok ||
+      modePartyHost.setHostReady(true) !=
+          kitsu868::party_modes::Status::Ok) {
+    modePartyHost.reset();
+    error = "party_host_failed";
+    Serial.printf("KITSU_MODE_PARTY host=%s\n",
+                  kitsu868::party_modes::statusName(status));
+    return false;
+  }
+  const uint32_t now = millis();
+  const kitsu868::party_modes::HostState before = modePartyHost.snapshot();
+  kitsu868::party_modes::Packet beacon{};
+  const kitsu868::party_modes::Status beaconStatus =
+      modePartyHost.makeBeacon(now, beacon);
+  lastModePartyBeaconTxAt = now;
+  if (beaconStatus == kitsu868::party_modes::Status::Ok &&
+      !sendModePartyPacket(beacon, false)) {
+    (void)modePartyHost.restore(before);
+  }
+  lastMemory = String("Party mode opened: ") +
+      kitsu868::party_modes::modeName(mode);
+  companionBleRefreshDirty = true;
+  Serial.printf("KITSU_MODE_PARTY host=started mode=%s nonce=%lu ready=true\n",
+                kitsu868::party_modes::modeName(mode),
+                static_cast<unsigned long>(sessionNonce));
+  return true;
+}
+
+bool startRotatingModePartyHost(const char*& error) {
+  uint32_t day = 0U;
+  uint16_t minute = 0U;
+  if (!currentLocalDayMinute(day, minute, true)) {
+    error = "clock_unavailable";
+    return false;
+  }
+  (void)minute;
+  const kitsu868::party_modes::Mode mode =
+      kitsu868::party_modes::rotatingMode(
+          day, companionBrain.deviceFingerprint());
+  return startModePartyHost(mode, error);
+}
+
+bool startAllPartyScans(const char*& error) {
+  if (!startModePartyScan(error)) return false;
+  // A serial-only guest cannot know which protocol a nearby host selected.
+  // One radio listen window therefore admits both P8 Signal Hunt and M8 mode
+  // beacons; joining either one closes the other discovery path.
+  partyScanActive = true;
+  lastMemory = "Scanning for every party hotspot.";
+  Serial.println("KITSU_PARTY scan=all_protocols");
+  return true;
+}
+
+bool joinObservedModeParty(const char*& error) {
+  error = nullptr;
+  const uint32_t now = millis();
+  const kitsu868::party_modes::ParticipantState before =
+      modePartyParticipant.snapshot();
+  if (static_cast<kitsu868::party_modes::ParticipantPhase>(before.phase) !=
+          kitsu868::party_modes::ParticipantPhase::Observed ||
+      before.deadlineMs == 0U ||
+      static_cast<int32_t>(now - before.deadlineMs) >= 0) {
+    error = "party_host_not_found";
+    return false;
+  }
+  if (!activatePartyListening()) {
+    error = "party_radio_unavailable";
+    return false;
+  }
+  kitsu868::party_modes::Packet request{};
+  const kitsu868::party_modes::Status status =
+      modePartyParticipant.makeJoinRequest(request);
+  if (status != kitsu868::party_modes::Status::Ok) {
+    error = "party_join_failed";
+    return false;
+  }
+  if (!sendModePartyPacket(request, true)) {
+    (void)modePartyParticipant.restore(before);
+    error = "party_send_failed";
+    return false;
+  }
+  modePartyScanActive = false;
+  partyScanActive = false;
+  modePartyJoinRequested = true;
+  lastMemory = "Multiplayer join request sent.";
+  Serial.printf("KITSU_MODE_PARTY join=requested host=%04X nonce=%lu\n",
+                before.hostUid,
+                static_cast<unsigned long>(before.sessionNonce));
+  return true;
+}
+
+bool setModePartyReady(bool ready, const char*& error) {
+  error = nullptr;
+  const kitsu868::party_modes::HostState host = modePartyHost.snapshot();
+  if (static_cast<kitsu868::party_modes::HostPhase>(host.phase) ==
+      kitsu868::party_modes::HostPhase::Lobby) {
+    const kitsu868::party_modes::Status status =
+        modePartyHost.setHostReady(ready);
+    if (status != kitsu868::party_modes::Status::Ok) {
+      error = "party_ready_failed";
+      return false;
+    }
+    Serial.printf("KITSU_MODE_PARTY ready=host value=%s\n",
+                  ready ? "true" : "false");
+    return true;
+  }
+  const kitsu868::party_modes::ParticipantState guest =
+      modePartyParticipant.snapshot();
+  if (static_cast<kitsu868::party_modes::ParticipantPhase>(guest.phase) !=
+      kitsu868::party_modes::ParticipantPhase::Lobby) {
+    error = "party_not_in_lobby";
+    return false;
+  }
+  kitsu868::party_modes::Packet packet{};
+  const kitsu868::party_modes::Status status =
+      modePartyParticipant.makeReady(ready, packet);
+  if (status != kitsu868::party_modes::Status::Ok) {
+    error = "party_ready_failed";
+    return false;
+  }
+  if (!sendModePartyPacket(packet, true)) {
+    (void)modePartyParticipant.restore(guest);
+    error = "party_send_failed";
+    return false;
+  }
+  modePartyAutoReadyPending = false;
+  Serial.printf("KITSU_MODE_PARTY ready=guest value=%s\n",
+                ready ? "true" : "false");
+  return true;
+}
+
+bool beginModeParty(const char*& error) {
+  error = nullptr;
+  const kitsu868::party_modes::HostState before = modePartyHost.snapshot();
+  if (static_cast<kitsu868::party_modes::HostPhase>(before.phase) !=
+      kitsu868::party_modes::HostPhase::Lobby) {
+    error = "party_not_hosting";
+    return false;
+  }
+  if (!modePartyHost.canStart()) {
+    error = "party_not_ready";
+    return false;
+  }
+  kitsu868::party_modes::Packet roundOpen{};
+  const kitsu868::party_modes::Status status =
+      modePartyHost.begin(millis(), roundOpen);
+  if (status != kitsu868::party_modes::Status::Ok) {
+    error = "party_start_failed";
+    return false;
+  }
+  if (!sendModePartyPacket(roundOpen, true)) {
+    (void)modePartyHost.restore(before);
+    error = "party_send_failed";
+    return false;
+  }
+  const kitsu868::party_modes::HostState active = modePartyHost.snapshot();
+  printModePartyPrompt(
+      static_cast<kitsu868::party_modes::Mode>(active.mode), active.seed,
+      active.currentRound, true);
+  lastMemory = "Multiplayer round started.";
+  return true;
+}
+
+bool parseModePartyContribution(long value,
+                                kitsu868::party_modes::Mode mode,
+                                kitsu868::party_modes::Contribution& out) {
+  using kitsu868::party_modes::Mode;
+  out = kitsu868::party_modes::Contribution{};
+  if (mode == Mode::Triangulation || mode == Mode::HotCold) {
+    if (value < -140L || value > 0L) return false;
+    out.signalRssi = static_cast<int16_t>(value);
+    return true;
+  }
+  long maximum = 1000L;
+  if (mode == Mode::HideAndSeek) maximum = 7L;
+  else if (mode == Mode::SyncRhythm) maximum = 2000L;
+  else if (mode == Mode::CoopEcho) maximum = UINT16_MAX;
+  else if (mode == Mode::SharedTrail) maximum = 20L;
+  else if (mode == Mode::StoryVote) maximum = 2L;
+  else if (mode == Mode::SignalHunt || mode == Mode::Count) return false;
+  if (value < 0L || value > maximum) return false;
+  out.value = static_cast<uint16_t>(value);
+  return true;
+}
+
+bool submitModePartyContribution(long value, const char*& error) {
+  error = nullptr;
+  const kitsu868::party_modes::HostState host = modePartyHost.snapshot();
+  if (static_cast<kitsu868::party_modes::HostPhase>(host.phase) ==
+      kitsu868::party_modes::HostPhase::Active) {
+    kitsu868::party_modes::Contribution contribution{};
+    const kitsu868::party_modes::Mode mode =
+        static_cast<kitsu868::party_modes::Mode>(host.mode);
+    if (!parseModePartyContribution(value, mode, contribution)) {
+      error = "party_contribution_invalid";
+      return false;
+    }
+    const kitsu868::party_modes::Status status =
+        modePartyHost.submitHostContribution(contribution);
+    if (status != kitsu868::party_modes::Status::Ok) {
+      error = kitsu868::party_modes::statusName(status);
+      return false;
+    }
+    Serial.printf("KITSU_MODE_PARTY contribute=host mode=%s round=%u value=%ld\n",
+                  kitsu868::party_modes::modeName(mode), host.currentRound,
+                  value);
+    return true;
+  }
+  const kitsu868::party_modes::ParticipantState guest =
+      modePartyParticipant.snapshot();
+  if (static_cast<kitsu868::party_modes::ParticipantPhase>(guest.phase) !=
+      kitsu868::party_modes::ParticipantPhase::Active) {
+    error = "party_not_running";
+    return false;
+  }
+  kitsu868::party_modes::Contribution contribution{};
+  const kitsu868::party_modes::Mode mode =
+      static_cast<kitsu868::party_modes::Mode>(guest.mode);
+  if (!parseModePartyContribution(value, mode, contribution)) {
+    error = "party_contribution_invalid";
+    return false;
+  }
+  kitsu868::party_modes::Packet packet{};
+  const kitsu868::party_modes::Status status =
+      modePartyParticipant.makeContribution(contribution, packet);
+  if (status != kitsu868::party_modes::Status::Ok) {
+    error = kitsu868::party_modes::statusName(status);
+    return false;
+  }
+  if (!sendModePartyPacket(packet, true)) {
+    (void)modePartyParticipant.restore(guest);
+    error = "party_send_failed";
+    return false;
+  }
+  Serial.printf("KITSU_MODE_PARTY contribute=guest mode=%s round=%u value=%ld\n",
+                kitsu868::party_modes::modeName(mode), guest.currentRound,
+                value);
+  return true;
+}
+
 void leavePartyHotspot() {
   const kitsu868::party::SessionPhase hostPhase =
       static_cast<kitsu868::party::SessionPhase>(partyHost.state().phase);
@@ -8090,13 +10280,34 @@ void leavePartyHotspot() {
       (void)sendPartyPacket(cancelled, false);
     }
   }
+  const kitsu868::party_modes::HostPhase modeHostPhase =
+      static_cast<kitsu868::party_modes::HostPhase>(
+          modePartyHost.state().phase);
+  if (modePartyHostInProgress(modeHostPhase)) {
+    kitsu868::party_modes::Packet cancelled{};
+    if (modePartyHost.cancel(cancelled) ==
+        kitsu868::party_modes::Status::Ok) {
+      (void)sendModePartyPacket(cancelled, false);
+    }
+  }
   partyHost.reset();
   partyParticipant.reset();
+  modePartyHost.reset();
+  modePartyParticipant.reset();
   resetPartyRuntimeView();
+  resetModePartyRuntimeView();
   if (radioListening) stopListening();
   lastMemory = "Party hotspot closed.";
   companionBleRefreshDirty = true;
   Serial.println("KITSU_PARTY leave=ok");
+}
+
+void stopListeningSafely() {
+  if (partyRuntimeBusy()) {
+    leavePartyHotspot();
+  } else {
+    stopListening();
+  }
 }
 
 void showPartyCompletion(const kitsu868::party::HuntResult& result,
@@ -8173,10 +10384,10 @@ void recordPartyReward(const kitsu868::party::HuntResult& result,
     return;
   }
   lastPartyRewardAttemptAt = now;
-  if (!meshTransport.timeValid()) return;
-  const uint32_t epoch = meshTransport.currentEpoch();
-  const uint32_t dayId = epoch / 86400UL;
-  if (epoch == 0U || dayId == 0U) return;
+  LocalClockSample rewardClock{};
+  if (!localClockSample(now, true, rewardClock)) return;
+  const uint32_t dayId = rewardClock.dayId;
+  const uint32_t epoch = rewardClock.epochSeconds;
 
   kitsu868::party::CompletedHuntReward completed{};
   completed.selfUid = ownUidSuffix();
@@ -8216,6 +10427,82 @@ void recordPartyReward(const kitsu868::party::HuntResult& result,
   lastPartyReward = outcome;
   partyRewardAvailable = true;
   lastPartyRewardSessionNonce = sessionNonce;
+
+  if (socialProgressionReady &&
+      status != kitsu868::party::RewardStatus::DuplicateSession) {
+    const uint16_t normalizedScore = result.maximumScore == 0U
+        ? 0U
+        : static_cast<uint16_t>(min<uint32_t>(
+              1000U, (static_cast<uint32_t>(result.score) * 1000U) /
+                         result.maximumScore));
+    const kitsu868::social::SocialState socialBefore =
+        socialProgression.snapshot();
+    kitsu868::social::PartyRewardRequest socialReward{};
+    socialReward.sessionNonce = sessionNonce ^ UINT32_C(0x534F4349);
+    if (socialReward.sessionNonce == 0U) {
+      socialReward.sessionNonce = UINT32_C(0x534F4349);
+    }
+    socialReward.dayId = dayId;
+    socialReward.epochSeconds = epoch;
+    socialReward.score = normalizedScore;
+    for (uint8_t index = 0U; index < participantCount; ++index) {
+      const uint16_t peerUid = participantUids[index];
+      if (peerUid == 0U || peerUid == ownUidSuffix()) continue;
+      if (socialReward.peerCount >= kitsu868::social::kRewardPeerCapacity) {
+        break;
+      }
+      socialReward.peerUids[socialReward.peerCount++] = peerUid;
+    }
+    kitsu868::social::PartyRewardBatchOutcome socialOutcome{};
+    const kitsu868::social::SocialStatus socialStatus =
+        socialReward.peerCount == 0U
+            ? kitsu868::social::SocialStatus::InvalidInput
+            : socialProgression.recordPartyRewards(socialReward,
+                                                   socialOutcome);
+    bool socialChanged =
+        socialStatus == kitsu868::social::SocialStatus::Ok;
+    uint8_t challengeCompleted = 0U;
+    const kitsu868::social::SocialStatus challengeStatus =
+        socialProgression.contributeDailyChallenge(
+            dayId, 1U, 3U, challengeCompleted);
+    socialChanged = socialChanged ||
+        challengeStatus == kitsu868::social::SocialStatus::Ok;
+    if (socialChanged && !persistSocialProgression()) {
+      (void)socialProgression.restore(socialBefore);
+      challengeCompleted = 0U;
+      Serial.println("KITSU_WARN social_party=store_failed");
+    }
+    if (challengeCompleted != 0U) {
+      momentView.active = true;
+      momentView.line1 = "PARTY CHALLENGE";
+      momentView.line2 = "COMPLETE";
+      momentView.until = now + MOMENT_DISPLAY_MS;
+    }
+  }
+
+  if (adventureProgressionReady) {
+    const kitsu868::adventure::ProgressState adventureBefore =
+        adventureProgression.snapshot();
+    kitsu868::adventure::Status adventureStatus =
+        adventureProgression.applyParty(result);
+    if (adventureProgression.view().phase ==
+        kitsu868::adventure::RoutePhase::AwaitingRescue) {
+      adventureStatus =
+          adventureProgression.rescue(result, adventureClock(now));
+    }
+    kitsu868::adventure::HotspotUpdate hotspot{};
+    const kitsu868::adventure::Status hotspotStatus =
+        adventureProgression.observeHotspot(
+            sessionNonce, participantCount, adventureClock(now), hotspot);
+    if ((adventureStatus == kitsu868::adventure::Status::Ok ||
+         adventureStatus == kitsu868::adventure::Status::Duplicate ||
+         hotspotStatus == kitsu868::adventure::Status::Ok ||
+        hotspotStatus == kitsu868::adventure::Status::Duplicate) &&
+        !persistAdventureProgression()) {
+      (void)adventureProgression.restore(adventureBefore);
+      Serial.println("KITSU_WARN adventure_party=store_failed");
+    }
+  }
   companionBleRefreshDirty = true;
   Serial.printf("KITSU_PARTY reward=%s bond=%u total=%lu peers=%u\n",
                 kitsu868::party::rewardStatusName(status),
@@ -8254,6 +10541,354 @@ void finishPartyIfComplete(uint32_t now) {
   const uint16_t participants[2] = {guest.localUid, guest.hostUid};
   showPartyCompletion(guest.result, guest.sessionNonce);
   recordPartyReward(guest.result, guest.sessionNonce, participants, 2U, now);
+}
+
+uint32_t modePartyRewardNonce(uint32_t rawNonce) {
+  uint32_t scoped = rawNonce ^ UINT32_C(0x4D385231);  // "M8R1"
+  scoped ^= scoped >> 16U;
+  scoped *= UINT32_C(0x7FEB352D);
+  scoped ^= scoped >> 15U;
+  return scoped == 0U ? UINT32_C(0x4D385231) : scoped;
+}
+
+kitsu868::party::HuntResult modePartyHuntResult(
+    const kitsu868::party_modes::ModeResult& result) {
+  kitsu868::party::HuntResult adapted{};
+  adapted.participantCount = result.participantCount;
+  adapted.completedRounds = result.completedRounds;
+  adapted.score = result.score;
+  adapted.maximumScore = result.maximumScore;
+  adapted.proof = result.proof;
+  kitsu868::party::ResultTier tier = kitsu868::party::ResultTier::Faded;
+  const uint16_t normalized = result.maximumScore == 0U
+      ? 0U
+      : static_cast<uint16_t>(min<uint32_t>(
+            1000U, static_cast<uint32_t>(result.score) * 1000U /
+                       result.maximumScore));
+  if (normalized >= 850U) tier = kitsu868::party::ResultTier::Resonant;
+  else if (normalized >= 600U) tier = kitsu868::party::ResultTier::Found;
+  else if (normalized >= 300U) tier = kitsu868::party::ResultTier::Trace;
+  adapted.tier = static_cast<uint8_t>(tier);
+  return adapted;
+}
+
+bool applyModePartySocialOutcome(
+    kitsu868::party_modes::Mode mode,
+    const kitsu868::party_modes::ModeResult& result, uint32_t rawNonce) {
+  const kitsu868::signal::SignalTrailState trailBefore =
+      signalTrail.snapshot();
+  if (mode == kitsu868::party_modes::Mode::SharedTrail) {
+    if (result.outcomeValue > kitsu868::signal::kSignalTrailMaximumMisses) {
+      return false;
+    }
+    const kitsu868::signal::SignalTrailMergeStatus mergeStatus =
+        signalTrail.mergeSharedMissCount(
+            static_cast<uint8_t>(result.outcomeValue));
+    if (mergeStatus == kitsu868::signal::SignalTrailMergeStatus::Applied) {
+      if (!persistSignalEncounterState()) {
+        (void)signalTrail.restore(trailBefore);
+        Serial.println("KITSU_WARN mode_party_live_trail=store_failed");
+        return false;
+      }
+    } else if (mergeStatus !=
+               kitsu868::signal::SignalTrailMergeStatus::Unchanged) {
+      Serial.printf("KITSU_WARN mode_party_live_trail=%u\n",
+                    static_cast<unsigned>(mergeStatus));
+      return false;
+    }
+  }
+  // The encounter meter is an independent durable reward. A damaged optional
+  // social ledger must not erase a valid, already-verified shared result.
+  if (!socialProgressionReady) return true;
+  const kitsu868::social::SocialState before = socialProgression.snapshot();
+  bool changed = false;
+  if (result.rareEncounter != 0U) {
+    const kitsu868::social::SocialStatus status =
+        socialProgression.recordCooperativeRareEncounter(rawNonce);
+    if (status == kitsu868::social::SocialStatus::Ok) {
+      changed = true;
+    } else if (status != kitsu868::social::SocialStatus::Duplicate) {
+      (void)socialProgression.restore(before);
+      Serial.printf("KITSU_WARN mode_party_rare=%u\n",
+                    static_cast<unsigned>(status));
+      return false;
+    }
+  }
+  if (mode == kitsu868::party_modes::Mode::SharedTrail) {
+    const kitsu868::social::SocialStatus status =
+        socialProgression.recordSharedTrailResult(
+            rawNonce, static_cast<uint8_t>(result.outcomeValue));
+    if (status == kitsu868::social::SocialStatus::Ok) {
+      changed = true;
+    } else if (status != kitsu868::social::SocialStatus::Duplicate) {
+      (void)socialProgression.restore(before);
+      Serial.printf("KITSU_WARN mode_party_trail=%u\n",
+                    static_cast<unsigned>(status));
+      return false;
+    }
+  }
+  if (changed && !persistSocialProgression()) {
+    (void)socialProgression.restore(before);
+    // The live trail is written first so a reboot cannot erase an earned
+    // guarantee. This idempotent function retries the social counter later.
+    Serial.println("KITSU_WARN mode_party_social=store_failed");
+    return false;
+  }
+  if (changed && result.rareEncounter != 0U) {
+    // The verified cooperative result earns a real encounter attempt through
+    // the existing durable coordinator; rarity and unlock odds remain honest.
+    recordSuccessfulEncounterTrigger(
+        kitsu868::signal::MeshOperationKind::NearbyKitsuMet);
+  }
+  return true;
+}
+
+bool applyModePartyStoryVote(uint8_t choice) {
+  if (!dialogueStateReady ||
+      choice >= kitsu868::dialogue::kStoryChoiceCount) return false;
+  kitsu868::dialogue::StoryBeat current{};
+  if (!kitsu868::dialogue::currentStoryBeat(dialogueStories, current)) {
+    Serial.println("KITSU_WARN mode_party_story=unavailable");
+    return false;
+  }
+  if (!current.awaitsChoice) {
+    const kitsu868::dialogue::StoryState before = dialogueStories;
+    kitsu868::dialogue::StoryBeat next{};
+    if (!kitsu868::dialogue::advanceStory(dialogueStories, next) ||
+        !persistDialogueState()) {
+      dialogueStories = before;
+      Serial.println("KITSU_WARN mode_party_story=advance_failed");
+      return false;
+    }
+    current = next;
+  }
+  String payload = "{\"story_id\":";
+  payload += String(current.storyId);
+  payload += ",\"choice\":";
+  payload += String(choice);
+  payload += '}';
+  String response;
+  const bool handled = companion_api::chooseFunStory(
+      reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(),
+      response);
+  if (!handled || response.indexOf("\"error_code\"") >= 0) {
+    Serial.println("KITSU_WARN mode_party_story=resolve_failed");
+    return false;
+  }
+  Serial.printf("KITSU_MODE_PARTY story_choice=%u story=%u\n", choice,
+                current.storyId);
+  return true;
+}
+
+void finishModePartyIfComplete(uint32_t now) {
+  kitsu868::party_modes::Mode mode = kitsu868::party_modes::Mode::Count;
+  kitsu868::party_modes::ModeResult result{};
+  uint32_t rawNonce = 0U;
+  uint16_t participants[kitsu868::party::kMaximumParticipants]{};
+  uint8_t participantCount = 0U;
+
+  const kitsu868::party_modes::HostState host = modePartyHost.snapshot();
+  if (static_cast<kitsu868::party_modes::HostPhase>(host.phase) ==
+      kitsu868::party_modes::HostPhase::Complete) {
+    mode = static_cast<kitsu868::party_modes::Mode>(host.mode);
+    result = host.result;
+    rawNonce = host.sessionNonce;
+    for (uint8_t index = 0U;
+         index < kitsu868::party_modes::kMaximumParticipants; ++index) {
+      if (host.members[index].active != 0U) {
+        participants[participantCount++] = host.members[index].uid;
+      }
+    }
+  } else {
+    const kitsu868::party_modes::ParticipantState guest =
+        modePartyParticipant.snapshot();
+    if (static_cast<kitsu868::party_modes::ParticipantPhase>(guest.phase) !=
+        kitsu868::party_modes::ParticipantPhase::Complete) {
+      return;
+    }
+    mode = static_cast<kitsu868::party_modes::Mode>(guest.mode);
+    result = guest.result;
+    rawNonce = guest.sessionNonce;
+    participants[0] = guest.localUid;
+    participants[1] = guest.hostUid;
+    participantCount = 2U;
+  }
+  if (rawNonce == 0U) return;
+
+  const bool specialAlreadyHandled =
+      lastModePartyHandledSessionNonce == rawNonce;
+  const uint32_t rewardNonce = modePartyRewardNonce(rawNonce);
+  const kitsu868::party::HuntResult adapted = modePartyHuntResult(result);
+  showPartyCompletion(adapted, rewardNonce);
+  recordPartyReward(adapted, rewardNonce, participants, participantCount,
+                    now);
+  if (!specialAlreadyHandled) {
+    const bool socialApplied =
+        applyModePartySocialOutcome(mode, result, rawNonce);
+    const bool storyApplied =
+        mode != kitsu868::party_modes::Mode::StoryVote ||
+        applyModePartyStoryVote(result.storyChoice);
+    if (socialApplied && storyApplied) {
+      lastModePartyHandledSessionNonce = rawNonce;
+    }
+    Serial.printf(
+        "KITSU_MODE_PARTY complete mode=%s score=%u/%u players=%u rare=%s "
+        "outcome=%u proof=%08lX\n",
+        kitsu868::party_modes::modeName(mode), result.score,
+        result.maximumScore, result.participantCount,
+        result.rareEncounter != 0U ? "true" : "false",
+        result.outcomeValue, static_cast<unsigned long>(result.proof));
+  }
+}
+
+void processModePartyRadioPacket(
+    const kitsu868::party_modes::Packet& packet, float rssi, float snr) {
+  if (!radioListening || packet.sourceUid == ownUidSuffix()) return;
+  const uint32_t now = millis();
+  const kitsu868::party_modes::HostState host = modePartyHost.snapshot();
+  if (modePartyHostInProgress(
+          static_cast<kitsu868::party_modes::HostPhase>(host.phase))) {
+    if (packet.hostUid != host.hostUid ||
+        packet.sessionNonce != host.sessionNonce ||
+        packet.mode != static_cast<kitsu868::party_modes::Mode>(host.mode)) {
+      return;
+    }
+    if (packet.type == kitsu868::party_modes::PacketType::JoinRequest) {
+      const kitsu868::party_modes::HostState before = modePartyHost.snapshot();
+      kitsu868::party_modes::Packet welcome{};
+      const kitsu868::party_modes::Status status =
+          modePartyHost.acceptJoin(packet, now, welcome);
+      if (status == kitsu868::party_modes::Status::Ok) {
+        if (!sendModePartyPacket(welcome, true)) {
+          (void)modePartyHost.restore(before);
+          return;
+        }
+        Serial.printf("KITSU_MODE_PARTY join=accepted uid=%04X count=%u\n",
+                      packet.sourceUid,
+                      modePartyHost.state().participantCount);
+      } else if (status != kitsu868::party_modes::Status::Duplicate &&
+                 status != kitsu868::party_modes::Status::StaleSequence) {
+        Serial.printf("KITSU_MODE_PARTY join=rejected uid=%04X result=%s\n",
+                      packet.sourceUid,
+                      kitsu868::party_modes::statusName(status));
+      }
+      return;
+    }
+    if (packet.type == kitsu868::party_modes::PacketType::Ready) {
+      const kitsu868::party_modes::Status status =
+          modePartyHost.acceptReady(packet);
+      if (status == kitsu868::party_modes::Status::Ok) {
+        Serial.printf("KITSU_MODE_PARTY ready=received uid=%04X value=%d\n",
+                      packet.sourceUid, packet.value);
+      } else if (status != kitsu868::party_modes::Status::Duplicate &&
+                 status != kitsu868::party_modes::Status::StaleSequence) {
+        Serial.printf("KITSU_MODE_PARTY ready=rejected result=%s\n",
+                      kitsu868::party_modes::statusName(status));
+      }
+      return;
+    }
+    if (packet.type == kitsu868::party_modes::PacketType::Contribution) {
+      const kitsu868::party_modes::Status status =
+          modePartyHost.acceptContribution(packet, now);
+      if (status == kitsu868::party_modes::Status::Ok) {
+        Serial.printf("KITSU_MODE_PARTY contribution=received uid=%04X round=%u\n",
+                      packet.sourceUid, packet.round);
+      } else if (status != kitsu868::party_modes::Status::Duplicate &&
+                 status != kitsu868::party_modes::Status::StaleSequence &&
+                 status != kitsu868::party_modes::Status::AlreadySubmitted) {
+        Serial.printf("KITSU_MODE_PARTY contribution=rejected result=%s\n",
+                      kitsu868::party_modes::statusName(status));
+      }
+    }
+    return;
+  }
+
+  const kitsu868::party_modes::ParticipantState guest =
+      modePartyParticipant.snapshot();
+  const kitsu868::party_modes::ParticipantPhase guestPhase =
+      static_cast<kitsu868::party_modes::ParticipantPhase>(guest.phase);
+  if (packet.type == kitsu868::party_modes::PacketType::Beacon) {
+    kitsu868::party_modes::Status status =
+        kitsu868::party_modes::Status::WrongPhase;
+    if ((guestPhase == kitsu868::party_modes::ParticipantPhase::Idle ||
+         guestPhase == kitsu868::party_modes::ParticipantPhase::Observed) &&
+        modePartyScanActive) {
+      status = modePartyParticipant.observeBeacon(
+          ownUidSuffix(), packet, now);
+    } else if ((guestPhase ==
+                    kitsu868::party_modes::ParticipantPhase::Lobby ||
+                guestPhase ==
+                    kitsu868::party_modes::ParticipantPhase::Active) &&
+               guest.hostUid == packet.hostUid &&
+               guest.sessionNonce == packet.sessionNonce) {
+      status = modePartyParticipant.acceptHostPacket(packet, now);
+    } else if (guestPhase ==
+                   kitsu868::party_modes::ParticipantPhase::Joining &&
+               modePartyJoinRequested && guest.hostUid == packet.hostUid &&
+               guest.sessionNonce == packet.sessionNonce) {
+      // Preserve the replay cursor for the targeted Welcome packet.
+      partyHostRssi = rssi;
+      partyHostSnr = snr;
+      return;
+    }
+    if (status == kitsu868::party_modes::Status::Ok ||
+        status == kitsu868::party_modes::Status::Duplicate) {
+      partyHostRssi = rssi;
+      partyHostSnr = snr;
+      Serial.printf("KITSU_MODE_PARTY beacon=seen host=%04X mode=%s count=%u\n",
+                    packet.hostUid,
+                    kitsu868::party_modes::modeName(packet.mode),
+                    packet.participantCount);
+    }
+    return;
+  }
+
+  if (!modePartyGuestInProgress(guestPhase) ||
+      packet.hostUid != guest.hostUid ||
+      packet.sessionNonce != guest.sessionNonce ||
+      packet.sourceUid != packet.hostUid) {
+    return;
+  }
+  if (packet.type != kitsu868::party_modes::PacketType::Welcome &&
+      packet.type != kitsu868::party_modes::PacketType::RoundOpen &&
+      packet.type != kitsu868::party_modes::PacketType::Result &&
+      packet.type != kitsu868::party_modes::PacketType::Cancel) {
+    return;
+  }
+  const kitsu868::party_modes::Status status =
+      modePartyParticipant.acceptHostPacket(packet, now);
+  if (status == kitsu868::party_modes::Status::Ok) {
+    partyHostRssi = rssi;
+    partyHostSnr = snr;
+    clearModePartyReplay();
+    if (packet.type == kitsu868::party_modes::PacketType::Welcome) {
+      modePartyJoinRequested = false;
+      modePartyScanActive = false;
+      const kitsu868::party_modes::ParticipantPhase admitted =
+          static_cast<kitsu868::party_modes::ParticipantPhase>(
+              modePartyParticipant.state().phase);
+      modePartyAutoReadyPending =
+          admitted == kitsu868::party_modes::ParticipantPhase::Lobby;
+    } else if (packet.type ==
+               kitsu868::party_modes::PacketType::RoundOpen) {
+      const kitsu868::party_modes::ParticipantState active =
+          modePartyParticipant.snapshot();
+      printModePartyPrompt(
+          static_cast<kitsu868::party_modes::Mode>(active.mode), active.seed,
+          active.currentRound, false);
+    } else if (packet.type == kitsu868::party_modes::PacketType::Cancel) {
+      modePartyJoinRequested = false;
+      modePartyAutoReadyPending = false;
+    }
+    Serial.printf("KITSU_MODE_PARTY host_packet=%u phase=%u\n",
+                  static_cast<unsigned>(packet.type),
+                  static_cast<unsigned>(modePartyParticipant.state().phase));
+  } else if (status != kitsu868::party_modes::Status::Duplicate &&
+             status != kitsu868::party_modes::Status::StaleSequence) {
+    Serial.printf("KITSU_MODE_PARTY host_packet=%u result=%s\n",
+                  static_cast<unsigned>(packet.type),
+                  kitsu868::party_modes::statusName(status));
+  }
 }
 
 void processPartyRadioPacket(const kitsu868::party::Packet& packet,
@@ -8514,6 +11149,135 @@ void tickPartyHotspot(uint32_t now) {
   }
 }
 
+void tickModeParty(uint32_t now) {
+  finishModePartyIfComplete(now);
+  if (!radioListening) {
+    modePartyScanActive = false;
+    modePartyJoinRequested = false;
+    modePartyAutoReadyPending = false;
+    const kitsu868::party_modes::HostPhase hostPhase =
+        static_cast<kitsu868::party_modes::HostPhase>(
+            modePartyHost.state().phase);
+    if (modePartyHostInProgress(hostPhase)) modePartyHost.reset();
+    const kitsu868::party_modes::ParticipantPhase guestPhase =
+        static_cast<kitsu868::party_modes::ParticipantPhase>(
+            modePartyParticipant.state().phase);
+    if (modePartyGuestInProgress(guestPhase)) modePartyParticipant.reset();
+    clearModePartyReplay();
+    return;
+  }
+
+  kitsu868::party_modes::HostState host = modePartyHost.snapshot();
+  kitsu868::party_modes::HostPhase hostPhase =
+      static_cast<kitsu868::party_modes::HostPhase>(host.phase);
+  if (hostPhase == kitsu868::party_modes::HostPhase::Lobby) {
+    const kitsu868::party_modes::Status expiry =
+        modePartyHost.expireIfNeeded(now);
+    if (expiry == kitsu868::party_modes::Status::TimedOut) {
+      Serial.println("KITSU_MODE_PARTY host=expired");
+    } else if (modePartyHost.canStart() &&
+               (lastModePartyTxAt == 0U ||
+                static_cast<uint32_t>(now - lastModePartyTxAt) >= 1000UL)) {
+      const char* error = nullptr;
+      if (!beginModeParty(error) && error &&
+          strcmp(error, "party_send_failed") != 0) {
+        Serial.printf("KITSU_MODE_PARTY begin=%s\n", error);
+      }
+    } else if (lastModePartyBeaconTxAt == 0U ||
+               static_cast<uint32_t>(now - lastModePartyBeaconTxAt) >=
+                   PARTY_BEACON_INTERVAL_MS) {
+      const kitsu868::party_modes::HostState before =
+          modePartyHost.snapshot();
+      kitsu868::party_modes::Packet beacon{};
+      const kitsu868::party_modes::Status status =
+          modePartyHost.makeBeacon(now, beacon);
+      lastModePartyBeaconTxAt = now;
+      if (status == kitsu868::party_modes::Status::Ok &&
+          !sendModePartyPacket(beacon, false)) {
+        (void)modePartyHost.restore(before);
+      }
+    }
+  }
+
+  host = modePartyHost.snapshot();
+  hostPhase = static_cast<kitsu868::party_modes::HostPhase>(host.phase);
+  if (hostPhase == kitsu868::party_modes::HostPhase::Active) {
+    if (lastModePartyBeaconTxAt == 0U ||
+        static_cast<uint32_t>(now - lastModePartyBeaconTxAt) >=
+            PARTY_BEACON_INTERVAL_MS) {
+      const kitsu868::party_modes::HostState before =
+          modePartyHost.snapshot();
+      kitsu868::party_modes::Packet beacon{};
+      const kitsu868::party_modes::Status status =
+          modePartyHost.makeBeacon(now, beacon);
+      lastModePartyBeaconTxAt = now;
+      if (status == kitsu868::party_modes::Status::Ok &&
+          !sendModePartyPacket(beacon, false)) {
+        (void)modePartyHost.restore(before);
+      }
+    }
+    if (lastModePartyTxAt == 0U ||
+        static_cast<uint32_t>(now - lastModePartyTxAt) >= 1000UL) {
+      const kitsu868::party_modes::HostState before =
+          modePartyHost.snapshot();
+      kitsu868::party_modes::Packet next{};
+      const kitsu868::party_modes::Status status =
+          modePartyHost.advance(now, next);
+      if (status == kitsu868::party_modes::Status::Ok) {
+        if (!sendModePartyPacket(next, true)) {
+          (void)modePartyHost.restore(before);
+        } else if (next.type ==
+                   kitsu868::party_modes::PacketType::RoundOpen) {
+          const kitsu868::party_modes::HostState advanced =
+              modePartyHost.snapshot();
+          printModePartyPrompt(
+              static_cast<kitsu868::party_modes::Mode>(advanced.mode),
+              advanced.seed, advanced.currentRound, true);
+        }
+      } else if (status != kitsu868::party_modes::Status::NotReady) {
+        Serial.printf("KITSU_MODE_PARTY advance=%s\n",
+                      kitsu868::party_modes::statusName(status));
+      }
+    }
+  }
+
+  const kitsu868::party_modes::ParticipantState guest =
+      modePartyParticipant.snapshot();
+  const kitsu868::party_modes::ParticipantPhase guestPhase =
+      static_cast<kitsu868::party_modes::ParticipantPhase>(guest.phase);
+  if (modePartyGuestInProgress(guestPhase)) {
+    const kitsu868::party_modes::Status expiry =
+        modePartyParticipant.expireIfNeeded(now);
+    if (expiry == kitsu868::party_modes::Status::TimedOut) {
+      modePartyJoinRequested = false;
+      modePartyAutoReadyPending = false;
+      Serial.println("KITSU_MODE_PARTY guest=expired");
+    } else if (modePartyAutoReadyPending &&
+               guestPhase ==
+                   kitsu868::party_modes::ParticipantPhase::Lobby &&
+               (lastModePartyTxAt == 0U ||
+                static_cast<uint32_t>(now - lastModePartyTxAt) >= 1000UL)) {
+      const char* error = nullptr;
+      if (!setModePartyReady(true, error) && error &&
+          strcmp(error, "party_send_failed") != 0) {
+        Serial.printf("KITSU_MODE_PARTY auto_ready=%s\n", error);
+      }
+    }
+  }
+
+  finishModePartyIfComplete(now);
+  if (modePartyReplayRemaining != 0U && radioListening &&
+      static_cast<int32_t>(now - modePartyReplayAt) >= 0) {
+    const kitsu868::party_modes::Packet replay = modePartyReplayPacket;
+    --modePartyReplayRemaining;
+    modePartyReplayAt = now + PARTY_REPLAY_INTERVAL_MS;
+    (void)sendModePartyPacketNow(replay);
+    if (modePartyReplayRemaining == 0U) clearModePartyReplay();
+  } else if (modePartyReplayRemaining != 0U && !radioListening) {
+    clearModePartyReplay();
+  }
+}
+
 NearbyNeighbor* nearbyNeighbor(uint16_t uid, bool allocate) {
   NearbyNeighbor* oldest = nullptr;
   uint32_t oldestAge = 0U;
@@ -8634,6 +11398,7 @@ void processNearbyPresence(const kitsu868::nearby::Packet& packet,
       (packet.targetUid != 0U && packet.targetUid != ownUidSuffix())) {
     return;
   }
+  const uint32_t now = millis();
   NearbyNeighbor* neighbor = nearbyNeighbor(packet.sourceUid, true);
   if (!neighbor) return;
   const bool newMeeting = neighbor->sessionNonce != packet.sessionNonce;
@@ -8646,9 +11411,75 @@ void processNearbyPresence(const kitsu868::nearby::Packet& packet,
   neighbor->emote = packet.emote;
   neighbor->rssi = rssi;
   neighbor->snr = snr;
-  neighbor->lastSeenAt = millis();
+  neighbor->lastSeenAt = now;
   companionBleRefreshDirty = true;
-  if (!newMeeting) return;
+
+  kitsu868::social::FriendOutcome socialOutcome{};
+  bool socialGreeting = false;
+  bool socialObservationRecorded = false;
+  uint32_t socialDay = 0U;
+  LocalClockSample socialClock{};
+  if (socialProgressionReady && localClockSample(now, true, socialClock)) {
+    socialDay = socialClock.dayId;
+    const kitsu868::social::SocialState before = socialProgression.snapshot();
+    bool observedToday = false;
+    for (uint8_t index = 0U; index < before.peerCount; ++index) {
+      if (before.peers[index].uid == packet.sourceUid &&
+          before.peers[index].lastSeenDay == socialDay) {
+        observedToday = true;
+        break;
+      }
+    }
+    if (!observedToday) {
+      kitsu868::social::FriendObservation observation{};
+      observation.uid = packet.sourceUid;
+      observation.dayId = socialDay;
+      observation.epochSeconds = socialClock.epochSeconds;
+      observation.peerIsNewcomer = packet.bond <= 1U ? 1U : 0U;
+      observation.localBondLevel = companionBrain.bondLevel();
+      const kitsu868::social::SocialStatus status =
+          socialProgression.observeFriend(observation, socialOutcome);
+      if (status == kitsu868::social::SocialStatus::Ok) {
+        if (persistSocialProgression()) {
+          socialGreeting = true;
+          socialObservationRecorded = true;
+        } else {
+          (void)socialProgression.restore(before);
+          Serial.println("KITSU_WARN social_friend=store_failed");
+        }
+      }
+    }
+  }
+
+  if (socialObservationRecorded && companionProgressionReady) {
+    uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+    if (captureCompanionProgression(before) &&
+        companionProgression.rememberFriend(
+            static_cast<uint8_t>(packet.sourceUid & 0xffU), socialDay) &&
+        !persistCompanionProgression()) {
+      restoreCompanionProgression(before);
+      Serial.println("KITSU_WARN friend_memory=store_failed");
+    }
+  }
+
+  if (!newMeeting) {
+    if (socialGreeting) {
+      lastMemory = "A familiar Kitsu returned.";
+      momentView.active = true;
+      momentView.line1 = kitsu868::social::greetingLine1(
+          socialOutcome.greeting);
+      momentView.line2 = kitsu868::social::greetingLine2(
+          socialOutcome.greeting);
+      momentView.until = now + MOMENT_DISPLAY_MS;
+      radioProgressDirty = true;
+      Serial.printf(
+          "KITSU_NEARBY_PRESENCE uid=%04X pack=%08lX new=false "
+          "rssi=%.1f snr=%.1f\n",
+          packet.sourceUid, static_cast<unsigned long>(packet.packId), rssi,
+          snr);
+    }
+    return;
+  }
 
   char peerIdentity[7]{};
   snprintf(peerIdentity, sizeof(peerIdentity), "KT%04X", packet.sourceUid);
@@ -8663,6 +11494,12 @@ void processNearbyPresence(const kitsu868::nearby::Packet& packet,
   startReaction(result.newEncounter ? CompanionRole::Meet
                                     : CompanionRole::Surprise,
                 result);
+  if (socialGreeting) {
+    momentView.active = true;
+    momentView.line1 = kitsu868::social::greetingLine1(socialOutcome.greeting);
+    momentView.line2 = kitsu868::social::greetingLine2(socialOutcome.greeting);
+    momentView.until = millis() + MOMENT_DISPLAY_MS;
+  }
   if (result.newEncounter) {
     recordSuccessfulEncounterTrigger(
         kitsu868::signal::MeshOperationKind::NearbyKitsuMet);
@@ -8805,6 +11642,21 @@ void processNearbyActionRequest(const kitsu868::nearby::Packet& packet) {
 void processNearbyRadio() {
   kitsu868::mesh::NearbyRadioFrame frame{};
   while (meshTransport.takeNearbyRadioFrame(frame)) {
+    if (frame.length == kitsu868::party_modes::kWireBytes &&
+        frame.bytes[0] == kitsu868::party_modes::kMagic0 &&
+        frame.bytes[1] == kitsu868::party_modes::kMagic1) {
+      kitsu868::party_modes::Packet modePacket{};
+      const kitsu868::party_modes::Status modeStatus =
+          kitsu868::party_modes::decode(frame.bytes, frame.length,
+                                        modePacket);
+      if (modeStatus == kitsu868::party_modes::Status::Ok) {
+        processModePartyRadioPacket(modePacket, frame.rssi, frame.snr);
+      } else {
+        Serial.printf("KITSU_MODE_PARTY_RX result=%s\n",
+                      kitsu868::party_modes::statusName(modeStatus));
+      }
+      continue;
+    }
     if (frame.length == kitsu868::party::kWireBytes &&
         frame.bytes[0] == kitsu868::party::kMagic0 &&
         frame.bytes[1] == kitsu868::party::kMagic1) {
@@ -9088,6 +11940,7 @@ bool materializePendingWildEncounter() {
 
 bool wildEncounterMayInterrupt() {
   return activeGame == ActiveGame::None && !radioListening &&
+      screen != Screen::Activity && screen != Screen::Clock &&
       screen != Screen::PairPhone && screen != Screen::ControllerManager &&
       screen != Screen::ControllerConfirm &&
       screen != Screen::ControllerResult;
@@ -9211,6 +12064,36 @@ void recordSuccessfulEncounterTrigger(
     pendingWildCodeOutcome = kitsu868::signal::CodeOutcome::NotApplicable;
     Serial.println("KITSU_WARN signal_state=flush_failed");
     return;
+  }
+  if (adventureProgressionReady) {
+    const kitsu868::adventure::ProgressState adventureBefore =
+        adventureProgression.snapshot();
+    kitsu868::signal::EncounterRecord effectiveRecord = record;
+    effectiveRecord.encounterOccurred = 1U;
+    effectiveRecord.guaranteed = trailResult.guaranteed;
+    effectiveRecord.rarity = static_cast<uint8_t>(rarity);
+    effectiveRecord.codeOutcome = static_cast<uint8_t>(codeOutcome);
+    const kitsu868::adventure::Status adventureStatus =
+        adventureProgression.applyEncounter(effectiveRecord);
+    if ((adventureStatus == kitsu868::adventure::Status::Ok ||
+        adventureStatus == kitsu868::adventure::Status::Duplicate) &&
+        !persistAdventureProgression()) {
+      (void)adventureProgression.restore(adventureBefore);
+      Serial.println("KITSU_WARN adventure_encounter=store_failed");
+    }
+  }
+  if (companionProgressionReady) {
+    uint32_t day = 0U;
+    uint16_t minute = 0U;
+    uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+    if (captureCompanionProgression(before) &&
+        currentLocalDayMinute(day, minute, true) &&
+        companionProgression.rememberEvent(
+            static_cast<uint8_t>(rarity), day) &&
+        !persistCompanionProgression()) {
+      restoreCompanionProgression(before);
+      Serial.println("KITSU_WARN encounter_memory=store_failed");
+    }
   }
   recordSessionGoal(kitsu868::fun::SessionActivity::Signal);
   pendingWildMaterialized = materializePendingWildEncounter();
@@ -9681,6 +12564,14 @@ void printSelfTest() {
   const int bleBondCount = companionBle.bleBondCount();
   const uint8_t controllerCount = deviceSecurity.status().controllerCount;
   const String escapedCompanion = jsonEscaped(companionName());
+  kitsu868::timekeeping::ClockReading selftestClock{};
+  (void)kitsuClock.read(millis(), selftestClock);
+  const kitsu868::social::SocialState selftestSocial =
+      socialProgression.snapshot();
+  const kitsu868::adventure::RouteView selftestAdventure =
+      adventureProgression.view();
+  const kitsu868::activities::ActivityView selftestActivity =
+      activitySuite.view(millis());
   const char* gameName = activeGame == ActiveGame::SignalCatch
                              ? "signal"
                              : activeGame == ActiveGame::PounceFetch
@@ -9763,7 +12654,12 @@ void printSelfTest() {
       "\"mesh_adverts\":%lu,\"chat_protocol\":1,"
       "\"chat_storage\":%s,\"chat_contacts\":%u,"
       "\"chat_channels\":%u,\"chat_messages\":%u,"
-      "\"chat_unread\":%u,\"ble_bonds\":%d,\"controllers\":%u}\n",
+      "\"chat_unread\":%u,\"clock_set\":%s,\"clock_trusted\":%s,"
+      "\"clock_source\":\"%s\",\"progression_ready\":%s,"
+      "\"progression_actions\":%lu,\"social_ready\":%s,\"friends\":%u,"
+      "\"adventure_ready\":%s,\"adventure_phase\":%u,"
+      "\"journal_entries\":%u,\"activity_ready\":%s,"
+      "\"activity\":\"%s\",\"ble_bonds\":%d,\"controllers\":%u}\n",
       lastPeerUid,
       lastEncounterTrait == 0xff ? -1 : static_cast<int>(lastEncounterTrait),
       lastEncounterGift == 0xff ? -1 : static_cast<int>(lastEncounterGift),
@@ -9777,7 +12673,17 @@ void printSelfTest() {
       meshTransport.messagingStorageReady() ? "true" : "false",
       static_cast<unsigned>(meshTransport.contactCount()),
       static_cast<unsigned>(configuredChannelCount()), chatJournalCount,
-      unreadChatMessages, bleBondCount,
+      unreadChatMessages, selftestClock.set() ? "true" : "false",
+      selftestClock.trusted() ? "true" : "false",
+      kitsu868::timekeeping::clockSourceName(selftestClock.source),
+      companionProgressionReady ? "true" : "false",
+      static_cast<unsigned long>(companionProgression.totalActions()),
+      socialProgressionReady ? "true" : "false", selftestSocial.peerCount,
+      adventureProgressionReady ? "true" : "false",
+      static_cast<unsigned>(selftestAdventure.phase),
+      adventureProgression.journalCount(),
+      activityStateReady ? "true" : "false",
+      kitsu868::activities::activityName(selftestActivity.kind), bleBondCount,
       static_cast<unsigned>(controllerCount));
 }
 
@@ -10511,11 +13417,26 @@ bool executeMeshCommand(const String& command) {
     unsigned long long epoch = 0;
     char trailing = 0;
     if (sscanf(command.c_str(), "mesh time %llu %c", &epoch, &trailing) != 1 ||
-        epoch > UINT32_MAX) {
+        epoch > UINT32_MAX ||
+        epoch < kitsu868::timekeeping::kMinimumClockUnixSeconds) {
       printMeshResult("time", "rejected", "invalid_time");
     } else {
-      const kitsu868::mesh::TransportStatus status =
-          meshTransport.setEpoch(static_cast<uint32_t>(epoch));
+      const uint32_t now = millis();
+      const kitsu868::timekeeping::KitsuClock before = kitsuClock;
+      const uint32_t previousGeneration = clockSnapshotGeneration;
+      const uint8_t previousSlot = clockSnapshotSlot;
+      const kitsu868::timekeeping::ClockResult clockResult =
+          kitsuClock.setFromUnixSeconds(
+              static_cast<uint64_t>(epoch), 0U,
+              kitsu868::timekeeping::ClockSource::ManualSerial,
+              kitsuClock.utcOffsetMinutes(), now);
+      const bool runtimeReady =
+          clockResult == kitsu868::timekeeping::ClockResult::Ok &&
+          commitClockMutation(before, previousGeneration, previousSlot, now,
+                              true);
+      const kitsu868::mesh::TransportStatus status = runtimeReady
+          ? kitsu868::mesh::TransportStatus::Ok
+          : kitsu868::mesh::TransportStatus::TimeUnset;
       printMeshResult("time",
                       status == kitsu868::mesh::TransportStatus::Ok
                           ? "ok"
@@ -11083,6 +14004,1062 @@ bool executeEncounterCodeSerial(const String& command) {
   return true;
 }
 
+const char* quickActionName(kitsu868::activities::QuickAction action) {
+  using kitsu868::activities::QuickAction;
+  switch (action) {
+    case QuickAction::Pet: return "pet";
+    case QuickAction::Feed: return "feed";
+    case QuickAction::Play: return "play";
+    case QuickAction::Listen: return "listen";
+    case QuickAction::DailyGame: return "daily";
+    case QuickAction::Expedition: return "expedition";
+  }
+  return "pet";
+}
+
+bool parseQuickAction(const String& name,
+                      kitsu868::activities::QuickAction& action) {
+  using kitsu868::activities::QuickAction;
+  if (name == "pet") action = QuickAction::Pet;
+  else if (name == "feed") action = QuickAction::Feed;
+  else if (name == "play") action = QuickAction::Play;
+  else if (name == "listen") action = QuickAction::Listen;
+  else if (name == "daily") action = QuickAction::DailyGame;
+  else if (name == "expedition") action = QuickAction::Expedition;
+  else return false;
+  return true;
+}
+
+void executeQuickAction() {
+  using kitsu868::activities::QuickAction;
+  const QuickAction action = activityStateReady
+                                 ? activitySuite.quickAction()
+                                 : QuickAction::Pet;
+  if (action == QuickAction::Pet) petWisp();
+  else if (action == QuickAction::Feed) feedKitsu();
+  else if (action == QuickAction::Play) playKitsu();
+  else if (action == QuickAction::Listen) startListening();
+  else if (action == QuickAction::DailyGame) {
+    startActivity(kitsu868::activities::ActivityKind::MorseSignal, true,
+                  false);
+  } else {
+    const char* error = nullptr;
+    if (!startExpedition(kitsu868::expedition::Duration::Short, error)) {
+      Serial.printf("KITSU_ERROR quick_expedition=%s\n",
+                    error ? error : "start_failed");
+    } else {
+      enterScreen(Screen::Adventure);
+    }
+  }
+}
+
+bool parseMinuteText(const String& text, uint16_t& minute) {
+  if (text.length() != 5U || text[2] != ':' || !isDigit(text[0]) ||
+      !isDigit(text[1]) || !isDigit(text[3]) || !isDigit(text[4])) {
+    return false;
+  }
+  const uint8_t hour = static_cast<uint8_t>(
+      (text[0] - '0') * 10U + text[1] - '0');
+  const uint8_t minutes = static_cast<uint8_t>(
+      (text[3] - '0') * 10U + text[4] - '0');
+  if (hour > 23U || minutes > 59U) return false;
+  minute = static_cast<uint16_t>(hour * 60U + minutes);
+  return true;
+}
+
+const char* progressionActionName(kitsu868::dialogue::Action action) {
+  using kitsu868::dialogue::Action;
+  switch (action) {
+    case Action::Pet: return "pet";
+    case Action::Feed: return "feed";
+    case Action::Play: return "play";
+    case Action::Listen: return "listen";
+    case Action::Sleep: return "sleep";
+    case Action::Wake: return "wake";
+    case Action::Meet: return "meet";
+    case Action::Gift: return "gift";
+  }
+  return "unknown";
+}
+
+const char* progressionTimeName(kitsu868::progression::TimeBucket bucket) {
+  using kitsu868::progression::TimeBucket;
+  switch (bucket) {
+    case TimeBucket::Morning: return "morning";
+    case TimeBucket::Day: return "day";
+    case TimeBucket::Evening: return "evening";
+    case TimeBucket::Night: return "night";
+  }
+  return "unknown";
+}
+
+void printProgressionCatalogue() {
+  static const char* const achievementNames[] = {
+      "first_callback", "favorite_learned", "ritual", "secret_habit",
+      "perfect_day", "streak_seven", "comeback", "dreamer",
+      "explorer", "friendly", "anniversary", "rare_moment",
+      "variety_five", "hundred_actions"};
+  const uint32_t achievements = companionProgression.achievementMask();
+  for (uint8_t index = 0U;
+       index < sizeof(achievementNames) / sizeof(achievementNames[0]);
+       ++index) {
+    if ((achievements & (UINT32_C(1) << index)) != 0U) {
+      Serial.printf("KITSU_ACHIEVEMENT id=%u name=%s\n", index,
+                    achievementNames[index]);
+    }
+  }
+  const uint16_t lore = companionProgression.loreMask();
+  for (uint8_t index = 0U; index < 10U; ++index) {
+    if ((lore & (UINT16_C(1) << index)) == 0U) continue;
+    const kitsu868::progression::DisplayLine line =
+        kitsu868::progression::CompanionProgression::loreLine(
+            static_cast<kitsu868::progression::LoreUnlock>(
+                UINT16_C(1) << index));
+    Serial.printf("KITSU_LORE id=%u line1=\"%s\" line2=\"%s\"\n",
+                  index, line.line1, line.line2);
+  }
+}
+
+bool executeProfileCommand(const String& raw) {
+  String command = raw;
+  command.trim();
+  String lowered = command;
+  lowered.toLowerCase();
+  if (lowered == "profile status" || lowered == "profile inspect") {
+    if (!companionProgressionReady) {
+      Serial.println("KITSU_PROFILE {\"ready\":false}");
+      return true;
+    }
+    const kitsu868::progression::PersonalBests bests =
+        companionProgression.personalBests();
+    kitsu868::progression::QuestionKind question{};
+    const bool hasQuestion = companionProgression.pendingQuestion(question);
+    uint8_t preferredChoice = 0U;
+    const bool hasPreferredChoice = hasQuestion &&
+        companionProgression.preferredQuestionChoice(question,
+                                                       preferredChoice);
+    kitsu868::progression::TimeBucket favoriteTime{};
+    const bool hasFavorite = companionProgression.hasFavorite();
+    const bool hasFavoriteTime = hasFavorite &&
+        companionProgression.preferredTime(
+            companionProgression.favoriteAction(), favoriteTime);
+    uint32_t day = 0U;
+    uint16_t minute = 0U;
+    const bool hasLocalTime = currentLocalDayMinute(day, minute, true);
+    const kitsu868::progression::TimeBucket currentBucket =
+        hasLocalTime
+            ? kitsu868::progression::CompanionProgression::timeBucket(minute)
+            : kitsu868::progression::TimeBucket::Day;
+    kitsu868::dialogue::Action routineAction{};
+    const bool hasRoutine = hasLocalTime &&
+        companionProgression.recognizedRoutine(currentBucket, routineAction);
+    const bool hasRitual = companionProgression.hasRitual();
+    const bool hasHabit = companionProgression.hasSecretHabit();
+    const kitsu868::progression::ComfortKind comfort =
+        companionProgression.comfortNeed();
+    const kitsu868::progression::DisplayLine comfortText =
+        kitsu868::progression::CompanionProgression::comfortLine(comfort);
+    String output;
+    output.reserve(1024U);
+    output = "KITSU_PROFILE {\"ready\":true,\"nickname\":\"";
+    output += jsonEscaped(String(companionProgression.nickname()));
+    output += "\",\"streak\":" +
+        String(companionProgression.currentStreak());
+    output += ",\"perfect_days\":" + String(companionProgression.perfectDays());
+    output += ",\"actions\":" + String(companionProgression.totalActions());
+    output += ",\"achievements\":" +
+        String(companionProgression.achievementMask());
+    output += ",\"lore\":" + String(companionProgression.loreMask());
+    output += ",\"favorite\":";
+    output += hasFavorite
+                  ? String("\"") + progressionActionName(
+                        companionProgression.favoriteAction()) + "\""
+                  : "null";
+    output += ",\"favorite_time\":";
+    output += hasFavoriteTime
+                  ? String("\"") + progressionTimeName(favoriteTime) + "\""
+                  : "null";
+    output += ",\"routine\":";
+    output += hasRoutine
+                  ? String("\"") + progressionActionName(routineAction) +
+                        "@" + progressionTimeName(currentBucket) + "\""
+                  : "null";
+    output += ",\"ritual\":";
+    if (hasRitual) {
+      output += "{\"action\":\"";
+      output += progressionActionName(companionProgression.ritualAction());
+      output += "\",\"time\":\"";
+      output += progressionTimeName(companionProgression.ritualTime());
+      output += "\",\"streak\":" +
+          String(companionProgression.ritualStreak()) + "}";
+    } else {
+      output += "null";
+    }
+    output += ",\"habit\":";
+    if (hasHabit) {
+      const kitsu868::progression::DisplayLine habit =
+          kitsu868::progression::CompanionProgression::habitLine(
+              companionProgression.secretHabit());
+      output += "{\"id\":" +
+          String(static_cast<unsigned>(companionProgression.secretHabit())) +
+          ",\"line1\":\"" + jsonEscaped(String(habit.line1)) +
+          "\",\"line2\":\"" + jsonEscaped(String(habit.line2)) + "\"}";
+    } else {
+      output += "null";
+    }
+    output += ",\"question\":";
+    if (hasQuestion) {
+      output += "{\"id\":" + String(static_cast<unsigned>(question)) +
+          ",\"option0\":\"" +
+          jsonEscaped(String(kitsu868::progression::CompanionProgression::
+                                 questionOption(question, 0U))) +
+          "\",\"option1\":\"" +
+          jsonEscaped(String(kitsu868::progression::CompanionProgression::
+                                 questionOption(question, 1U))) +
+          "\",\"preferred\":";
+      output += hasPreferredChoice ? String(preferredChoice) : "null";
+      output += "}";
+    } else {
+      output += "null";
+    }
+    output += ",\"comfort\":{\"id\":" +
+        String(static_cast<unsigned>(comfort)) + ",\"line1\":\"" +
+        jsonEscaped(String(comfortText.line1)) + "\",\"line2\":\"" +
+        jsonEscaped(String(comfortText.line2)) + "\"}";
+    output += ",\"speech\":" + String(companionProgression.speechStage());
+    output += ",\"bond_bank\":" +
+        String(companionProgression.bondDialogueBank(
+            companionBrain.bondLevel()));
+    output += ",\"momentum\":" + String(companionProgression.moodMomentum());
+    output += ",\"bests\":{\"daily\":" + String(bests.dailyActions) +
+        ",\"variety\":" + String(bests.dailyVariety) +
+        ",\"chain\":" + String(bests.varietyChain) +
+        ",\"rhythm\":" + String(bests.careRhythm) +
+        ",\"streak\":" + String(bests.streak) + "}";
+    output += ",\"requests\":{\"accepted\":" +
+        String(companionProgression.acceptedRequests()) +
+        ",\"declined\":" +
+        String(companionProgression.declinedRequests()) + "}";
+    output += ",\"comeback\":";
+    output += companionProgression.lastDayWasComeback() ? "true" : "false";
+    output += ",\"quick\":\"" + String(quickActionName(
+        activitySuite.quickAction())) + "\",\"quiet\":";
+    output += activitySuite.snapshot().quietHoursEnabled ? "true" : "false";
+    output += "}";
+    Serial.println(output);
+    if (lowered == "profile inspect") printProgressionCatalogue();
+    return true;
+  }
+  if (lowered.startsWith("profile nickname ")) {
+    const String nickname = command.substring(17);
+    uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+    if (!captureCompanionProgression(before) ||
+        !companionProgression.setNickname(nickname.c_str())) {
+      Serial.println("KITSU_ERROR profile=invalid_nickname");
+    } else if (!persistCompanionProgression()) {
+      restoreCompanionProgression(before);
+      Serial.println("KITSU_ERROR profile=nickname_store_failed");
+    } else {
+      Serial.print("KITSU_PROFILE nickname=\"");
+      Serial.print(jsonEscaped(String(companionProgression.nickname())));
+      Serial.println("\"");
+    }
+    return true;
+  }
+  if (lowered.startsWith("profile quick ")) {
+    kitsu868::activities::QuickAction action{};
+    const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+    if (!parseQuickAction(lowered.substring(14), action) ||
+        !activitySuite.setQuickAction(action)) {
+      Serial.println("KITSU_ERROR profile=invalid_quick_action");
+    } else if (!persistActivityState()) {
+      (void)activitySuite.restore(before);
+      Serial.println("KITSU_ERROR profile=quick_store_failed");
+    } else {
+      Serial.printf("KITSU_PROFILE quick=%s\n", quickActionName(action));
+    }
+    return true;
+  }
+  if (lowered == "profile quiet off") {
+    const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+    if (!activitySuite.setQuietHours(false, 0U, 1U)) {
+      Serial.println("KITSU_ERROR profile=invalid_quiet_hours");
+    } else if (!persistActivityState()) {
+      (void)activitySuite.restore(before);
+      Serial.println("KITSU_ERROR profile=quiet_store_failed");
+    } else {
+      Serial.println("KITSU_PROFILE quiet=off");
+    }
+    return true;
+  }
+  if (lowered.startsWith("profile quiet ")) {
+    const String range = lowered.substring(14);
+    const int separator = range.indexOf('-');
+    uint16_t start = 0U;
+    uint16_t end = 0U;
+    const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+    if (separator != 5 || !parseMinuteText(range.substring(0, 5), start) ||
+        !parseMinuteText(range.substring(6), end) ||
+        !activitySuite.setQuietHours(true, start, end)) {
+      Serial.println("KITSU_ERROR profile=invalid_quiet_hours");
+    } else if (!persistActivityState()) {
+      (void)activitySuite.restore(before);
+      Serial.println("KITSU_ERROR profile=quiet_store_failed");
+    } else {
+      Serial.printf("KITSU_PROFILE quiet=%s\n", range.c_str());
+    }
+    return true;
+  }
+  if (lowered == "profile replay") {
+    replayLastDialogue();
+    return true;
+  }
+  if (lowered == "profile request accept" ||
+      lowered == "profile request decline") {
+    const bool accept = lowered.endsWith("accept");
+    uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+    if (!captureCompanionProgression(before)) {
+      Serial.println("KITSU_ERROR profile=request_unavailable");
+      return true;
+    }
+    const kitsu868::progression::RequestResult result =
+        companionProgression.answerRequest(accept);
+    if (!result.valid) {
+      Serial.println("KITSU_ERROR profile=request_unavailable");
+    } else if (!persistCompanionProgression()) {
+      restoreCompanionProgression(before);
+      Serial.println("KITSU_ERROR profile=request_store_failed");
+    } else {
+      Serial.printf("KITSU_PROFILE request=%s action=%u\n",
+                    accept ? "accepted" : "declined",
+                    static_cast<unsigned>(result.requestedAction));
+    }
+    return true;
+  }
+  if (lowered.startsWith("profile answer ")) {
+    const String value = lowered.substring(15);
+    if (value.length() != 1U || value[0] < '0' || value[0] > '1') {
+      Serial.println("KITSU_ERROR profile=invalid_answer");
+    } else {
+      uint8_t before[kitsu868::progression::kSnapshotCapacity]{};
+      if (!captureCompanionProgression(before)) {
+        Serial.println("KITSU_ERROR profile=question_unavailable");
+        return true;
+      }
+      const kitsu868::progression::QuestionResult result =
+          companionProgression.answerQuestion(
+              static_cast<uint8_t>(value[0] - '0'));
+      if (!result.valid) {
+        Serial.println("KITSU_ERROR profile=question_unavailable");
+      } else if (!persistCompanionProgression()) {
+        restoreCompanionProgression(before);
+        Serial.println("KITSU_ERROR profile=question_store_failed");
+      } else {
+        Serial.printf("KITSU_PROFILE answer=%u question=%u\n", result.choice,
+                      static_cast<unsigned>(result.question));
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+const char* modePartyHostPhaseName(kitsu868::party_modes::HostPhase phase) {
+  using kitsu868::party_modes::HostPhase;
+  switch (phase) {
+    case HostPhase::Idle: return "idle";
+    case HostPhase::Lobby: return "lobby";
+    case HostPhase::Active: return "active";
+    case HostPhase::Complete: return "complete";
+    case HostPhase::Cancelled: return "cancelled";
+    case HostPhase::Expired: return "expired";
+    case HostPhase::Unavailable: return "unavailable";
+  }
+  return "unavailable";
+}
+
+const char* modePartyGuestPhaseName(
+    kitsu868::party_modes::ParticipantPhase phase) {
+  using kitsu868::party_modes::ParticipantPhase;
+  switch (phase) {
+    case ParticipantPhase::Idle: return "idle";
+    case ParticipantPhase::Observed: return "observed";
+    case ParticipantPhase::Joining: return "joining";
+    case ParticipantPhase::Lobby: return "lobby";
+    case ParticipantPhase::Active: return "active";
+    case ParticipantPhase::Complete: return "complete";
+    case ParticipantPhase::Cancelled: return "cancelled";
+    case ParticipantPhase::Expired: return "expired";
+    case ParticipantPhase::Unavailable: return "unavailable";
+  }
+  return "unavailable";
+}
+
+void printSocialCommandError(const char* error) {
+  Serial.printf("KITSU_ERROR social=%s\n", error ? error : "failed");
+}
+
+bool executeSocialCommand(const String& raw) {
+  String command = raw;
+  command.trim();
+  command.toLowerCase();
+  if (command == "social status") {
+    const kitsu868::social::SocialState state = socialProgression.snapshot();
+    uint32_t day = 0U;
+    uint16_t minute = 0U;
+    const bool trusted = currentLocalDayMinute(day, minute, true);
+    const kitsu868::party_modes::Mode dailyMode =
+        kitsu868::party_modes::rotatingMode(
+            trusted ? day : 1U, companionBrain.deviceFingerprint());
+    const kitsu868::party::HostState signalHost = partyHost.snapshot();
+    const kitsu868::party::ParticipantState signalGuest =
+        partyParticipant.snapshot();
+    const kitsu868::party::SessionPhase signalHostPhase =
+        static_cast<kitsu868::party::SessionPhase>(signalHost.phase);
+    const kitsu868::party::SessionPhase signalGuestPhase =
+        static_cast<kitsu868::party::SessionPhase>(signalGuest.phase);
+    const bool hasSignalHost =
+        signalHostPhase != kitsu868::party::SessionPhase::Idle &&
+        signalHostPhase != kitsu868::party::SessionPhase::Unavailable;
+    const bool hasSignalGuest = !hasSignalHost &&
+        signalGuestPhase != kitsu868::party::SessionPhase::Idle &&
+        signalGuestPhase != kitsu868::party::SessionPhase::Unavailable;
+    if (hasSignalHost || hasSignalGuest) {
+      const kitsu868::party::SessionPhase signalPhase =
+          hasSignalHost ? signalHostPhase : signalGuestPhase;
+      const kitsu868::party::HuntResult signalResult =
+          hasSignalHost ? signalHost.result : signalGuest.result;
+      const uint16_t signalHostUid =
+          hasSignalHost ? signalHost.hostUid : signalGuest.hostUid;
+      const uint32_t signalNonce = hasSignalHost
+          ? signalHost.sessionNonce : signalGuest.sessionNonce;
+      const uint8_t signalParticipants = hasSignalHost
+          ? signalHost.participantCount : signalGuest.participantCount;
+      const uint8_t signalRound = hasSignalHost
+          ? signalHost.currentRound : signalGuest.currentRound;
+      Serial.printf(
+          "KITSU_SOCIAL {\"ready\":%s,\"friends\":%u,"
+          "\"parties\":%lu,\"daily_unique\":%u,\"challenge\":%u,"
+          "\"challenge_target\":%u,\"shared_trail\":%lu,"
+          "\"cooperative_rare\":%lu,\"party_bond\":%lu,"
+          "\"protocol\":\"p8\",\"ready_required\":false,"
+          "\"daily_mode\":\"%s\",\"role\":\"%s\","
+          "\"phase\":\"%s\",\"mode\":\"signal_hunt\","
+          "\"host_uid\":%u,\"session_nonce\":%lu,"
+          "\"participants\":%u,\"ready_count\":0,"
+          "\"round\":%u,\"rounds\":%u,\"score\":%u,"
+          "\"maximum_score\":%u,\"clock_trusted\":%s}\n",
+          socialProgressionReady ? "true" : "false", state.peerCount,
+          static_cast<unsigned long>(state.completedParties),
+          state.dailyUniquePeers, state.dailyChallengeProgress,
+          state.dailyChallengeTarget,
+          static_cast<unsigned long>(state.sharedTrailProgress),
+          static_cast<unsigned long>(state.cooperativeRareEncounters),
+          static_cast<unsigned long>(partyRewards.state().partyBond),
+          kitsu868::party_modes::modeName(dailyMode),
+          hasSignalHost ? "host" : "guest",
+          companion_api::partyPhaseWire(signalPhase),
+          signalHostUid, static_cast<unsigned long>(signalNonce),
+          signalParticipants, signalRound, kitsu868::party::kHuntRounds,
+          signalResult.score, signalResult.maximumScore,
+          trusted ? "true" : "false");
+      (void)minute;
+      return true;
+    }
+    const kitsu868::party_modes::HostState host = modePartyHost.snapshot();
+    const kitsu868::party_modes::ParticipantState guest =
+        modePartyParticipant.snapshot();
+    const kitsu868::party_modes::HostPhase hostPhase =
+        static_cast<kitsu868::party_modes::HostPhase>(host.phase);
+    const kitsu868::party_modes::ParticipantPhase guestPhase =
+        static_cast<kitsu868::party_modes::ParticipantPhase>(guest.phase);
+    const bool hasHost = hostPhase != kitsu868::party_modes::HostPhase::Idle &&
+        hostPhase != kitsu868::party_modes::HostPhase::Unavailable;
+    const bool hasGuest = !hasHost &&
+        guestPhase != kitsu868::party_modes::ParticipantPhase::Idle &&
+        guestPhase != kitsu868::party_modes::ParticipantPhase::Unavailable;
+    const kitsu868::party_modes::Mode selectedMode = hasHost
+        ? static_cast<kitsu868::party_modes::Mode>(host.mode)
+        : hasGuest ? static_cast<kitsu868::party_modes::Mode>(guest.mode)
+                   : dailyMode;
+    uint8_t readyCount = 0U;
+    if (hasHost) {
+      for (uint8_t index = 0U;
+           index < kitsu868::party_modes::kMaximumParticipants; ++index) {
+        if (host.members[index].active != 0U &&
+            host.members[index].ready != 0U) {
+          ++readyCount;
+        }
+      }
+    } else if (hasGuest) {
+      readyCount = guest.readyCount;
+    }
+    const uint32_t sessionNonce =
+        hasHost ? host.sessionNonce : hasGuest ? guest.sessionNonce : 0U;
+    const uint16_t hostUid =
+        hasHost ? host.hostUid : hasGuest ? guest.hostUid : 0U;
+    const uint8_t participants = hasHost
+        ? host.participantCount : hasGuest ? guest.participantCount : 0U;
+    const uint8_t round =
+        hasHost ? host.currentRound : hasGuest ? guest.currentRound : 0U;
+    const uint8_t rounds =
+        hasHost ? host.totalRounds : hasGuest ? guest.totalRounds : 0U;
+    const kitsu868::party_modes::ModeResult result =
+        hasHost ? host.result : guest.result;
+    const bool idleSignalHunt = !hasHost && !hasGuest &&
+        selectedMode == kitsu868::party_modes::Mode::SignalHunt;
+    Serial.printf(
+        "KITSU_SOCIAL {\"ready\":%s,\"friends\":%u,"
+        "\"parties\":%lu,\"daily_unique\":%u,\"challenge\":%u,"
+        "\"challenge_target\":%u,\"shared_trail\":%lu,"
+        "\"cooperative_rare\":%lu,\"party_bond\":%lu,"
+        "\"protocol\":\"%s\",\"ready_required\":%s,"
+        "\"daily_mode\":\"%s\",\"role\":\"%s\","
+        "\"phase\":\"%s\",\"mode\":\"%s\","
+        "\"host_uid\":%u,\"session_nonce\":%lu,"
+        "\"participants\":%u,\"ready_count\":%u,"
+        "\"round\":%u,\"rounds\":%u,\"score\":%u,"
+        "\"maximum_score\":%u,\"clock_trusted\":%s}\n",
+        socialProgressionReady ? "true" : "false", state.peerCount,
+        static_cast<unsigned long>(state.completedParties),
+        state.dailyUniquePeers, state.dailyChallengeProgress,
+        state.dailyChallengeTarget,
+        static_cast<unsigned long>(state.sharedTrailProgress),
+        static_cast<unsigned long>(state.cooperativeRareEncounters),
+        static_cast<unsigned long>(partyRewards.state().partyBond),
+        idleSignalHunt ? "p8" : "m8",
+        idleSignalHunt ? "false" : "true",
+        kitsu868::party_modes::modeName(dailyMode),
+        hasHost ? "host" : hasGuest ? "guest" : "none",
+        hasHost ? modePartyHostPhaseName(hostPhase)
+                : modePartyGuestPhaseName(guestPhase),
+        kitsu868::party_modes::modeName(selectedMode), hostUid,
+        static_cast<unsigned long>(sessionNonce), participants, readyCount,
+        round, rounds, result.score, result.maximumScore,
+        trusted ? "true" : "false");
+    (void)minute;
+    return true;
+  }
+  if (command == "social leaderboard") {
+    kitsu868::social::LeaderboardEntry entries[
+        kitsu868::social::kPeerCapacity]{};
+    const uint8_t count = socialProgression.leaderboard(
+        entries, kitsu868::social::kPeerCapacity);
+    for (uint8_t index = 0U; index < count; ++index) {
+      Serial.printf("KITSU_FRIEND rank=%u uid=KT%04X points=%u parties=%u best=%u\n",
+                    index + 1U, entries[index].uid,
+                    entries[index].friendshipPoints,
+                    entries[index].successfulParties,
+                    entries[index].bestPartyScore);
+    }
+    if (count == 0U) Serial.println("KITSU_FRIEND empty=true");
+    return true;
+  }
+  if (command == "social scan") {
+    const char* error = nullptr;
+    if (!startAllPartyScans(error)) printSocialCommandError(error);
+    return true;
+  }
+  if (command == "social host") {
+    const char* error = nullptr;
+    if (!startRotatingModePartyHost(error)) printSocialCommandError(error);
+    return true;
+  }
+  if (command.startsWith("social host ")) {
+    kitsu868::party_modes::Mode mode{};
+    if (!parseModePartyName(command.substring(12), mode)) {
+      printSocialCommandError("unknown_mode");
+      return true;
+    }
+    const char* error = nullptr;
+    if (!startModePartyHost(mode, error)) printSocialCommandError(error);
+    return true;
+  }
+  if (command == "social join") {
+    const char* error = nullptr;
+    const uint32_t now = millis();
+    const kitsu868::party::ParticipantState signal =
+        partyParticipant.snapshot();
+    const bool signalObserved =
+        static_cast<kitsu868::party::SessionPhase>(signal.phase) ==
+            kitsu868::party::SessionPhase::Joining &&
+        signal.deadlineMs != 0U &&
+        static_cast<int32_t>(now - signal.deadlineMs) < 0 &&
+        lastPartyBeaconAt != 0U &&
+        static_cast<uint32_t>(now - lastPartyBeaconAt) <=
+            PARTY_DISCOVERY_TTL_MS;
+    const bool joined = signalObserved
+        ? joinObservedParty(signal.hostUid, signal.sessionNonce, error)
+        : joinObservedModeParty(error);
+    if (joined) {
+      if (signalObserved) {
+        modePartyParticipant.reset();
+        resetModePartyRuntimeView();
+      } else {
+        partyParticipant.reset();
+        resetPartyRuntimeView();
+      }
+      partyScanActive = false;
+      modePartyScanActive = false;
+    } else {
+      printSocialCommandError(error);
+    }
+    return true;
+  }
+  if (command == "social ready" || command == "social ready 1" ||
+      command == "social ready 0") {
+    const kitsu868::party::SessionPhase signalHostPhase =
+        static_cast<kitsu868::party::SessionPhase>(partyHost.state().phase);
+    const kitsu868::party::SessionPhase signalGuestPhase =
+        static_cast<kitsu868::party::SessionPhase>(
+            partyParticipant.state().phase);
+    if ((signalHostPhase != kitsu868::party::SessionPhase::Idle &&
+         signalHostPhase != kitsu868::party::SessionPhase::Unavailable) ||
+        (signalGuestPhase != kitsu868::party::SessionPhase::Idle &&
+         signalGuestPhase != kitsu868::party::SessionPhase::Unavailable)) {
+      printSocialCommandError("ready_not_required");
+      return true;
+    }
+    const bool ready = !command.endsWith(" 0");
+    const char* error = nullptr;
+    if (!setModePartyReady(ready, error)) printSocialCommandError(error);
+    return true;
+  }
+  if (command == "social begin") {
+    const char* error = nullptr;
+    const kitsu868::party::SessionPhase signalHostPhase =
+        static_cast<kitsu868::party::SessionPhase>(partyHost.state().phase);
+    const kitsu868::party::SessionPhase signalGuestPhase =
+        static_cast<kitsu868::party::SessionPhase>(
+            partyParticipant.state().phase);
+    const bool signalSelected =
+        (signalHostPhase != kitsu868::party::SessionPhase::Idle &&
+         signalHostPhase != kitsu868::party::SessionPhase::Unavailable) ||
+        (signalGuestPhase != kitsu868::party::SessionPhase::Idle &&
+         signalGuestPhase != kitsu868::party::SessionPhase::Unavailable);
+    const bool started = signalSelected ? beginHostedParty(error)
+                                        : beginModeParty(error);
+    if (!started) printSocialCommandError(error);
+    return true;
+  }
+  if (command.startsWith("social contribute ")) {
+    const String valueText = command.substring(18);
+    char* end = nullptr;
+    const long value = strtol(valueText.c_str(), &end, 10);
+    if (valueText.length() == 0U || !end || *end != '\0') {
+      printSocialCommandError("invalid_contribution");
+      return true;
+    }
+    const char* error = nullptr;
+    const kitsu868::party::HostState signalHost = partyHost.snapshot();
+    const kitsu868::party::ParticipantState signalGuest =
+        partyParticipant.snapshot();
+    const kitsu868::party::SessionPhase signalHostPhase =
+        static_cast<kitsu868::party::SessionPhase>(signalHost.phase);
+    const kitsu868::party::SessionPhase signalGuestPhase =
+        static_cast<kitsu868::party::SessionPhase>(signalGuest.phase);
+    const bool signalSelected =
+        (signalHostPhase != kitsu868::party::SessionPhase::Idle &&
+         signalHostPhase != kitsu868::party::SessionPhase::Unavailable) ||
+        (signalGuestPhase != kitsu868::party::SessionPhase::Idle &&
+         signalGuestPhase != kitsu868::party::SessionPhase::Unavailable);
+    bool submitted = false;
+    if (signalSelected) {
+      if (value < 0L || value > 2L) {
+        printSocialCommandError("invalid_contribution");
+        return true;
+      }
+      const uint8_t round = partyPhaseRunning(signalHostPhase)
+          ? signalHost.currentRound : signalGuest.currentRound;
+      submitted = choosePartySignal(
+          static_cast<kitsu868::party::SignalChoice>(value + 1L), round,
+          error);
+    } else {
+      submitted = submitModePartyContribution(value, error);
+    }
+    if (!submitted) {
+      printSocialCommandError(error);
+    }
+    return true;
+  }
+  if (command == "social leave") {
+    if (!partyRuntimeBusy()) {
+      printSocialCommandError("party_inactive");
+    } else {
+      leavePartyHotspot();
+    }
+    return true;
+  }
+  return false;
+}
+
+bool parseActivityKind(const String& name,
+                       kitsu868::activities::ActivityKind& kind) {
+  using kitsu868::activities::ActivityKind;
+  if (name == "morse") kind = ActivityKind::MorseSignal;
+  else if (name == "tuner") kind = ActivityKind::StaticTuner;
+  else if (name == "flash") kind = ActivityKind::ReactionFlash;
+  else if (name == "steady") kind = ActivityKind::HoldSteady;
+  else if (name == "breathe") kind = ActivityKind::PulseBreathing;
+  else return false;
+  return true;
+}
+
+bool executeActivityCommand(const String& raw) {
+  String command = raw;
+  command.trim();
+  command.toLowerCase();
+  if (command == "activity status") {
+    const kitsu868::activities::ActivityView view =
+        activitySuite.view(millis());
+    Serial.printf("KITSU_ACTIVITY status=%u kind=%s score=%u/%u progress=%u/%u\n",
+                  static_cast<unsigned>(view.phase),
+                  kitsu868::activities::activityName(view.kind), view.score,
+                  view.maximumScore, view.progress, view.total);
+  } else if (command == "activity daily") {
+    (void)startActivity(kitsu868::activities::ActivityKind::MorseSignal,
+                        true, false);
+  } else if (command == "activity ghost") {
+    (void)startActivity(kitsu868::activities::ActivityKind::MorseSignal,
+                        false, true);
+  } else if (command.startsWith("activity start ")) {
+    kitsu868::activities::ActivityKind kind{};
+    if (!parseActivityKind(command.substring(15), kind)) {
+      Serial.println("KITSU_ERROR activity=unknown_kind");
+    } else {
+      (void)startActivity(kind, false, false);
+    }
+  } else if (command == "activity tap") {
+    const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+    const kitsu868::activities::InputResult result =
+        activitySuite.tap(millis());
+    if (result == kitsu868::activities::InputResult::Ignored ||
+        result == kitsu868::activities::InputResult::Invalid) {
+      Serial.println("KITSU_ERROR activity=tap_ignored");
+    } else {
+      (void)persistActivityMutation(before, "tap");
+    }
+  } else if (command == "activity press") {
+    const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+    const kitsu868::activities::InputResult result =
+        activitySuite.press(millis());
+    if (result == kitsu868::activities::InputResult::Ignored ||
+        result == kitsu868::activities::InputResult::Invalid) {
+      Serial.println("KITSU_ERROR activity=press_ignored");
+    } else {
+      (void)persistActivityMutation(before, "press");
+    }
+  } else if (command == "activity release") {
+    const kitsu868::activities::ActivityState before = activitySuite.snapshot();
+    const kitsu868::activities::InputResult result =
+        activitySuite.release(millis());
+    if (result == kitsu868::activities::InputResult::Ignored ||
+        result == kitsu868::activities::InputResult::Invalid) {
+      Serial.println("KITSU_ERROR activity=release_ignored");
+    } else {
+      (void)persistActivityMutation(before, "release");
+    }
+  } else if (command == "activity cancel") {
+    if (screen != Screen::Activity && !activityRuntimeBusy()) {
+      Serial.println("KITSU_ERROR activity=inactive");
+    } else {
+      leaveActivity();
+    }
+  } else {
+    return false;
+  }
+  return true;
+}
+
+void printAdventureStatus() {
+  const kitsu868::adventure::RouteView route = adventureProgression.view();
+  const kitsu868::adventure::ProgressState progress =
+      adventureProgression.snapshot();
+  const kitsu868::expedition::ExpeditionView trip = expeditionCore.view();
+  Serial.printf(
+      "KITSU_ADVENTURE {\"trip_phase\":%u,\"trip_progress\":%u,"
+      "\"route_phase\":%u,\"route_id\":%lu,\"steps\":%lu,"
+      "\"target\":%lu,\"progress\":%u,\"terrain\":\"%s\","
+      "\"objective\":\"%s\",\"risk\":\"%s\",\"weather\":\"%s\","
+      "\"time_band\":\"%s\",\"moon\":\"%s\",\"chain\":%u,"
+      "\"variant\":%u,\"party_size\":%u,\"distance_m\":%lu,"
+      "\"home_comfort\":%u,\"community_day\":%s,"
+      "\"community_visits\":%u,\"community_bonuses\":%u,"
+      "\"privacy\":%u,\"total_distance_m\":%lu,\"journal\":%u}\n",
+      static_cast<unsigned>(trip.phase), trip.progressPercent,
+      static_cast<unsigned>(route.phase),
+      static_cast<unsigned long>(route.routeId),
+      static_cast<unsigned long>(route.steps),
+      static_cast<unsigned long>(route.targetSteps), route.progressPercent,
+      terrainLabel(route.terrain), objectiveLabel(route.objective),
+      riskLabel(route.risk), weatherLabel(route.weather),
+      timeBandLabel(route.timeBand), moonPhaseLabel(route.moonPhase),
+      route.chainDepth, route.routeVariant, route.partySize,
+      static_cast<unsigned long>(route.routeDistanceMeters), route.homeComfort,
+      route.communityDayActive ? "true" : "false",
+      progress.communityHotspotVisits, progress.communityDayBonuses,
+      progress.privacyMode,
+      static_cast<unsigned long>(progress.totalDistanceMeters),
+      adventureProgression.journalCount());
+}
+
+bool executeAdventureCommand(const String& raw) {
+  String command = raw;
+  command.trim();
+  command.toLowerCase();
+  if (command == "adventure status") {
+    printAdventureStatus();
+  } else if (command == "adventure start short" ||
+             command == "adventure start medium" ||
+             command == "adventure start long") {
+    const kitsu868::expedition::Duration duration =
+        command.endsWith("short")
+            ? kitsu868::expedition::Duration::Short
+            : command.endsWith("medium")
+                  ? kitsu868::expedition::Duration::Medium
+                  : kitsu868::expedition::Duration::Long;
+    const char* error = nullptr;
+    if (!startExpedition(duration, error)) {
+      Serial.printf("KITSU_ERROR expedition=%s\n", error ? error : "start");
+      if (error && strcmp(error, "clock_unavailable") == 0) {
+        beginClockEditor();
+      }
+    }
+  } else if (command == "adventure route" ||
+             command == "adventure route commute") {
+    (void)beginAdventureRoute(command.endsWith("commute"));
+  } else if (command.startsWith("adventure steps ")) {
+    char* end = nullptr;
+    const unsigned long steps =
+        strtoul(command.substring(16).c_str(), &end, 10);
+    if (!end || *end != '\0' || steps == 0U || steps > 100000UL) {
+      Serial.println("KITSU_ERROR adventure=invalid_steps");
+    } else {
+      const kitsu868::adventure::ProgressState before =
+          adventureProgression.snapshot();
+      const kitsu868::adventure::Status status =
+          adventureProgression.addSteps(static_cast<uint32_t>(steps));
+      if (status == kitsu868::adventure::Status::Ok) {
+        (void)persistAdventureMutation(before, "steps");
+      } else {
+        Serial.printf("KITSU_ERROR adventure=%s\n",
+                      kitsu868::adventure::statusName(status));
+      }
+    }
+  } else if (command.startsWith("adventure decide ")) {
+    const String choice = command.substring(17);
+    kitsu868::adventure::MidDecision decision{};
+    if (choice == "continue") decision = kitsu868::adventure::MidDecision::Continue;
+    else if (choice == "detour") decision = kitsu868::adventure::MidDecision::Detour;
+    else if (choice == "help") decision = kitsu868::adventure::MidDecision::Help;
+    else if (choice == "return") decision = kitsu868::adventure::MidDecision::ReturnEarly;
+    else {
+      Serial.println("KITSU_ERROR adventure=invalid_decision");
+      return true;
+    }
+    (void)applyAdventureDecision(decision);
+  } else if (command == "adventure finish") {
+    const kitsu868::adventure::ProgressState before =
+        adventureProgression.snapshot();
+    const kitsu868::adventure::Status status =
+        adventureProgression.finish(adventureClock(millis()));
+    if (status == kitsu868::adventure::Status::Ok ||
+        status == kitsu868::adventure::Status::RescueRequired) {
+      if (!persistAdventureMutation(before, "finish")) return true;
+    }
+    Serial.printf("KITSU_ADVENTURE finish=%s\n",
+                  kitsu868::adventure::statusName(status));
+  } else if (command == "adventure acknowledge") {
+    const uint32_t id = adventureProgression.view().routeId;
+    const kitsu868::adventure::ProgressState before =
+        adventureProgression.snapshot();
+    const kitsu868::adventure::Status status =
+        adventureProgression.acknowledge(id);
+    if (status == kitsu868::adventure::Status::Ok) {
+      if (!persistAdventureMutation(before, "acknowledge")) return true;
+    }
+    Serial.printf("KITSU_ADVENTURE acknowledge=%s\n",
+                  kitsu868::adventure::statusName(status));
+  } else if (command.startsWith("adventure privacy ")) {
+    const String mode = command.substring(18);
+    const kitsu868::adventure::PrivacyMode privacy =
+        mode == "off" ? kitsu868::adventure::PrivacyMode::Off
+        : mode == "coarse" ? kitsu868::adventure::PrivacyMode::Coarse
+        : mode == "precise" ? kitsu868::adventure::PrivacyMode::PreciseTransient
+        : kitsu868::adventure::PrivacyMode::Count;
+    const kitsu868::adventure::ProgressState before =
+        adventureProgression.snapshot();
+    const kitsu868::adventure::Status status =
+        adventureProgression.setPrivacyMode(
+            privacy, companionBrain.deviceFingerprint() ^ UINT32_C(0xA7D04319));
+    if (status == kitsu868::adventure::Status::Ok) {
+      if (!persistAdventureMutation(before, "privacy")) return true;
+    }
+    Serial.printf("KITSU_ADVENTURE privacy=%s result=%s\n", mode.c_str(),
+                  kitsu868::adventure::statusName(status));
+  } else if (command.startsWith("adventure home ")) {
+    unsigned long token = 0U;
+    char trailing = 0;
+    if (sscanf(command.c_str(), "adventure home %lx %c", &token,
+               &trailing) != 1 || token == 0U) {
+      Serial.println("KITSU_ERROR adventure=invalid_home_zone");
+    } else {
+      const kitsu868::adventure::ProgressState before =
+          adventureProgression.snapshot();
+      const kitsu868::adventure::Status status =
+          adventureProgression.setHomeZone(static_cast<uint32_t>(token));
+      if (status == kitsu868::adventure::Status::Ok) {
+        if (!persistAdventureMutation(before, "home")) return true;
+      }
+      Serial.printf("KITSU_ADVENTURE home=%08lX result=%s\n", token,
+                    kitsu868::adventure::statusName(status));
+    }
+  } else if (command.startsWith("adventure zone ")) {
+    unsigned long token = 0U;
+    unsigned long steps = 0U;
+    unsigned long meters = 0U;
+    char trailing = 0;
+    if (sscanf(command.c_str(), "adventure zone %lx %lu %lu %c", &token,
+               &steps, &meters, &trailing) != 3 || token == 0U) {
+      Serial.println("KITSU_ERROR adventure=invalid_zone");
+    } else {
+      const kitsu868::adventure::ProgressState before =
+          adventureProgression.snapshot();
+      kitsu868::adventure::LocationUpdate update{};
+      const kitsu868::adventure::Status status =
+          adventureProgression.observeCoarseZone(
+              static_cast<uint32_t>(token), static_cast<uint32_t>(steps),
+              static_cast<uint32_t>(meters), update);
+      if (status == kitsu868::adventure::Status::Ok) {
+        if (!persistAdventureMutation(before, "zone")) return true;
+      }
+      Serial.printf("KITSU_ADVENTURE zone=%08lX result=%s new=%u familiarity=%u distance=%lu\n",
+                    token, kitsu868::adventure::statusName(status),
+                    update.newZone, static_cast<unsigned>(update.familiarity),
+                    static_cast<unsigned long>(update.totalDistanceMeters));
+    }
+  } else if (command.startsWith("adventure precise ")) {
+    long latitude = 0;
+    long longitude = 0;
+    unsigned accuracy = 0U;
+    unsigned long steps = 0U;
+    unsigned long meters = 0U;
+    char trailing = 0;
+    if (sscanf(command.c_str(), "adventure precise %ld %ld %u %lu %lu %c",
+               &latitude, &longitude, &accuracy, &steps, &meters,
+               &trailing) != 5 || accuracy > UINT16_MAX) {
+      Serial.println("KITSU_ERROR adventure=invalid_precise_sample");
+    } else {
+      const kitsu868::adventure::ProgressState before =
+          adventureProgression.snapshot();
+      kitsu868::adventure::PreciseLocationSample sample{};
+      sample.latitudeE7 = static_cast<int32_t>(latitude);
+      sample.longitudeE7 = static_cast<int32_t>(longitude);
+      sample.accuracyMeters = static_cast<uint16_t>(accuracy);
+      kitsu868::adventure::LocationUpdate update{};
+      const kitsu868::adventure::Status status =
+          adventureProgression.observePreciseTransient(
+              sample, static_cast<uint32_t>(steps),
+              static_cast<uint32_t>(meters), update);
+      sample = kitsu868::adventure::PreciseLocationSample{};
+      if (status == kitsu868::adventure::Status::Ok) {
+        if (!persistAdventureMutation(before, "precise")) return true;
+      }
+      Serial.printf("KITSU_ADVENTURE precise=result_%s zone=%08lX raw_persisted=false\n",
+                    kitsu868::adventure::statusName(status),
+                    static_cast<unsigned long>(update.zoneToken));
+    }
+  } else if (command.startsWith("adventure hotspot ")) {
+    unsigned long token = 0U;
+    unsigned participants = 0U;
+    char trailing = 0;
+    if (sscanf(command.c_str(), "adventure hotspot %lx %u %c", &token,
+               &participants, &trailing) != 2 || token == 0U ||
+        participants < 2U || participants > 4U) {
+      Serial.println("KITSU_ERROR adventure=invalid_hotspot");
+    } else {
+      const kitsu868::adventure::ProgressState before =
+          adventureProgression.snapshot();
+      kitsu868::adventure::HotspotUpdate update{};
+      const kitsu868::adventure::Status status =
+          adventureProgression.observeHotspot(
+              static_cast<uint32_t>(token),
+              static_cast<uint8_t>(participants), adventureClock(millis()),
+              update);
+      if (status == kitsu868::adventure::Status::Ok) {
+        if (!persistAdventureMutation(before, "hotspot")) return true;
+      }
+      Serial.printf("KITSU_ADVENTURE hotspot=%08lX result=%s visits=%u community_bonus=%u\n",
+                    token, kitsu868::adventure::statusName(status),
+                    update.hotspotVisits, update.bonusAwarded);
+    }
+  } else if (command.startsWith("adventure terrain ")) {
+    const String value = command.substring(18);
+    if (value == "meadow") adventureTerrain = kitsu868::adventure::Terrain::Meadow;
+    else if (value == "forest") adventureTerrain = kitsu868::adventure::Terrain::Forest;
+    else if (value == "ridge") adventureTerrain = kitsu868::adventure::Terrain::Ridge;
+    else if (value == "water") adventureTerrain = kitsu868::adventure::Terrain::Waterfront;
+    else if (value == "town") adventureTerrain = kitsu868::adventure::Terrain::Town;
+    else {
+      Serial.println("KITSU_ERROR adventure=invalid_terrain");
+      return true;
+    }
+    Serial.printf("KITSU_ADVENTURE terrain=%s\n", terrainLabel(adventureTerrain));
+  } else if (command.startsWith("adventure objective ")) {
+    const String value = command.substring(20);
+    if (value == "explore") adventureObjective = kitsu868::adventure::Objective::Explore;
+    else if (value == "signal") adventureObjective = kitsu868::adventure::Objective::FollowSignal;
+    else if (value == "creature") adventureObjective = kitsu868::adventure::Objective::MeetCreature;
+    else if (value == "community") adventureObjective = kitsu868::adventure::Objective::Community;
+    else if (value == "home") adventureObjective = kitsu868::adventure::Objective::ReturnHome;
+    else {
+      Serial.println("KITSU_ERROR adventure=invalid_objective");
+      return true;
+    }
+    Serial.printf("KITSU_ADVENTURE objective=%s\n", objectiveLabel(adventureObjective));
+  } else if (command.startsWith("adventure risk ")) {
+    const String value = command.substring(15);
+    if (value == "careful") adventureRisk = kitsu868::adventure::Risk::Careful;
+    else if (value == "balanced") adventureRisk = kitsu868::adventure::Risk::Balanced;
+    else if (value == "bold") adventureRisk = kitsu868::adventure::Risk::Bold;
+    else {
+      Serial.println("KITSU_ERROR adventure=invalid_risk");
+      return true;
+    }
+    Serial.printf("KITSU_ADVENTURE risk=%s\n", riskLabel(adventureRisk));
+  } else if (command.startsWith("adventure weather ")) {
+    const String value = command.substring(18);
+    if (value == "unknown") {
+      adventureWeather = kitsu868::adventure::Weather::Unknown;
+    } else if (value == "clear") {
+      adventureWeather = kitsu868::adventure::Weather::Clear;
+    } else if (value == "rain") {
+      adventureWeather = kitsu868::adventure::Weather::Rain;
+    } else if (value == "wind") {
+      adventureWeather = kitsu868::adventure::Weather::Wind;
+    } else if (value == "snow") {
+      adventureWeather = kitsu868::adventure::Weather::Snow;
+    } else {
+      Serial.println("KITSU_ERROR adventure=invalid_weather");
+      return true;
+    }
+    Serial.printf("KITSU_ADVENTURE weather=%s\n",
+                  weatherLabel(adventureWeather));
+  } else if (command == "adventure journal") {
+    kitsu868::adventure::JournalEntry entry{};
+    for (uint8_t index = 0U;
+         adventureProgression.journalNewest(index, entry); ++index) {
+      Serial.printf("KITSU_ADVENTURE_JOURNAL index=%u route=%lu day=%lu outcome=%u postcard=%u\n",
+                    index, static_cast<unsigned long>(entry.routeId),
+                    static_cast<unsigned long>(entry.dayId), entry.outcome,
+                    entry.postcardId);
+    }
+  } else {
+    return false;
+  }
+  return true;
+}
+
 void executeSerialCommand(String command) {
   kitsu868::chat::Command chatCommand{};
   const kitsu868::chat::ParseStatus chatStatus =
@@ -11099,6 +15076,11 @@ void executeSerialCommand(String command) {
   }
 
   command.trim();
+  if (executeClockCommand(command)) return;
+  if (executeProfileCommand(command)) return;
+  if (executeSocialCommand(command)) return;
+  if (executeActivityCommand(command)) return;
+  if (executeAdventureCommand(command)) return;
   if (executeEncounterCodeSerial(command)) return;
   command.toLowerCase();
   if (executeMeshCommand(command)) return;
@@ -11125,24 +15107,21 @@ void executeSerialCommand(String command) {
     if (activeGame != ActiveGame::None) {
       Serial.println("KITSU_ERROR busy=game");
     } else if (requireCompanion()) {
-      if (radioListening) stopListening();
+      if (radioListening) stopListeningSafely();
       setSleeping(true);
       enterScreen(Screen::Sleep);
     }
   } else if (command == "wake") {
-    if (activeGame != ActiveGame::None) {
-      Serial.println("KITSU_ERROR busy=game");
-    } else {
+    if (!foregroundTransitionBlocked("wake")) {
       setSleeping(false);
       enterScreen(Screen::Pet);
     }
   } else if (command == "stop") {
-    if (radioListening) stopListening();
+    if (radioListening) stopListeningSafely();
   } else if (command == "pack") {
     printSelfTest();
   } else if (command.startsWith("anim ")) {
-    if (activeGame != ActiveGame::None) {
-      Serial.println("KITSU_ERROR busy=game");
+    if (foregroundTransitionBlocked("animation")) {
       return;
     }
     CompanionRole role = CompanionRole::Idle;
@@ -11165,7 +15144,7 @@ void executeSerialCommand(String command) {
     }
   } else if (command == "help") {
     Serial.println(
-        "KITSU_HELP selftest|sync|journal|pet|feed|play|game <signal|pounce|echo|tap|cancel>|listen|sleep|wake|stop|inject <38hex>|anim <role>|mesh <status|config|time|tx|location|introduce|publish-map>|chat <status|contacts|channels|inbox|contact|channel|send>|help");
+        "KITSU_HELP selftest|sync|journal|pet|feed|play|game <signal|pounce|echo|tap|cancel>|activity <status|start|daily|ghost|tap|press|release|cancel>|adventure <status|start|route|steps|decide|finish|acknowledge|privacy|home|zone|precise|hotspot|terrain|objective|risk|weather|journal>|profile <status|inspect|nickname|quick|quiet|replay|request|answer>|social <status|leaderboard|scan|host [mode]|join|ready [0|1]|begin|contribute value|leave>|clock <status|set|unix|offset|edit|ntp>|listen|sleep|wake|stop|inject <38hex>|anim <role>|mesh <status|config|time|tx|location|introduce|publish-map>|chat <status|contacts|channels|inbox|contact|channel|send>|help");
   } else if (command.length()) {
     Serial.printf("KITSU_ERROR unknown_command=%s\n", command.c_str());
   }
@@ -11478,6 +15457,7 @@ void setup() {
       : (companionPack.valid() ? companionPack.id() : 0U);
   companionBrain.begin(wisp.uid.c_str(), brainPackId);
   companionBrain.syncSleeping(wisp.sleeping);
+  loadCompanionProgression();
   initMesh();
   printChatStorageStatus();
   // Establish the boot-scoped journal identity before BLE starts accepting
@@ -11505,9 +15485,11 @@ void setup() {
   cancelAmbientAnimation();
   const bool meetingNewPack = startMeetForNewPack();
   if (!meetingNewPack) startBaseAnimation();
-  enterScreen(companionPack.valid() && wisp.sleeping && !meetingNewPack
-                  ? Screen::Sleep
-                  : Screen::Pet);
+  enterScreen(activityResumePending
+                  ? Screen::Activity
+                  : companionPack.valid() && wisp.sleeping && !meetingNewPack
+                        ? Screen::Sleep
+                        : Screen::Pet);
   printSelfTest();
   const bool criticalHealth = legacyConnectivityRetirementReady &&
       connectivitySecurityReady && bleReady;
@@ -11536,6 +15518,7 @@ void loop() {
   pollButton();
   pollSerial();
   const uint32_t now = millis();
+  serviceClockNetworkTime(now);
   companionBle.loop(now);
   serviceControllerRecovery(now);
   bleOta.loop(now, legacyConnectivityRetirementReady &&
@@ -11551,21 +15534,27 @@ void loop() {
   tickCreature();
   tickProgression();
   tickGame();
+  tickActivity(now);
   tickFun(now);
+  tickCompanionProgression(now);
   tickExpedition(now);
   tickPartyHotspot(now);
+  tickModeParty(now);
   tickAnimation();
   sampleBattery();
 
   tickDiscoveryJournal(now);
   if (radioListening && static_cast<int32_t>(now - listenUntil) >= 0) {
-    stopListening();
+    stopListeningSafely();
   }
   if ((screen == Screen::Menu || screen == Screen::Inbox ||
        screen == Screen::GameMenu || screen == Screen::Status ||
-       screen == Screen::FieldGuide || screen == Screen::Goals) &&
+       screen == Screen::FieldGuide || screen == Screen::Goals ||
+       screen == Screen::Clock || screen == Screen::Adventure ||
+       (screen == Screen::Activity && !activityRuntimeBusy())) &&
       !rawButton && !stableButton &&
       now - screenEnteredAt >= SCREEN_TIMEOUT_MS) {
+    if (screen == Screen::Clock) clockEditor.cancel();
     enterScreen(wisp.sleeping ? Screen::Sleep : Screen::Pet);
   }
   tickDisplayPower();

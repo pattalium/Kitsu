@@ -231,7 +231,7 @@ class PartyModesMainIntegrationSourceTests(unittest.TestCase):
     def test_serial_surface_exposes_every_mode_party_operation_and_help(self) -> None:
         social = cpp_function(MAIN, "bool executeSocialCommand(")
         commands = {
-            'command == "social scan"': "startModePartyScan(error)",
+            'command == "social scan"': "startAllPartyScans(error)",
             'command == "social host"': "startRotatingModePartyHost(error)",
             'command.startsWith("social host ")': "startModePartyHost(mode, error)",
             'command == "social join"': "joinObservedModeParty(error)",
@@ -256,6 +256,13 @@ class PartyModesMainIntegrationSourceTests(unittest.TestCase):
     def test_cooperative_outcomes_persist_under_the_raw_session_nonce(self) -> None:
         outcome = cpp_function(MAIN, "bool applyModePartySocialOutcome(")
         self.assertIn("socialProgression.snapshot()", outcome)
+        self.assertIn("signalTrail.snapshot()", outcome)
+        self.assertIn("signalTrail.mergeSharedMissCount(", outcome)
+        self.assertIn("persistSignalEncounterState()", outcome)
+        self.assertLess(
+            outcome.index("signalTrail.mergeSharedMissCount("),
+            outcome.index("if (!socialProgressionReady) return true"),
+        )
         self.assertIn(
             "socialProgression.recordCooperativeRareEncounter(rawNonce)",
             outcome,
@@ -270,6 +277,29 @@ class PartyModesMainIntegrationSourceTests(unittest.TestCase):
             outcome.count("socialProgression.restore(before)"), 3
         )
         self.assertNotIn("modePartyRewardNonce(rawNonce)", outcome)
+
+    def test_signal_hunt_rotation_has_truthful_serial_controls(self) -> None:
+        social = cpp_function(MAIN, "bool executeSocialCommand(")
+        self.assertIn('"protocol\\\":\\\"p8\\\"', social)
+        begin = social.index('command == "social begin"')
+        contribute = social.index('command.startsWith("social contribute ")')
+        leave = social.index('command == "social leave"')
+        self.assertIn("beginHostedParty(error)", social[begin:contribute])
+        self.assertIn("choosePartySignal(", social[contribute:leave])
+        self.assertIn("value + 1L", social[contribute:leave])
+        self.assertIn("ready_not_required", social)
+        self.assertIn("idleSignalHunt ? \"p8\" : \"m8\"", social)
+        self.assertIn("idleSignalHunt ? \"false\" : \"true\"", social)
+
+        scan = cpp_function(MAIN, "bool startAllPartyScans(")
+        self.assertIn("startModePartyScan(error)", scan)
+        self.assertIn("partyScanActive = true", scan)
+        join = social.index('command == "social join"')
+        ready = social.index('command == "social ready"', join)
+        self.assertIn("joinObservedParty(", social[join:ready])
+        self.assertIn("joinObservedModeParty(error)", social[join:ready])
+        self.assertIn("modePartyParticipant.reset()", social[join:ready])
+        self.assertIn("partyParticipant.reset()", social[join:ready])
 
     def test_legacy_rewards_get_a_domain_scoped_nonce(self) -> None:
         nonce = cpp_function(MAIN, "uint32_t modePartyRewardNonce(")
