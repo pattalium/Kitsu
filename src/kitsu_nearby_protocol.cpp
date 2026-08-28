@@ -46,7 +46,7 @@ bool profileFieldsAreZero(const Packet& packet) {
 
 bool supportedPositiveAction(PositiveAction action) {
   return action == PositiveAction::Pet || action == PositiveAction::Greet ||
-         action == PositiveAction::Play;
+         action == PositiveAction::Play || action == PositiveAction::Gift;
 }
 
 bool supportedActionResult(ActionResult result) {

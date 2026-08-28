@@ -7,6 +7,15 @@
 
 namespace nearby = kitsu868::nearby;
 
+static_assert(static_cast<uint8_t>(nearby::PositiveAction::Pet) == 1U,
+              "Pet wire value changed");
+static_assert(static_cast<uint8_t>(nearby::PositiveAction::Greet) == 2U,
+              "Greet wire value changed");
+static_assert(static_cast<uint8_t>(nearby::PositiveAction::Play) == 3U,
+              "Play wire value changed");
+static_assert(static_cast<uint8_t>(nearby::PositiveAction::Gift) == 4U,
+              "Gift wire value must remain 4");
+
 namespace {
 
 int failures = 0;
@@ -44,6 +53,12 @@ nearby::Packet actionRequest() {
   return packet;
 }
 
+nearby::Packet giftRequest() {
+  nearby::Packet packet = actionRequest();
+  packet.action = nearby::PositiveAction::Gift;
+  return packet;
+}
+
 void refreshCrc(std::array<uint8_t, nearby::kWireBytes>& wire) {
   const uint16_t crc = nearby::crc16CcittFalse(wire.data(), 24U);
   wire[24] = static_cast<uint8_t>(crc);
@@ -68,6 +83,11 @@ void testGoldenPresenceAndRequest() {
       0x4B, 0x38, 0x02, 0x02, 0xAD, 0xDE, 0xEF, 0xBE, 0xCD,
       0xAB, 0x34, 0x12, 0x34, 0x12, 0x01, 0x00, 0x00, 0x00,
       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xBC, 0x49,
+  };
+  static constexpr std::array<uint8_t, nearby::kWireBytes> expectedGift = {
+      0x4B, 0x38, 0x02, 0x02, 0xAD, 0xDE, 0xEF, 0xBE, 0xCD,
+      0xAB, 0x34, 0x12, 0x34, 0x12, 0x04, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xCC, 0x8B,
   };
 
   std::array<uint8_t, nearby::kWireBytes> wire{};
@@ -99,6 +119,16 @@ void testGoldenPresenceAndRequest() {
             nearby::Status::Ok &&
             wire == expectedRequest,
         "Pet request matches golden wire bytes");
+
+  check(nearby::encode(giftRequest(), wire.data(), wire.size(), &written) ==
+            nearby::Status::Ok &&
+            wire == expectedGift &&
+            nearby::crc16CcittFalse(wire.data(), 24U) == 0x8BCCU,
+        "Gift request uses action value 4 in the unchanged v2 wire format");
+  check(nearby::decode(wire.data(), wire.size(), parsed) ==
+            nearby::Status::Ok &&
+            parsed.action == nearby::PositiveAction::Gift,
+        "Gift request round-trips through the v2 codec");
 }
 
 void testValidationAndCorruption() {
@@ -242,7 +272,8 @@ void testActionsAcknowledgementsAndDedupe() {
   const nearby::Packet request = actionRequest();
   check(nearby::supportedPositiveAction(nearby::PositiveAction::Pet) &&
             nearby::supportedPositiveAction(nearby::PositiveAction::Greet) &&
-            nearby::supportedPositiveAction(nearby::PositiveAction::Play),
+            nearby::supportedPositiveAction(nearby::PositiveAction::Play) &&
+            nearby::supportedPositiveAction(nearby::PositiveAction::Gift),
         "positive action allowlist is explicit");
   check(!nearby::supportedPositiveAction(nearby::PositiveAction::None),
         "None is never executable");
@@ -303,6 +334,16 @@ void testActionsAcknowledgementsAndDedupe() {
             nearby::Status::Ok &&
             nearby::actionResultAcknowledges(request, parsedResult),
         "accepted action result round-trips as exact acknowledgement");
+
+  const nearby::Packet gift = giftRequest();
+  nearby::Packet giftResult{};
+  check(nearby::makeActionResult(gift, nearby::ActionResult::Accepted,
+                                 giftResult) &&
+            giftResult.action == nearby::PositiveAction::Gift &&
+            nearby::actionResultAcknowledges(gift, giftResult),
+        "Gift receives the same canonical acknowledgement behavior");
+  check(!nearby::isDuplicate(requestToken, gift),
+        "Gift and Pet remain distinct replay-token actions");
   check(std::strcmp(nearby::statusName(nearby::Status::IntegrityMismatch),
                     "integrity_mismatch") == 0,
         "nearby status names are stable");
@@ -321,6 +362,6 @@ int main() {
     return 1;
   }
   std::cout << "TEST_PASS kitsu_nearby_protocol version=2 wire_bytes=26 "
-               "presence_crc=DB74 request_crc=49BC actions=3\n";
+               "presence_crc=DB74 request_crc=49BC gift_crc=8BCC actions=4\n";
   return 0;
 }

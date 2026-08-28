@@ -37,6 +37,7 @@ enum class PositiveAction : uint8_t {
   Pet = 1U,
   Greet = 2U,
   Play = 3U,
+  Gift = 4U,
 };
 
 enum class ActionResult : uint8_t {
