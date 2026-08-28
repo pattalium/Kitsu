@@ -1,6 +1,7 @@
 idf_component_register(
   SRCS
     "companion_brain.cpp"
+    "companion_dialogue.cpp"
     "companion_pack.cpp"
     "encounter_protocol.cpp"
     "kitsu_nearby_protocol.cpp"
