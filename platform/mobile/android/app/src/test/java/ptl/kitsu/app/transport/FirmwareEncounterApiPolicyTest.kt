@@ -12,5 +12,11 @@ class FirmwareEncounterApiPolicyTest {
         assertTrue(FirmwareEncounterApiPolicy.supportsV1("0.17.0"))
         assertTrue(FirmwareEncounterApiPolicy.supportsV1("0.17.0-test"))
         assertTrue(FirmwareEncounterApiPolicy.supportsV1("1.0.0"))
+
+        assertFalse(FirmwareEncounterApiPolicy.supportsCatalogV1(null))
+        assertFalse(FirmwareEncounterApiPolicy.supportsCatalogV1("0.17.9"))
+        assertTrue(FirmwareEncounterApiPolicy.supportsCatalogV1("0.18.0"))
+        assertTrue(FirmwareEncounterApiPolicy.supportsCatalogV1("0.18.0-test"))
+        assertTrue(FirmwareEncounterApiPolicy.supportsCatalogV1("1.0.0"))
     }
 }

@@ -64,12 +64,12 @@ class AdaptiveOwnerUiTest {
     }
 
     @Test
-    fun darkFourTabShellUsesTheLayoutForTheAvailableWidthAndRespectsInsets() {
+    fun darkFiveTabShellUsesTheLayoutForTheAvailableWidthAndRespectsInsets() {
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, compose.activity.requestedOrientation)
         compose.onNodeWithTag("kitsu-app")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Dark theme"))
 
-        listOf("nav-home", "nav-network", "nav-messages", "nav-settings").forEach { tag ->
+        listOf("nav-home", "nav-guide", "nav-network", "nav-messages", "nav-settings").forEach { tag ->
             compose.onNodeWithTag(tag).assertHasClickAction()
         }
         compose.onAllNodesWithTag("nav-care").assertCountEquals(0)
@@ -97,6 +97,17 @@ class AdaptiveOwnerUiTest {
         val connectionActions = tagCount("connection-connect") + tagCount("connection-disconnect")
         val setupActions = compose.onAllNodesWithText("Set up a Kitsu").fetchSemanticsNodes().size
         assertTrue("home exposed no real connection or setup action", connectionActions + setupActions > 0)
+    }
+
+    @Test
+    fun fieldGuideListsThePublicRosterWithoutAConnection() {
+        compose.onNodeWithTag("nav-guide").performClick()
+        compose.onNodeWithTag("screen-field-guide").assertIsDisplayed()
+        compose.onNodeWithTag("field-guide-summary").assertIsDisplayed()
+        compose.onNodeWithTag("screen-field-guide")
+            .performScrollToNode(hasTestTag("field-guide-creature-91a2de7b"))
+        compose.onNodeWithText("Red Panda").assertIsDisplayed()
+        compose.onNodeWithText("Epic · Pack 0x91A2DE7B").assertIsDisplayed()
     }
 
     @Test

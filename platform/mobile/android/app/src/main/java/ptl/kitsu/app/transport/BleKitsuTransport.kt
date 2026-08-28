@@ -28,7 +28,9 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
 import ptl.kitsu.app.model.ENCOUNTER_CODES_OPERATION
+import ptl.kitsu.app.model.ENCOUNTER_CATALOG_OPERATION
 import ptl.kitsu.app.model.ENCOUNTER_NEIGHBORS_OPERATION
+import ptl.kitsu.app.model.EncounterCatalogPage
 import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.EventEnvelope
@@ -1314,6 +1316,10 @@ class BleKitsuTransport(
 
     override suspend fun nearbyKitsu(): NearbyKitsuPage = EncounterWireCodec.nearbyKitsu(
         successfulPayload(ENCOUNTER_NEIGHBORS_OPERATION, buildJsonObject {}),
+    )
+
+    override suspend fun encounterCatalog(): EncounterCatalogPage = EncounterWireCodec.catalog(
+        successfulPayload(ENCOUNTER_CATALOG_OPERATION, buildJsonObject {}),
     )
 
     override suspend fun neighborInteraction(

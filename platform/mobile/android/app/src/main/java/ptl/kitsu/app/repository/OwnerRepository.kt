@@ -10,6 +10,7 @@ import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.AdvertiseScope
 import ptl.kitsu.app.model.EncounterCodePolicy
+import ptl.kitsu.app.model.EncounterCatalogCreature
 import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.KitsuStatus
@@ -18,6 +19,7 @@ import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.MeshConfigurationReceipt
 import ptl.kitsu.app.model.NearbyKitsu
 import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.Peer
 import ptl.kitsu.app.pairing.ControllerPairingProgress
@@ -65,8 +67,12 @@ data class OwnerState(
     val status: KitsuStatus? = null,
     val history: List<HistoryEntry> = emptyList(),
     val peers: List<Peer> = emptyList(),
+    val encounterCatalog: List<EncounterCatalogCreature> = emptyList(),
+    val encounterCatalogSupported: Boolean = false,
+    val encounterCatalogErrorCode: String? = null,
     val nearbyKitsu: List<NearbyKitsu> = emptyList(),
     val nearbyKitsuSupported: Boolean = false,
+    val nearbyInteractionKinds: Set<NeighborInteractionKind> = emptySet(),
     val nearbyKitsuErrorCode: String? = null,
     val messages: List<Message> = emptyList(),
     val messagesErrorCode: String? = null,
@@ -136,11 +142,22 @@ class OwnerRepository(
             coordinator.state.collect { connection ->
                 mutableState.value = mutableState.value.copy(
                     connection = connection,
+                    encounterCatalog = if (connection.connected) {
+                        mutableState.value.encounterCatalog
+                    } else emptyList(),
+                    encounterCatalogSupported = connection.connected &&
+                        mutableState.value.encounterCatalogSupported,
+                    encounterCatalogErrorCode = if (connection.connected) {
+                        mutableState.value.encounterCatalogErrorCode
+                    } else null,
                     nearbyKitsu = if (connection.connected) {
                         mutableState.value.nearbyKitsu
                     } else emptyList(),
                     nearbyKitsuSupported = connection.connected &&
                         mutableState.value.nearbyKitsuSupported,
+                    nearbyInteractionKinds = if (connection.connected) {
+                        mutableState.value.nearbyInteractionKinds
+                    } else emptySet(),
                     nearbyKitsuErrorCode = if (connection.connected) {
                         mutableState.value.nearbyKitsuErrorCode
                     } else null,
@@ -425,20 +442,37 @@ class OwnerRepository(
                 )
                 val peers = transport.peers()
                 val channels = transport.channels(status.firmwareVersion)
+                var encounterCatalogErrorCode: String? = null
+                val encounterCatalogSupported = FirmwareEncounterApiPolicy.supportsCatalogV1(
+                    status.firmwareVersion,
+                )
+                val encounterCatalog = if (encounterCatalogSupported) {
+                    try {
+                        transport.encounterCatalog().items
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        encounterCatalogErrorCode = failure.transportCodeOr("encounter_catalog_refresh_failed")
+                        SafeLog.warn("owner_encounter_catalog", encounterCatalogErrorCode!!, failure)
+                        emptyList()
+                    }
+                } else {
+                    emptyList()
+                }
                 var nearbyKitsuErrorCode: String? = null
                 val nearbyKitsuSupported = FirmwareEncounterApiPolicy.supportsV1(status.firmwareVersion)
-                val nearbyKitsu = if (nearbyKitsuSupported) {
+                val nearbyPage = if (nearbyKitsuSupported) {
                     try {
-                        transport.nearbyKitsu().items
+                        transport.nearbyKitsu()
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (failure: Throwable) {
                         nearbyKitsuErrorCode = failure.transportCodeOr("nearby_kitsu_refresh_failed")
                         SafeLog.warn("owner_nearby_kitsu", nearbyKitsuErrorCode!!, failure)
-                        emptyList()
+                        null
                     }
                 } else {
-                    emptyList()
+                    null
                 }
                 val replaceHistory = OwnerCursorPolicy.shouldReplace(
                     lastLiveNamespace,
@@ -453,8 +487,12 @@ class OwnerRepository(
                         (previous.history + history.items).distinctBy { it.id }.takeLast(CachePolicy.MAX_HISTORY),
                     peers = peers.items,
                     channels = channels,
-                    nearbyKitsu = nearbyKitsu,
+                    encounterCatalog = encounterCatalog,
+                    encounterCatalogSupported = encounterCatalogSupported,
+                    encounterCatalogErrorCode = encounterCatalogErrorCode,
+                    nearbyKitsu = nearbyPage?.items.orEmpty(),
                     nearbyKitsuSupported = nearbyKitsuSupported,
+                    nearbyInteractionKinds = nearbyPage?.supportedActions?.toSet().orEmpty(),
                     nearbyKitsuErrorCode = nearbyKitsuErrorCode,
                     messageMarkReadSupported = FirmwareMessageApiPolicy.supportsMarkRead(
                         status.firmwareVersion,
@@ -606,6 +644,12 @@ class OwnerRepository(
         command: NeighborInteractionCommand,
     ): NeighborInteractionReceipt {
         if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        NeighborInteractionCapabilityPolicy.validationError(
+            supported = mutableState.value.nearbyInteractionKinds,
+            requested = command.kind,
+        )?.let { code ->
+            throw TransportException(code)
+        }
         return coordinator.withTransport { transport ->
             transport.neighborInteraction(command).also {
                 // Firmware consumes this sequence when it accepts the targeted action.
@@ -1065,8 +1109,12 @@ class OwnerRepository(
             status = null,
             history = emptyList(),
             peers = emptyList(),
+            encounterCatalog = emptyList(),
+            encounterCatalogSupported = false,
+            encounterCatalogErrorCode = null,
             nearbyKitsu = emptyList(),
             nearbyKitsuSupported = false,
+            nearbyInteractionKinds = emptySet(),
             nearbyKitsuErrorCode = null,
             messages = emptyList(),
             messagesErrorCode = null,
@@ -1121,6 +1169,13 @@ class OwnerRepository(
             status = null,
             history = emptyList(),
             peers = emptyList(),
+            encounterCatalog = emptyList(),
+            encounterCatalogSupported = false,
+            encounterCatalogErrorCode = null,
+            nearbyKitsu = emptyList(),
+            nearbyKitsuSupported = false,
+            nearbyInteractionKinds = emptySet(),
+            nearbyKitsuErrorCode = null,
             messages = emptyList(),
             messagesErrorCode = null,
             messageJournalSession = null,
@@ -1241,6 +1296,13 @@ class OwnerRepository(
             "request_timeout", "disconnected", "gatt_disconnected", "gatt_write_failed",
         )
     }
+}
+
+internal object NeighborInteractionCapabilityPolicy {
+    fun validationError(
+        supported: Set<NeighborInteractionKind>,
+        requested: NeighborInteractionKind,
+    ): String? = if (requested in supported) null else "neighbor_action_unsupported"
 }
 
 /**

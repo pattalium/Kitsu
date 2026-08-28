@@ -6,15 +6,20 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import ptl.kitsu.app.model.ENCOUNTER_CODES_SCHEMA
+import ptl.kitsu.app.model.ENCOUNTER_CATALOG_SCHEMA
 import ptl.kitsu.app.model.ENCOUNTER_NEIGHBORS_SCHEMA
+import ptl.kitsu.app.model.EncounterCatalogPage
+import ptl.kitsu.app.model.EncounterCatalogPolicy
 import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.NearbyKitsuPage
 import ptl.kitsu.app.model.NearbyKitsuPolicy
 import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.model.NeighborInteractionPolicy
 import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.NEIGHBOR_ACTION_RECEIPT_SCHEMA
+import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 
 /** Forward-compatible mapper for the authenticated encounter operations. */
 internal object EncounterWireCodec {
@@ -44,6 +49,22 @@ internal object EncounterWireCodec {
         )
     }
 
+    fun catalog(payload: ByteArray): EncounterCatalogPage {
+        val page = try {
+            json.decodeFromString<EncounterCatalogPage>(payload.toString(Charsets.UTF_8))
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_encounter_catalog", failure)
+        }
+        if (
+            page.schema != ENCOUNTER_CATALOG_SCHEMA ||
+            !EncounterCatalogPolicy.isExactPublicCatalog(page.items)
+        ) {
+            throw TransportException("malformed_encounter_catalog")
+        }
+        // Firmware order is not UI state; retain the canonical rarity progression.
+        return page.copy(items = PUBLIC_ENCOUNTER_CATALOG)
+    }
+
     fun neighborActionBody(command: NeighborInteractionCommand): JsonObject {
         NeighborInteractionPolicy.validationError(command)?.let { code ->
             throw TransportException(code)
@@ -61,7 +82,10 @@ internal object EncounterWireCodec {
             page.schema != ENCOUNTER_NEIGHBORS_SCHEMA ||
             page.items.size > NearbyKitsuPolicy.MAX_ITEMS ||
             page.items.any { NearbyKitsuPolicy.validationError(it) != null } ||
-            page.items.map { it.deviceId }.distinct().size != page.items.size
+            page.items.map { it.deviceId }.distinct().size != page.items.size ||
+            page.supportedActions.isEmpty() ||
+            page.supportedActions.distinct().size != page.supportedActions.size ||
+            NeighborInteractionKind.PET !in page.supportedActions
         ) {
             throw TransportException("malformed_encounter_neighbors")
         }

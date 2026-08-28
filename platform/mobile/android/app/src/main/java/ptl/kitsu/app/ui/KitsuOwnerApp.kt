@@ -17,6 +17,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Settings
@@ -65,6 +66,7 @@ import ptl.kitsu.app.update.locksCompanionControls
 
 private enum class OwnerTab(val label: String) {
     HOME("Kitsu"),
+    GUIDE("Guide"),
     MESH("Mesh"),
     MESSAGES("Messages"),
     SETTINGS("Settings"),
@@ -272,6 +274,12 @@ fun KitsuOwnerApp(
                     onManageKitsu = { tab = OwnerTab.SETTINGS },
                     modifier = screenModifier,
                 )
+                OwnerTab.GUIDE -> KitsuFieldGuideScreen(
+                    owner = owner,
+                    encounterUnlocks = encounterUnlocks,
+                    onSync = viewModel::syncEncounterCodes,
+                    modifier = screenModifier,
+                )
                 OwnerTab.MESH -> KitsuMeshScreen(
                     owner = owner,
                     viewModel = viewModel,
@@ -399,6 +407,7 @@ private fun OwnerTabIcon(tab: OwnerTab) {
     Icon(
         imageVector = when (tab) {
             OwnerTab.HOME -> Icons.Default.Home
+            OwnerTab.GUIDE -> Icons.Default.AutoStories
             OwnerTab.MESH -> Icons.Default.Hub
             OwnerTab.MESSAGES -> Icons.AutoMirrored.Filled.Message
             OwnerTab.SETTINGS -> Icons.Default.Settings
@@ -410,6 +419,7 @@ private fun OwnerTabIcon(tab: OwnerTab) {
 private val OwnerTab.testTag: String
     get() = when (this) {
         OwnerTab.HOME -> "nav-home"
+        OwnerTab.GUIDE -> "nav-guide"
         OwnerTab.MESH -> "nav-network"
         OwnerTab.MESSAGES -> "nav-messages"
         OwnerTab.SETTINGS -> "nav-settings"

@@ -6,6 +6,7 @@ import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.EncounterCodePage
+import ptl.kitsu.app.model.EncounterCatalogPage
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.MessagePage
@@ -55,6 +56,8 @@ interface KitsuTransport {
     suspend fun channels(firmwareVersion: String? = null): List<MeshChannel> = emptyList()
     suspend fun configureMesh(enabled: Boolean): MeshConfigurationReceipt
     suspend fun encounterCodes(after: String? = null, limit: Int = 50): EncounterCodePage =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun encounterCatalog(): EncounterCatalogPage =
         throw TransportException("firmware_operation_unavailable")
     suspend fun nearbyKitsu(): NearbyKitsuPage =
         throw TransportException("firmware_operation_unavailable")

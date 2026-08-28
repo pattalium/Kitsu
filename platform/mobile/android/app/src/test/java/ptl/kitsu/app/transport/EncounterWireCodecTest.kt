@@ -1,15 +1,49 @@
 package ptl.kitsu.app.transport
 
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ptl.kitsu.app.model.EncounterRarity
+import ptl.kitsu.app.model.EncounterCatalogPage
 import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionKind
+import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 
 class EncounterWireCodecTest {
+    @Test
+    fun catalogAcceptsOnlyTheExactTwentyOneCreaturePublicRoster() {
+        val encoded = Json.encodeToString(
+            EncounterCatalogPage(
+                schema = "kitsu.encounter-catalog.v1",
+                items = PUBLIC_ENCOUNTER_CATALOG.reversed(),
+            ),
+        )
+        assertTrue("\"creature_name\":\"Frog\"" in encoded)
+
+        val page = EncounterWireCodec.catalog(encoded.toByteArray())
+        assertEquals(PUBLIC_ENCOUNTER_CATALOG, page.items)
+
+        listOf(
+            EncounterCatalogPage("wrong", PUBLIC_ENCOUNTER_CATALOG),
+            EncounterCatalogPage("kitsu.encounter-catalog.v1", PUBLIC_ENCOUNTER_CATALOG.dropLast(1)),
+            EncounterCatalogPage(
+                "kitsu.encounter-catalog.v1",
+                PUBLIC_ENCOUNTER_CATALOG.dropLast(1) + PUBLIC_ENCOUNTER_CATALOG.first().copy(
+                    packId = 1,
+                ),
+            ),
+        ).forEach { invalid ->
+            val failure = runCatching {
+                EncounterWireCodec.catalog(Json.encodeToString(invalid).toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_encounter_catalog", failure.code)
+        }
+    }
+
     @Test
     fun codePageAcceptsForwardFieldsAndNormalizesInstalledState() {
         val page = EncounterWireCodec.codePage(
@@ -75,6 +109,15 @@ class EncounterWireCodecTest {
         assertEquals("pet", body.getValue("kind").jsonPrimitive.content)
         assertFalse(body.containsKey("local_care"))
 
+        mapOf(
+            NeighborInteractionKind.GREET to "greet",
+            NeighborInteractionKind.PLAY to "play",
+        ).forEach { (kind, wireName) ->
+            val kindBody = EncounterWireCodec.neighborActionBody(command.copy(kind = kind))
+            assertEquals(wireName, kindBody.getValue("kind").jsonPrimitive.content)
+            assertEquals(command.targetDeviceId, kindBody.getValue("target_device_id").jsonPrimitive.content)
+        }
+
         val receipt = EncounterWireCodec.neighborActionReceipt(
             """{"schema":"kitsu.neighbor-action-receipt.v1","action_id":"${command.actionId}","accepted":true,"state":"delivered","future":1}"""
                 .toByteArray(),
@@ -103,6 +146,39 @@ class EncounterWireCodecTest {
 
         assertEquals(listOf("KT0001", "KT12AF"), page.items.map { it.deviceId })
         assertEquals(65_535L, page.items.last().nextSequence)
+        assertEquals(listOf(NeighborInteractionKind.PET), page.supportedActions)
+    }
+
+    @Test
+    fun nearbyKitsuPageCapabilityEnablesOnlyExplicitAuthenticatedActions() {
+        val page = EncounterWireCodec.nearbyKitsu(
+            """{
+                "schema":"kitsu.encounter-neighbors.v1",
+                "supported_actions":["pet","greet","play"],
+                "items":[]
+            }""".trimIndent().toByteArray(),
+        )
+
+        assertEquals(
+            listOf(
+                NeighborInteractionKind.PET,
+                NeighborInteractionKind.GREET,
+                NeighborInteractionKind.PLAY,
+            ),
+            page.supportedActions,
+        )
+
+        listOf(
+            """{"schema":"kitsu.encounter-neighbors.v1","supported_actions":[],"items":[]}""",
+            """{"schema":"kitsu.encounter-neighbors.v1","supported_actions":["greet"],"items":[]}""",
+            """{"schema":"kitsu.encounter-neighbors.v1","supported_actions":["pet","pet"],"items":[]}""",
+            """{"schema":"kitsu.encounter-neighbors.v1","supported_actions":["pet","dance"],"items":[]}""",
+        ).forEach { payload ->
+            val failure = runCatching {
+                EncounterWireCodec.nearbyKitsu(payload.toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_encounter_neighbors", failure.code)
+        }
     }
 
     @Test

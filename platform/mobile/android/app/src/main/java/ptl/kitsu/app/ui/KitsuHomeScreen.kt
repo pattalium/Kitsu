@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,7 @@ import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.WavingHand
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -44,6 +46,7 @@ import ptl.kitsu.app.MainViewModel
 import ptl.kitsu.app.R
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.NearbyKitsu
+import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.repository.OwnerState
 import ptl.kitsu.app.transport.ConnectionMode
 
@@ -158,7 +161,8 @@ internal fun KitsuHomeScreen(
                         neighbor = neighbor,
                         enabled = owner.connection.connected && !updateBusy,
                         actionInFlight = neighbor.sessionKey in neighborActionsInFlight,
-                        onPet = { viewModel.petNeighbor(neighbor) },
+                        supportedActions = owner.nearbyInteractionKinds,
+                        onInteraction = { kind -> viewModel.interactWithNeighbor(neighbor, kind) },
                     )
                 }
             }
@@ -212,7 +216,8 @@ private fun NearbyOwnedKitsuCard(
     neighbor: NearbyKitsu,
     enabled: Boolean,
     actionInFlight: Boolean,
-    onPet: () -> Unit,
+    supportedActions: Set<NeighborInteractionKind>,
+    onInteraction: (NeighborInteractionKind) -> Unit,
 ) {
     val creature = nearbyCreaturePresentation(neighbor.packId)
     KitsuCard(modifier = Modifier.testTag("nearby-kitsu-${neighbor.deviceId}")) {
@@ -253,17 +258,86 @@ private fun NearbyOwnedKitsuCard(
                 }
             }
         }
-        FilledTonalButton(
-            onClick = onPet,
-            enabled = enabled && !actionInFlight,
-            modifier = Modifier.align(Alignment.End).testTag("nearby-kitsu-pet-${neighbor.deviceId}"),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.size(8.dp))
-            Text(if (actionInFlight) "Sending…" else "Pet")
+            NearbyActionButton(
+                label = "Pet",
+                icon = Icons.Default.Favorite,
+                kind = NeighborInteractionKind.PET,
+                deviceId = neighbor.deviceId,
+                enabled = enabled && !actionInFlight && NeighborInteractionKind.PET in supportedActions,
+                onInteraction = onInteraction,
+                modifier = Modifier.weight(1f),
+            )
+            NearbyActionButton(
+                label = "Greet",
+                icon = Icons.Default.WavingHand,
+                kind = NeighborInteractionKind.GREET,
+                deviceId = neighbor.deviceId,
+                enabled = enabled && !actionInFlight && NeighborInteractionKind.GREET in supportedActions,
+                onInteraction = onInteraction,
+                modifier = Modifier.weight(1f),
+            )
+            NearbyActionButton(
+                label = "Play",
+                icon = Icons.Default.SportsEsports,
+                kind = NeighborInteractionKind.PLAY,
+                deviceId = neighbor.deviceId,
+                enabled = enabled && !actionInFlight && NeighborInteractionKind.PLAY in supportedActions,
+                onInteraction = onInteraction,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (actionInFlight) {
+            Text(
+                "Sending your moment…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            val unavailable = NeighborInteractionKind.entries.filterNot(supportedActions::contains)
+            if (unavailable.isNotEmpty()) {
+                Text(
+                    "${unavailable.joinToString(" and ") { it.actionLabel }} " +
+                        "${if (unavailable.size == 1) "needs" else "need"} newer Kitsu firmware.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
+
+@Composable
+private fun NearbyActionButton(
+    label: String,
+    icon: ImageVector,
+    kind: NeighborInteractionKind,
+    deviceId: String,
+    enabled: Boolean,
+    onInteraction: (NeighborInteractionKind) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    FilledTonalButton(
+        onClick = { onInteraction(kind) },
+        enabled = enabled,
+        modifier = modifier.testTag("nearby-kitsu-${kind.name.lowercase()}-$deviceId"),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
+        Spacer(Modifier.size(5.dp))
+        Text(label, maxLines = 1)
+    }
+}
+
+private val NeighborInteractionKind.actionLabel: String
+    get() = when (this) {
+        NeighborInteractionKind.PET -> "Pet"
+        NeighborInteractionKind.GREET -> "Greet"
+        NeighborInteractionKind.PLAY -> "Play"
+    }
 
 private fun nearbySignalLabel(rssi: Double): String = when {
     rssi >= -65.0 -> "Strong"

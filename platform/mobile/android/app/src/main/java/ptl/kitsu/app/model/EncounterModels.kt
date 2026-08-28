@@ -5,9 +5,11 @@ import kotlinx.serialization.Serializable
 import java.util.UUID
 
 const val ENCOUNTER_CODES_OPERATION = "encounter.codes.get.v1"
+const val ENCOUNTER_CATALOG_OPERATION = "encounter.catalog.get.v1"
 const val ENCOUNTER_NEIGHBORS_OPERATION = "encounter.neighbors.get.v1"
 const val NEIGHBOR_ACTION_OPERATION = "encounter.neighbor.action.v1"
 const val ENCOUNTER_CODES_SCHEMA = "kitsu.encounter-codes.v1"
+const val ENCOUNTER_CATALOG_SCHEMA = "kitsu.encounter-catalog.v1"
 const val ENCOUNTER_NEIGHBORS_SCHEMA = "kitsu.encounter-neighbors.v1"
 const val NEIGHBOR_ACTION_RECEIPT_SCHEMA = "kitsu.neighbor-action-receipt.v1"
 
@@ -20,6 +22,51 @@ enum class EncounterRarity {
     @SerialName("epic") EPIC,
     @SerialName("legendary") LEGENDARY,
     @SerialName("mythical") MYTHICAL,
+}
+
+@Serializable
+data class EncounterCatalogCreature(
+    @SerialName("pack_id") val packId: Long,
+    @SerialName("creature_name") val name: String,
+    val rarity: EncounterRarity,
+)
+
+@Serializable
+data class EncounterCatalogPage(
+    val schema: String,
+    val items: List<EncounterCatalogCreature> = emptyList(),
+)
+
+/** Public 21-creature roster; also provides an offline guide when Kitsu is disconnected. */
+val PUBLIC_ENCOUNTER_CATALOG: List<EncounterCatalogCreature> = listOf(
+    EncounterCatalogCreature(0x5CAC86A3L, "Frog", EncounterRarity.COMMON),
+    EncounterCatalogCreature(0x13793DC7L, "Hamster", EncounterRarity.COMMON),
+    EncounterCatalogCreature(0x7495DBFBL, "Turtle", EncounterRarity.COMMON),
+    EncounterCatalogCreature(0x68D9554EL, "Rabbit", EncounterRarity.UNCOMMON),
+    EncounterCatalogCreature(0x5DF6BE74L, "Hedgehog", EncounterRarity.UNCOMMON),
+    EncounterCatalogCreature(0xE59408E0L, "Ferret", EncounterRarity.UNCOMMON),
+    EncounterCatalogCreature(0x29B4B2F7L, "Otter", EncounterRarity.RARE),
+    EncounterCatalogCreature(0x69276D0CL, "Axolotl", EncounterRarity.RARE),
+    EncounterCatalogCreature(0x2DFB0797L, "Chinchilla", EncounterRarity.RARE),
+    EncounterCatalogCreature(0xC163EFEDL, "Raccoon", EncounterRarity.VERY_RARE),
+    EncounterCatalogCreature(0x374D2540L, "Capybara", EncounterRarity.VERY_RARE),
+    EncounterCatalogCreature(0x39FC5B1AL, "Sugar Glider", EncounterRarity.VERY_RARE),
+    EncounterCatalogCreature(0x91A2DE7BL, "Red Panda", EncounterRarity.EPIC),
+    EncounterCatalogCreature(0xE04EC405L, "Pangolin", EncounterRarity.EPIC),
+    EncounterCatalogCreature(0x8E0E1B03L, "Tasmanian Devil", EncounterRarity.EPIC),
+    EncounterCatalogCreature(0x533B9B30L, "Snow Leopard", EncounterRarity.LEGENDARY),
+    EncounterCatalogCreature(0x86F3BB5DL, "Okapi", EncounterRarity.LEGENDARY),
+    EncounterCatalogCreature(0x2D1D89AFL, "Shoebill", EncounterRarity.LEGENDARY),
+    EncounterCatalogCreature(0xA52160C5L, "Cat Girl", EncounterRarity.MYTHICAL),
+    EncounterCatalogCreature(0xF0F750BDL, "Rabbit Girl", EncounterRarity.MYTHICAL),
+    EncounterCatalogCreature(0x52A1C03AL, "Deer Girl", EncounterRarity.MYTHICAL),
+)
+
+object EncounterCatalogPolicy {
+    const val ITEM_COUNT = 21
+
+    fun isExactPublicCatalog(items: List<EncounterCatalogCreature>): Boolean =
+        items.size == ITEM_COUNT && items.toSet() == PUBLIC_ENCOUNTER_CATALOG.toSet()
 }
 
 @Serializable
@@ -71,11 +118,22 @@ data class NearbyKitsu(
 data class NearbyKitsuPage(
     val schema: String,
     val items: List<NearbyKitsu> = emptyList(),
+    /**
+     * Actions the authenticated firmware accepts for this roster snapshot.
+     *
+     * The v1 firmware contract predates this capability field and only accepts Pet,
+     * so omission deliberately keeps the safe legacy behavior. New actions remain
+     * unavailable until firmware advertises them explicitly.
+     */
+    @SerialName("supported_actions")
+    val supportedActions: List<NeighborInteractionKind> = listOf(NeighborInteractionKind.PET),
 )
 
 @Serializable
 enum class NeighborInteractionKind {
     @SerialName("pet") PET,
+    @SerialName("greet") GREET,
+    @SerialName("play") PLAY,
 }
 
 @Serializable

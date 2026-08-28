@@ -7,6 +7,8 @@ import ptl.kitsu.app.connection.ConnectionState
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.Message
+import ptl.kitsu.app.model.NeighborInteractionKind
+import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 
 class OwnerRefreshCommitPolicyTest {
     @Test fun delayedBroadRefreshPreservesAnInterveningMessageCommitAndItsFreshness() {
@@ -22,6 +24,13 @@ class OwnerRefreshCommitPolicyTest {
             history = listOf(HistoryEntry("2", "2", "mesh", "heard", 2)),
             peers = emptyList(),
             channels = emptyList(),
+            encounterCatalog = PUBLIC_ENCOUNTER_CATALOG,
+            encounterCatalogSupported = true,
+            nearbyInteractionKinds = setOf(
+                NeighborInteractionKind.PET,
+                NeighborInteractionKind.GREET,
+                NeighborInteractionKind.PLAY,
+            ),
         )
 
         val committed = OwnerRefreshCommitPolicy.apply(current, broadReadStartedEarlier)
@@ -29,6 +38,9 @@ class OwnerRefreshCommitPolicyTest {
         assertEquals(listOf(delivered), committed.messages)
         assertNull(committed.messagesErrorCode)
         assertEquals("KT0001", committed.status?.deviceId)
+        assertEquals(PUBLIC_ENCOUNTER_CATALOG, committed.encounterCatalog)
+        assertEquals(true, committed.encounterCatalogSupported)
+        assertEquals(broadReadStartedEarlier.nearbyInteractionKinds, committed.nearbyInteractionKinds)
         assertNull(committed.errorCode)
     }
 

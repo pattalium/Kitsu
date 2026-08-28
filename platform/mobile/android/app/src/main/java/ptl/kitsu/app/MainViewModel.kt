@@ -286,8 +286,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Targeted neighbor care never passes through local companion actions. */
-    fun petNeighbor(neighbor: NearbyKitsu) {
+    fun interactWithNeighbor(neighbor: NearbyKitsu, kind: NeighborInteractionKind) {
         if (rejectWhileFirmwareBusy()) return
+        if (kind !in owner.value.nearbyInteractionKinds) {
+            mutableNotice.value = "${kind.displayName()} is not supported by this Kitsu firmware yet."
+            return
+        }
         val live = owner.value.nearbyKitsu.firstOrNull {
             it.deviceId == neighbor.deviceId &&
                 it.sessionNonce == neighbor.sessionNonce &&
@@ -305,18 +309,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 targetDeviceId = live.deviceId,
                 targetSessionNonce = live.sessionNonce,
                 sequence = live.nextSequence,
-                kind = NeighborInteractionKind.PET,
+                kind = kind,
                 expiresAtEpoch = java.time.Instant.now().epochSecond + 30L,
             )
             try {
                 val result = runCatching { repository.interactWithNeighbor(command) }
-                if (result.isSuccess) mutableNotice.value = "Pet is queued for the nearby Kitsu."
+                if (result.isSuccess) mutableNotice.value = kind.acceptedNotice()
                 result.report("neighbor_interaction_failed")
             } finally {
                 mutableNeighborActionsInFlight.value -= live.sessionKey
             }
         }
     }
+
+    fun petNeighbor(neighbor: NearbyKitsu) =
+        interactWithNeighbor(neighbor, NeighborInteractionKind.PET)
 
     fun pairController(label: String) {
         if (rejectWhileFirmwareBusy()) return
@@ -556,6 +563,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun requestId(): String = UUID.randomUUID().toString()
+
+    private fun NeighborInteractionKind.displayName(): String = when (this) {
+        NeighborInteractionKind.PET -> "Pet"
+        NeighborInteractionKind.GREET -> "Greet"
+        NeighborInteractionKind.PLAY -> "Play"
+    }
+
+    private fun NeighborInteractionKind.acceptedNotice(): String = when (this) {
+        NeighborInteractionKind.PET -> "Pet is queued for the nearby Kitsu."
+        NeighborInteractionKind.GREET -> "Greeting is queued for the nearby Kitsu."
+        NeighborInteractionKind.PLAY -> "Playtime is queued for the nearby Kitsu."
+    }
 
     private fun rejectWhileFirmwareBusy(): Boolean {
         if (!mutableFirmware.value.progress.stage.locksCompanionControls) return false
