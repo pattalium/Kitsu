@@ -9,6 +9,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def cpp_function(source: str, signature: str) -> str:
+    start = 0
+    while True:
+        start = source.index(signature, start)
+        opening = source.index("{", start)
+        terminator = source.find(";", start, opening)
+        if terminator == -1:
+            break
+        start += len(signature)
+    depth = 0
+    for cursor in range(opening, len(source)):
+        if source[cursor] == "{":
+            depth += 1
+        elif source[cursor] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : cursor + 1]
+    raise AssertionError(f"unterminated C++ function: {signature}")
+
+
 class LocalConnectivityFoundationTests(unittest.TestCase):
     def test_partition_table_preserves_dual_apps_and_local_state(self) -> None:
         rows: dict[str, tuple[str, str, int, int]] = {}
@@ -42,13 +62,34 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
 
     def test_authenticated_ble_clock_is_local_and_updates_mesh(self) -> None:
         source = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
-        clock = source.split("bool syncClock", 1)[1].split(
-            "bool configureMesh", 1
-        )[0]
-        self.assertIn("meshTransport.setEpoch(epoch)", clock)
-        self.assertIn("settimeofday(&wallClock, nullptr)", clock)
+        clock = cpp_function(source, "bool syncClock(")
+        for required in (
+            "const kitsu868::timekeeping::KitsuClock before = kitsuClock",
+            "const uint32_t previousGeneration = clockSnapshotGeneration",
+            "const uint8_t previousSlot = clockSnapshotSlot",
+            "kitsuClock.setFromUnixSeconds(",
+            "ClockSource::AuthenticatedApp",
+            "commitClockMutation(before, previousGeneration, previousSlot, now",
+        ):
+            self.assertIn(required, clock)
         self.assertNotIn("wifiRuntime", clock)
         self.assertNotIn("gateway", clock.lower())
+
+        commit = cpp_function(source, "bool commitClockMutation(")
+        self.assertLess(
+            commit.index("persistClockState()"),
+            commit.index("applyClockToRuntime(now)"),
+        )
+        self.assertGreaterEqual(commit.count("kitsuClock = before"), 2)
+        self.assertGreaterEqual(
+            commit.count("clockSnapshotGeneration = previousGeneration"), 2
+        )
+        self.assertGreaterEqual(commit.count("clockSnapshotSlot = previousSlot"), 2)
+        self.assertIn("before.trusted()", commit)
+
+        runtime = cpp_function(source, "bool applyClockToRuntime(")
+        self.assertIn("settimeofday(&systemTime, nullptr)", runtime)
+        self.assertIn("meshTransport.setEpoch(", runtime)
 
     def test_controller_authority_is_encrypted_and_fail_closed(self) -> None:
         header = (ROOT / "src/kitsu_device_security.h").read_text(encoding="utf-8")

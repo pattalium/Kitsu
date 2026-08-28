@@ -311,7 +311,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn(
             "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
         )
-        self.assertIn('FIRMWARE_VERSION[] = "0.19.0"', MAIN)
+        self.assertIn('FIRMWARE_VERSION[] = "0.20.0"', MAIN)
         setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
         self.assertIn("chatSession = esp_random()", setup)
         self.assertIn("if (chatSession == 0U) chatSession = 1U", setup)

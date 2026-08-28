@@ -109,6 +109,9 @@ class PortraitPlannerContractTest(unittest.TestCase):
             "ControllerResult",
             "FieldGuide",
             "Goals",
+            "Clock",
+            "Adventure",
+            "Activity",
         }
         self.assertEqual(screens, expected)
         for native_test in (
@@ -123,6 +126,9 @@ class PortraitPlannerContractTest(unittest.TestCase):
             "testPairPhoneVariants",
             "testControllerRecoveryVariants",
             "testFieldGuideAndGoals",
+            "testClockEditorVariants",
+            "testAdventureVariants",
+            "testActivityVariants",
         ):
             self.assertIn(native_test, HOST_TEST)
         for phone_state in (
@@ -145,14 +151,21 @@ class PortraitPlannerContractTest(unittest.TestCase):
         self.assertIn('uiTextCentered(passkey, 42, 2)', MAIN)
         self.assertIn('uiTextCentered("WINDOW", 29, 2)', MAIN)
         self.assertIn('uiTextCentered("CLOSED", 48, 2)', MAIN)
+        self.assertIn('uiTextCentered("PB" +', MAIN)
+        self.assertIn('uiTextCentered("P " +', MAIN)
+        self.assertIn("PB4294967295", HOST_TEST)
+        self.assertIn("P 4294967295", HOST_TEST)
 
-    def test_nine_item_indicator_is_width_aware(self) -> None:
-        # 9 * 3 px dots plus eight legacy 5 px gaps was 67 px.  The shared
-        # planner reduces the gap to 4 px: 59 px, centered inside 64 px.
-        count, size, max_width = 9, 3, CONTENT_WIDTH
-        gap = min(5, (max_width - count * size) // (count - 1))
-        self.assertEqual(gap, 4)
-        self.assertEqual(count * size + (count - 1) * gap, 59)
+    def test_all_expanded_menu_indicators_are_width_aware(self) -> None:
+        # Main, Games, and Adventure expanded to 13, 11, and 15 items. The
+        # shared planner compresses their gaps while preserving visible dots.
+        for count in (13, 11, 15):
+            with self.subTest(count=count):
+                size = 3
+                gap = min(5, (CONTENT_WIDTH - count * size) // (count - 1))
+                width = count * size + (count - 1) * gap
+                self.assertGreaterEqual(gap, 1)
+                self.assertLessEqual(width, CONTENT_WIDTH)
         self.assertIn("portrait::planDots", MAIN)
 
 
