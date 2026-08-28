@@ -17,7 +17,7 @@ accepted firmware release is available.
 
 The download card exposes only a signed local-first Android release. A valid
 historical manifest or APK may remain in `downloads/` for audit and rollback,
-but `site.js` exposes only the exact Android 2.2.3 / version-code 24 production
+but `site.js` exposes only the exact Android 2.2.4 / version-code 25 production
 contract. Install the accepted release directly from the browser on a supported
 Android device.
 
@@ -35,7 +35,7 @@ design. `downloads/latest.json.sig` is a raw 64-byte Ed25519 signature over the
 exact `downloads/latest.json` bytes.
 
 The browser accepts only a same-origin content-addressed APK path, the
-stable/release package `ptl.kitsu.app`, exact version 2.2.3 / code 24, bounded
+stable/release package `ptl.kitsu.app`, exact version 2.2.4 / code 25, bounded
 numeric fields, canonical lowercase SHA-256, the pinned direct-download APK
 certificate, and a valid manifest timestamp. Repository tests additionally
 verify the detached signature and hash the exact APK bytes.
@@ -48,9 +48,10 @@ again. The signed Play app is not distributed from this static site.
 When the fixed `latest.json` authority advances, exact signed historical
 manifests remain available under immutable names. The 2.0.0 authority is
 `downloads/android-stable-2.0.0-20260822t123928z.json`; the 2.2.0 authority is
-`downloads/android-stable-2.2.0-20260825t170821z.json`; and the immediately
-prior 2.2.1 authority is
-`downloads/android-stable-2.2.1-20260826t002057z.json`. Each retains its raw
+`downloads/android-stable-2.2.0-20260825t170821z.json`; the 2.2.1 authority is
+`downloads/android-stable-2.2.1-20260826t002057z.json`; and the immediately
+prior 2.2.3 authority is
+`downloads/android-stable-2.2.3-20260826t132716z.json`. Each retains its raw
 detached signature. Historical APK and testing-preview bytes remain available
 for audit and rollback but are not advertised as the current download.
 

@@ -4,12 +4,12 @@
   "channel": "stable",
   "buildType": "release",
   "packageId": "ptl.kitsu.app",
-  "version": "2.2.4",
-  "versionCode": 25,
+  "version": "2.2.3",
+  "versionCode": 24,
   "minimumAndroidApi": 26,
-  "url": "/downloads/kitsu-android-2.2.4-b23727da3603fdc5b35b3146fb8d3eb1.apk",
-  "bytes": 1888475,
-  "sha256": "b23727da3603fdc5b35b3146fb8d3eb1e72a0154a39196afd61259389f29a416",
+  "url": "/downloads/kitsu-android-2.2.3-5575ce664d9fd262ea705cb7b02676d5.apk",
+  "bytes": 1872085,
+  "sha256": "5575ce664d9fd262ea705cb7b02676d5e590fc1634c1be8cb3e4d0217c69012d",
   "signingCertificateSha256": "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-  "publishedAt": "2026-08-28T09:25:29Z"
+  "publishedAt": "2026-08-26T13:27:16Z"
 }
