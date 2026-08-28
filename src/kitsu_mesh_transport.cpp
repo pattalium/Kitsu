@@ -1,5 +1,6 @@
 #include "kitsu_mesh_transport.h"
 #include "kitsu_nearby_protocol.h"
+#include "kitsu_party_hotspot.h"
 #include "kitsu_advert_repeat_tracker.h"
 #include "kitsu_channel_repeat_tracker.h"
 #include "kitsu_endpoint_rx_policy.h"
@@ -114,6 +115,61 @@ static_assert(PH_TYPE_SHIFT == kRepeatWireTypeShift &&
               "MeshCore header encoding changed");
 static_assert(MAX_PATH_SIZE == kRepeatWireMaximumPathBytes,
               "MeshCore maximum path size changed");
+static_assert(nearby::kWireBytes <= kNearbyRadioFrameBytes,
+              "nearby frame no longer fits direct-radio capture");
+static_assert(party::kWireBytes <= kNearbyRadioFrameBytes,
+              "party frame no longer fits direct-radio capture");
+
+enum class DirectRadioFrameKind : uint8_t {
+  Invalid = 0U,
+  NearbyPresence,
+  NearbyAction,
+  PartyBeacon,
+  PartySession,
+};
+
+bool isKitsuDirectRadioCandidate(const uint8_t* bytes, size_t byteCount) {
+  if (!bytes) return false;
+  const bool nearbyCandidate =
+      byteCount == nearby::kWireBytes && bytes[0] == nearby::kMagic0 &&
+      bytes[1] == nearby::kMagic1 &&
+      bytes[2] == nearby::kProtocolVersion;
+  const bool partyCandidate =
+      byteCount == party::kWireBytes && bytes[0] == party::kMagic0 &&
+      bytes[1] == party::kMagic1 && bytes[2] == party::kProtocolVersion;
+  return nearbyCandidate || partyCandidate;
+}
+
+DirectRadioFrameKind classifyKitsuDirectRadioFrame(const uint8_t* bytes,
+                                                   size_t byteCount) {
+  if (!bytes) return DirectRadioFrameKind::Invalid;
+  if (byteCount == nearby::kWireBytes && bytes[0] == nearby::kMagic0 &&
+      bytes[1] == nearby::kMagic1) {
+    nearby::Packet packet{};
+    if (nearby::decode(bytes, byteCount, packet) != nearby::Status::Ok) {
+      return DirectRadioFrameKind::Invalid;
+    }
+    return packet.type == nearby::PacketType::Presence
+               ? DirectRadioFrameKind::NearbyPresence
+               : DirectRadioFrameKind::NearbyAction;
+  }
+  if (byteCount == party::kWireBytes && bytes[0] == party::kMagic0 &&
+      bytes[1] == party::kMagic1) {
+    party::Packet packet{};
+    if (party::decode(bytes, byteCount, packet) != party::Status::Ok) {
+      return DirectRadioFrameKind::Invalid;
+    }
+    return packet.type == party::PacketType::Beacon
+               ? DirectRadioFrameKind::PartyBeacon
+               : DirectRadioFrameKind::PartySession;
+  }
+  return DirectRadioFrameKind::Invalid;
+}
+
+bool usesDiscoveryCooldown(DirectRadioFrameKind kind) {
+  return kind == DirectRadioFrameKind::NearbyPresence ||
+         kind == DirectRadioFrameKind::PartyBeacon;
+}
 
 constexpr uint32_t kMinimumEpoch = 1704067200UL;  // 2024-01-01 UTC.
 constexpr uint32_t kMaximumEpoch = 4102444800UL;  // 2100-01-01 UTC.
@@ -2774,9 +2830,7 @@ class KitsuClient final : public ::mesh::Mesh {
       return;
     }
 
-    if (static_cast<size_t>(length) == nearby::kWireBytes &&
-        raw[0] == nearby::kMagic0 && raw[1] == nearby::kMagic1 &&
-        raw[2] == nearby::kProtocolVersion) {
+    if (isKitsuDirectRadioCandidate(raw, static_cast<size_t>(length))) {
       sink_->captureNearbyRadio(raw, static_cast<size_t>(length), rssi, snr);
       return;
     }
@@ -3611,9 +3665,9 @@ struct KitsuMeshTransport::Impl final : public AdvertSink {
 
   void captureNearbyRadio(const uint8_t* bytes, size_t byteCount,
                           float rssi, float snr) override {
-    nearby::Packet packet{};
     if (!bytes || byteCount > kNearbyRadioFrameBytes ||
-        nearby::decode(bytes, byteCount, packet) != nearby::Status::Ok) {
+        classifyKitsuDirectRadioFrame(bytes, byteCount) ==
+            DirectRadioFrameKind::Invalid) {
       return;
     }
     if (nearbyRadioCount == kNearbyRadioQueueSize) {
@@ -4009,9 +4063,9 @@ bool KitsuMeshTransport::takeNearbyRadioFrame(NearbyRadioFrame& output) {
 TransportStatus KitsuMeshTransport::sendNearbyRadioFrame(
     const Settings& settings, const uint8_t* bytes, size_t byteCount,
     bool explicitUserApproval) {
-  nearby::Packet packet{};
-  if (!bytes || byteCount != nearby::kWireBytes ||
-      nearby::decode(bytes, byteCount, packet) != nearby::Status::Ok) {
+  const DirectRadioFrameKind frameKind =
+      classifyKitsuDirectRadioFrame(bytes, byteCount);
+  if (frameKind == DirectRadioFrameKind::Invalid) {
     return TransportStatus::InvalidArgument;
   }
   if (!impl_->active || !settings.enabled ||
@@ -4022,11 +4076,13 @@ TransportStatus KitsuMeshTransport::sendNearbyRadioFrame(
   const uint32_t now = millis();
   constexpr uint32_t kPresenceCooldownMs = 5000UL;
   constexpr uint32_t kActionCooldownMs = 1000UL;
-  const bool presence = packet.type == nearby::PacketType::Presence;
-  if ((presence && impl_->nearbyPresenceCooldownStarted &&
+  // Nearby presence and party beacons are discovery broadcasts; all other
+  // direct frames are bounded session/action traffic.
+  const bool discovery = usesDiscoveryCooldown(frameKind);
+  if ((discovery && impl_->nearbyPresenceCooldownStarted &&
        static_cast<uint32_t>(now - impl_->lastNearbyPresenceTxAt) <
            kPresenceCooldownMs) ||
-      (!presence && impl_->nearbyActionCooldownStarted &&
+      (!discovery && impl_->nearbyActionCooldownStarted &&
        static_cast<uint32_t>(now - impl_->lastNearbyActionTxAt) <
            kActionCooldownMs)) {
     return TransportStatus::AdvertiseCooldown;
@@ -4042,7 +4098,7 @@ TransportStatus KitsuMeshTransport::sendNearbyRadioFrame(
   const bool sent = impl_->driver.sendDirectOneShotRaw(
       bytes, static_cast<int>(byteCount));
   if (!sent) return TransportStatus::SendBusy;
-  if (presence) {
+  if (discovery) {
     impl_->nearbyPresenceCooldownStarted = true;
     impl_->lastNearbyPresenceTxAt = now;
   } else {

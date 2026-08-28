@@ -365,8 +365,9 @@ struct RepeatDiagnostics {
 };
 
 // A strictly bounded direct-radio frame captured before MeshCore parsing.
-// Only valid Kitsu nearby-v2 frames enter this queue; MeshCore packets never
-// do. The transport deliberately leaves protocol interpretation to main.
+// Only valid Kitsu nearby-v2 or party-v1 frames enter this queue; MeshCore
+// packets never do. Bytes are preserved exactly and protocol interpretation
+// remains with the caller.
 constexpr size_t kNearbyRadioFrameBytes = 32U;
 struct NearbyRadioFrame {
   uint8_t bytes[kNearbyRadioFrameBytes]{};
@@ -451,9 +452,10 @@ class KitsuMeshTransport {
   bool lastNearbyAdvertStatus(NearbyAdvertStatus& output);
   bool takeNearbyAdvertStatusChanged();
   bool takeNearbyRadioFrame(NearbyRadioFrame& output);
-  // Sends one exact, caller-approved nearby-v2 wire frame without placing it
-  // in MeshCore routing or repeater queues. The same active LoRa profile is
-  // reused because Heltec V3 has one SX1262. No general TX session is opened.
+  // Sends one exact, caller-approved nearby-v2 or party-v1 wire frame without
+  // placing it in MeshCore routing or repeater queues. The same active LoRa
+  // profile is reused because Heltec V3 has one SX1262. No general TX session
+  // is opened.
   TransportStatus sendNearbyRadioFrame(
       const Settings& settings, const uint8_t* bytes, size_t byteCount,
       bool explicitUserApproval);
