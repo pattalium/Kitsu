@@ -28,4 +28,13 @@ class BluetoothPairingRepairPolicyTest {
         assertTrue(BluetoothPairingRepairPolicy.availableForSavedController(true, 4))
         assertFalse(BluetoothPairingRepairPolicy.availableForSavedController(false, 0))
     }
+
+    @Test fun explicitForgetCanFinishWhenFirmwareRejectsTheStaleLocalRoot() {
+        assertTrue(ControllerForgetPolicy.controllerAlreadyAbsent(
+            ControllerForgetPolicy.AUTHORIZATION_REJECTED,
+        ))
+        assertFalse(ControllerForgetPolicy.controllerAlreadyAbsent("controller_auth_failed"))
+        assertFalse(ControllerForgetPolicy.controllerAlreadyAbsent("gatt_status_133"))
+        assertFalse(ControllerForgetPolicy.controllerAlreadyAbsent(null))
+    }
 }

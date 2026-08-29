@@ -29,6 +29,7 @@ import ptl.kitsu.app.model.PartyRoundCommand
 import ptl.kitsu.app.model.StoryTrigger
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
+import ptl.kitsu.app.pairing.ControllerForgetPolicy
 import ptl.kitsu.app.pairing.PairingException
 import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
 import ptl.kitsu.app.pairing.BluetoothPairingRepairProgress
@@ -861,7 +862,7 @@ class OwnerRepository(
             )
             val connection = coordinator.connect(userInitiated = true)
             if (!connection.connected) {
-                val code = if (connection.detail == "controller_auth_failed") {
+                val code = if (ControllerForgetPolicy.controllerAlreadyAbsent(connection.detail)) {
                     BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING
                 } else connection.detail
                 throw PairingException(code)
@@ -906,7 +907,6 @@ class OwnerRepository(
         if (pending != null && !pending.equals(deviceAddress, ignoreCase = true)) {
             throw TransportException("controller_forget_pending")
         }
-        val recoveringLostReceipt = pending?.equals(deviceAddress, ignoreCase = true) == true
         selectDevice(deviceAddress)
 
         var connection = coordinator.state.value
@@ -914,7 +914,10 @@ class OwnerRepository(
             connection = coordinator.connect(userInitiated = true)
         }
         if (!connection.connected) {
-            if (recoveringLostReceipt && connection.detail == "controller_auth_failed") {
+            // The owner explicitly chose Forget. An authenticated firmware
+            // rejection proves this saved root cannot name a live controller,
+            // including after an on-device recovery removed it first.
+            if (ControllerForgetPolicy.controllerAlreadyAbsent(connection.detail)) {
                 completeControllerForget(deviceAddress)
                 return
             }
@@ -933,7 +936,7 @@ class OwnerRepository(
             if (failure.code !in FORGET_OUTCOME_UNKNOWN) throw failure
             coordinator.disconnect(suppressAutomaticReconnect = false)
             val verification = coordinator.connect(userInitiated = true)
-            if (verification.detail == "controller_auth_failed") {
+            if (ControllerForgetPolicy.controllerAlreadyAbsent(verification.detail)) {
                 completeControllerForget(deviceAddress)
             } else {
                 throw TransportException("controller_forget_outcome_unknown", failure)

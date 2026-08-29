@@ -27,3 +27,11 @@ internal object BluetoothPairingRepairPolicy {
         return hasSavedController
     }
 }
+
+/** An explicit Forget may delete an unusable local root after Kitsu rejects it. */
+internal object ControllerForgetPolicy {
+    const val AUTHORIZATION_REJECTED = "controller_authorization_rejected"
+
+    fun controllerAlreadyAbsent(connectionDetail: String?): Boolean =
+        connectionDetail == AUTHORIZATION_REJECTED
+}

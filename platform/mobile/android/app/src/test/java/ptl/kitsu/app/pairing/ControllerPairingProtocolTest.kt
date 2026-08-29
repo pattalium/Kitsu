@@ -1,6 +1,8 @@
 package ptl.kitsu.app.pairing
 
 import ptl.kitsu.app.transport.SecureEnvelopeSession
+import ptl.kitsu.app.transport.ConnectResult
+import ptl.kitsu.app.transport.FreshBondGattConnector
 import java.security.MessageDigest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -79,6 +81,39 @@ class ControllerPairingProtocolTest {
         assertTrue(pendingSeen)
         assertTrue(storedProgressSeen)
         assertFalse(deleted)
+    }
+
+    @Test fun freshBondStatus22RecoveryContinuesIntoPendingGrantAndCommit() = runTest {
+        var advertisements = 0
+        var connections = 0
+        val connected = FreshBondGattConnector.open(
+            freshBond = true,
+            initialDevice = "pre-bond",
+            awaitAdvertisement = { "post-bond-${++advertisements}" },
+            connect = {
+                connections += 1
+                if (connections == 1) ConnectResult.Failed("gatt_local_host_terminated")
+                else ConnectResult.Connected
+            },
+        )
+        assertEquals(ConnectResult.Connected, connected.result)
+        assertEquals(2, advertisements)
+        assertEquals(2, connections)
+
+        var stored: ControllerGrant? = null
+        var pendingSeen = false
+        val channel = MockDeviceChannel(candidateStored = { stored != null })
+        val result = ControllerPairingProtocol().pair(
+            label = "Owner phone",
+            channel = channel,
+            persistCandidate = { stored = it },
+            deleteCandidate = { stored = null },
+            onPending = { pendingSeen = true },
+        )
+
+        assertTrue(pendingSeen)
+        assertTrue(channel.commitVerified)
+        assertEquals(result, stored)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -180,6 +215,29 @@ class ControllerPairingProtocolTest {
 
         assertEquals("pairing_timeout", failure.code)
         assertNull(stored)
+    }
+
+    @Test fun preGrantGattTerminationCannotCreatePendingOrActiveCredentials() = runTest {
+        var persisted = 0
+        var deleted = 0
+        val channel = object : PairingChannel {
+            override suspend fun send(payload: ByteArray) = Unit
+            override suspend fun receive(): ByteArray =
+                throw PairingException("gatt_local_host_terminated")
+        }
+
+        val failure = runCatching {
+            ControllerPairingProtocol().pair(
+                label = "Owner phone",
+                channel = channel,
+                persistCandidate = { persisted += 1 },
+                deleteCandidate = { deleted += 1 },
+            )
+        }.exceptionOrNull() as PairingException
+
+        assertEquals("gatt_local_host_terminated", failure.code)
+        assertEquals(0, persisted)
+        assertEquals(0, deleted)
     }
 
     @Test fun exactFirmwarePairingErrorIsSurfaced() = runTest {

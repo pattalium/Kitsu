@@ -166,6 +166,7 @@ class BleKitsuTransport(
     @Volatile private var pairingJob: Job? = null
     @Volatile private var envelopeSession: SecureEnvelopeSession? = null
     @Volatile private var connectedDeviceAddress: String? = null
+    @Volatile private var lastGattFailureCode: String? = null
     @Volatile private var disconnectObserver: ((String) -> Unit)? = null
     @Volatile private var meshOneShotReady = false
     @Volatile private var messageProtocolVersion = 1
@@ -275,8 +276,7 @@ class BleKitsuTransport(
                             ),
                         )
                     }
-                    credentials.saveBondedCompanion(candidate)
-                    credentials.savePendingBondedCompanion(null)
+                    credentials.promotePendingBondedCompanion(candidate)
                     runCatching {
                         onProgress(
                             ControllerPairingProgress(
@@ -409,92 +409,140 @@ class BleKitsuTransport(
                 "compare_codes_accept_android_then_hold_prg_if_same",
             ),
         )
+        val freshBond = device.bondState != BluetoothDevice.BOND_BONDED
         if (!ensureBonded(device)) throw PairingException("secure_bond_failed")
 
         report(ControllerPairingProgress(ControllerPairingStage.CONNECTING_GATT, "opening_secure_gatt"))
+        // ACTION_BOND_STATE_CHANGED can arrive while Android is still closing its
+        // SMP connection. Heltec accepts one BLE connection, so opening GATT on
+        // that callback races the bonding link and returns status 22. Observing a
+        // new advertisement is the release barrier; if Android still terminates
+        // that first post-bond GATT, permit exactly one re-scan/reconnect.
+        val connection = FreshBondGattConnector.open(
+            freshBond = freshBond,
+            initialDevice = device,
+            awaitAdvertisement = { pairingDeviceAfterBond(device.address) },
+            connect = ::openPairingGatt,
+        )
+        var gattDevice = connection.device
+        var result = connection.result
+        var retriesUsed = connection.retriesUsed
+        while (true) {
+            if (result != ConnectResult.Connected) throw PairingException(
+                (result as? ConnectResult.Failed)?.code ?: "gatt_connect_failed",
+            )
+
+            val inbox = Channel<ByteArray>(capacity = PAIRING_INBOX_CAPACITY)
+            pairingInbox = inbox
+            val channel = object : PairingChannel {
+                override suspend fun send(payload: ByteArray) {
+                    if (payload.isEmpty() || payload.size > ControllerPairingProtocol.MAX_FRAME_BYTES) {
+                        throw PairingException("pairing_failed")
+                    }
+                    val activeGatt = gatt
+                        ?: throw PairingException(lastGattFailureCode ?: "gatt_disconnected")
+                    val characteristic = writeCharacteristic
+                        ?: throw PairingException(lastGattFailureCode ?: "gatt_disconnected")
+                    if (!writeFrame(activeGatt, characteristic, encodeGattFrame(payload))) {
+                        throw PairingException("gatt_write_failed")
+                    }
+                }
+
+                override suspend fun receive(): ByteArray = try {
+                    inbox.receive()
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (failure: PairingException) {
+                    throw failure
+                } catch (failure: Throwable) {
+                    throw PairingException("gatt_disconnected", failure)
+                }
+            }
+
+            var stored: BondedCompanion? = null
+            var pairingPendingSeen = false
+            try {
+                ControllerPairingProtocol().pair(
+                    label = label,
+                    channel = channel,
+                    persistCandidate = { grant ->
+                        val displayName = runCatching { gattDevice.name }
+                            .getOrNull()
+                            ?.trim()
+                            ?.takeIf(String::isNotEmpty)
+                            ?: grant.deviceUid
+                        val candidate = BondedCompanion(
+                            deviceAddress = gattDevice.address,
+                            displayName = displayName,
+                            controllerIdB64 = grant.controllerIdB64,
+                            controllerRootB64 = grant.rootB64,
+                        )
+                        credentials.savePendingBondedCompanion(candidate)
+                        stored = candidate
+                    },
+                    deleteCandidate = {
+                        credentials.savePendingBondedCompanion(null)
+                        stored = null
+                    },
+                    onPending = { expiresInMillis ->
+                        pairingPendingSeen = true
+                        report(
+                            ControllerPairingProgress(
+                                ControllerPairingStage.WAITING_FOR_PRG,
+                                "hold_prg_to_confirm_${expiresInMillis}ms",
+                            ),
+                        )
+                    },
+                    onCandidateStored = {
+                        report(
+                            ControllerPairingProgress(
+                                ControllerPairingStage.SAVING_CONTROLLER,
+                                "committing_controller",
+                            ),
+                        )
+                    },
+                )
+                val verified = stored ?: throw PairingException("credential_store_failed")
+                credentials.promotePendingBondedCompanion(verified)
+                return verified
+            } catch (failure: PairingException) {
+                if (!FreshBondGattRetryPolicy.shouldRetryBeforeGrant(
+                        freshBond = freshBond,
+                        retriesUsed = retriesUsed,
+                        failureCode = failure.code,
+                        pairingPendingSeen = pairingPendingSeen,
+                        candidateStored = stored != null,
+                    )
+                ) throw failure
+                retriesUsed += 1
+                disconnect()
+                gattDevice = pairingDeviceAfterBond(device.address)
+                result = openPairingGatt(gattDevice)
+            } finally {
+                if (pairingInbox === inbox) pairingInbox = null
+                inbox.close()
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun pairingDeviceAfterBond(address: String): BluetoothDevice =
+        when (val scan = scanForKnown(address)) {
+            is DeviceScan.Found -> scan.device
+            DeviceScan.Absent -> throw PairingException("pairing_device_absent")
+            is DeviceScan.Failed -> throw PairingException(scan.code)
+        }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun openPairingGatt(device: BluetoothDevice): ConnectResult {
+        disconnect()
+        lastGattFailureCode = null
         val ready = CompletableDeferred<ConnectResult>()
         connectionReady = ready
         negotiatedMtu = 23
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-        val result = withTimeoutOrNull(CONNECT_TIMEOUT_MILLIS) { ready.await() }
+        return withTimeoutOrNull(CONNECT_TIMEOUT_MILLIS) { ready.await() }
             ?: ConnectResult.Failed("gatt_timeout")
-        if (result != ConnectResult.Connected) throw PairingException(
-            (result as? ConnectResult.Failed)?.code ?: "gatt_connect_failed",
-        )
-
-        val inbox = Channel<ByteArray>(capacity = PAIRING_INBOX_CAPACITY)
-        pairingInbox = inbox
-        val channel = object : PairingChannel {
-            override suspend fun send(payload: ByteArray) {
-                if (payload.isEmpty() || payload.size > ControllerPairingProtocol.MAX_FRAME_BYTES) {
-                    throw PairingException("pairing_failed")
-                }
-                val activeGatt = gatt ?: throw PairingException("gatt_disconnected")
-                val characteristic = writeCharacteristic ?: throw PairingException("gatt_disconnected")
-                if (!writeFrame(activeGatt, characteristic, encodeGattFrame(payload))) {
-                    throw PairingException("gatt_write_failed")
-                }
-            }
-
-            override suspend fun receive(): ByteArray = try {
-                inbox.receive()
-            } catch (failure: CancellationException) {
-                throw failure
-            } catch (failure: Throwable) {
-                throw PairingException("gatt_disconnected", failure)
-            }
-        }
-
-        var stored: BondedCompanion? = null
-        try {
-            ControllerPairingProtocol().pair(
-                label = label,
-                channel = channel,
-                persistCandidate = { grant ->
-                    val displayName = runCatching { device.name }
-                        .getOrNull()
-                        ?.trim()
-                        ?.takeIf(String::isNotEmpty)
-                        ?: grant.deviceUid
-                    val candidate = BondedCompanion(
-                        deviceAddress = device.address,
-                        displayName = displayName,
-                        controllerIdB64 = grant.controllerIdB64,
-                        controllerRootB64 = grant.rootB64,
-                    )
-                    credentials.savePendingBondedCompanion(candidate)
-                    stored = candidate
-                },
-                deleteCandidate = {
-                    credentials.savePendingBondedCompanion(null)
-                    stored = null
-                },
-                onPending = { expiresInMillis ->
-                    report(
-                        ControllerPairingProgress(
-                            ControllerPairingStage.WAITING_FOR_PRG,
-                            "hold_prg_to_confirm_${expiresInMillis}ms",
-                        ),
-                    )
-                },
-                onCandidateStored = {
-                    report(
-                        ControllerPairingProgress(
-                            ControllerPairingStage.SAVING_CONTROLLER,
-                            "committing_controller",
-                        ),
-                    )
-                },
-            )
-            val verified = stored ?: throw PairingException("credential_store_failed")
-            credentials.saveBondedCompanion(verified)
-            runCatching { credentials.savePendingBondedCompanion(null) }
-                .onFailure { SafeLog.warn("ble_pairing", "pending_cleanup_failed") }
-            return verified
-        } finally {
-            if (pairingInbox === inbox) pairingInbox = null
-            inbox.close()
-        }
     }
 
     @SuppressLint("MissingPermission")
@@ -615,11 +663,10 @@ class BleKitsuTransport(
             SafeLog.warn("ble_auth", "controller_auth_failed")
             disconnect()
             return ConnectResult.Failed(
-                if (distinguishControllerRejection && handshakeCode == "controller_rejected") {
-                    "pending_controller_rejected"
-                } else {
-                    "controller_auth_failed"
-                },
+                ControllerHandshakeFailurePolicy.code(
+                    handshakeCode,
+                    distinguishPendingRejection = distinguishControllerRejection,
+                ),
             )
         }
         failedProofs = 0
@@ -881,6 +928,7 @@ class BleKitsuTransport(
             val failureCode = GattStatusPolicy.connectionFailure(status)
             when {
                 newState == BluetoothProfile.STATE_DISCONNECTED -> {
+                    lastGattFailureCode = failureCode
                     this@BleKitsuTransport.gatt = null
                     negotiatedMtu = 23
                     writeCharacteristic = null
@@ -1100,6 +1148,7 @@ class BleKitsuTransport(
         val hadActiveLink = active != null || connectedDeviceAddress != null
         gatt = null
         connectedDeviceAddress = null
+        lastGattFailureCode = code
         writeCharacteristic = null
         notifyCharacteristic = null
         negotiatedMtu = 23
@@ -1518,6 +1567,7 @@ class BleKitsuTransport(
         negotiatedMtu = 23
         envelopeSession = null
         connectedDeviceAddress = null
+        lastGattFailureCode = null
         meshOneShotReady = false
         messageProtocolVersion = 1
         messageMarkReadAvailable = false

@@ -1,6 +1,7 @@
 package ptl.kitsu.app.security
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -33,6 +34,11 @@ interface CredentialStore {
     suspend fun removeBondedCompanion(deviceAddress: String): Boolean
     suspend fun pendingBondedCompanion(): BondedCompanion?
     suspend fun savePendingBondedCompanion(value: BondedCompanion?)
+    /** Makes a verified pending grant active and removes its marker as one store operation. */
+    suspend fun promotePendingBondedCompanion(value: BondedCompanion) {
+        saveBondedCompanion(value)
+        savePendingBondedCompanion(null)
+    }
     suspend fun pendingControllerForgetAddress(): String?
     suspend fun savePendingControllerForgetAddress(deviceAddress: String?)
 }
@@ -62,22 +68,24 @@ class AndroidKeystoreCredentialStore(context: Context) : CredentialStore {
 
     override suspend fun saveBondedCompanion(value: BondedCompanion?) {
         if (value == null) {
-            write(ACTIVE, null)
-            write(ALL, null)
+            commitCredentials(ACTIVE to null, ALL to null)
             return
         }
-        val current = bondedCompanions()
-        val replacing = current.any {
-            it.deviceAddress.equals(value.deviceAddress, ignoreCase = true) ||
-                it.controllerIdB64 == value.controllerIdB64
-        }
-        check(replacing || current.size < MAX_SAVED_KITSU) { "controller_device_limit" }
-        val updated = current.filterNot {
-            it.deviceAddress.equals(value.deviceAddress, ignoreCase = true) ||
-                it.controllerIdB64 == value.controllerIdB64
-        } + value
-        write(ACTIVE, json.encodeToString(BondedCompanion.serializer(), value))
-        write(ALL, json.encodeToString(ListSerializer(BondedCompanion.serializer()), updated))
+        val updated = updatedCompanions(value)
+        commitCredentials(
+            ACTIVE to json.encodeToString(BondedCompanion.serializer(), value),
+            ALL to json.encodeToString(ListSerializer(BondedCompanion.serializer()), updated),
+        )
+    }
+
+    override suspend fun promotePendingBondedCompanion(value: BondedCompanion) {
+        check(pendingBondedCompanion() == value) { "pending_controller_changed" }
+        val updated = updatedCompanions(value)
+        commitCredentials(
+            ACTIVE to json.encodeToString(BondedCompanion.serializer(), value),
+            ALL to json.encodeToString(ListSerializer(BondedCompanion.serializer()), updated),
+            PENDING_BOND to null,
+        )
     }
 
     override suspend fun selectBondedCompanion(deviceAddress: String): BondedCompanion? {
@@ -93,16 +101,17 @@ class AndroidKeystoreCredentialStore(context: Context) : CredentialStore {
         val updated = current.filterNot { it.deviceAddress.equals(deviceAddress, ignoreCase = true) }
         if (updated.size == current.size) return false
         val active = bondedCompanion()
+        val writes = mutableListOf(
+            ALL to updated.takeIf { it.isNotEmpty() }?.let {
+                json.encodeToString(ListSerializer(BondedCompanion.serializer()), it)
+            },
+        )
         if (active?.deviceAddress.equals(deviceAddress, ignoreCase = true)) {
-            write(ACTIVE, updated.firstOrNull()?.let {
+            writes += ACTIVE to updated.firstOrNull()?.let {
                 json.encodeToString(BondedCompanion.serializer(), it)
-            })
+            }
         }
-        // Retire the active pointer first. If a process stop interrupts the following
-        // list write, the old entry remains recoverable for a pending authenticated Forget.
-        write(ALL, updated.takeIf { it.isNotEmpty() }?.let {
-            json.encodeToString(ListSerializer(BondedCompanion.serializer()), it)
-        })
+        commitCredentials(*writes.toTypedArray())
         return true
     }
 
@@ -121,15 +130,38 @@ class AndroidKeystoreCredentialStore(context: Context) : CredentialStore {
     }
 
     private fun write(name: String, plaintext: String?) {
+        commitCredentials(name to plaintext)
+    }
+
+    private suspend fun updatedCompanions(value: BondedCompanion): List<BondedCompanion> {
+        val current = bondedCompanions()
+        val replacing = current.any {
+            it.deviceAddress.equals(value.deviceAddress, ignoreCase = true) ||
+                it.controllerIdB64 == value.controllerIdB64
+        }
+        check(replacing || current.size < MAX_SAVED_KITSU) { "controller_device_limit" }
+        return current.filterNot {
+            it.deviceAddress.equals(value.deviceAddress, ignoreCase = true) ||
+                it.controllerIdB64 == value.controllerIdB64
+        } + value
+    }
+
+    private fun commitCredentials(vararg values: Pair<String, String?>) {
+        val editor = prefs.edit()
+        values.forEach { (name, plaintext) -> editor.store(name, plaintext) }
+        check(editor.commit()) { "credential_write_failed" }
+    }
+
+    private fun SharedPreferences.Editor.store(name: String, plaintext: String?) {
         if (plaintext == null) {
-            check(prefs.edit().remove(name).commit()) { "credential_delete_failed" }
+            remove(name)
             return
         }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val encrypted = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         val payload = Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP)
-        check(prefs.edit().putString(name, payload).commit()) { "credential_write_failed" }
+        putString(name, payload)
     }
 
     private fun read(name: String): String? {

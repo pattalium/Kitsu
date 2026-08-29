@@ -16,6 +16,11 @@ internal object GattStatusPolicy {
         // Android reports 0x13 when the peripheral terminates a link whose SMP
         // keys no longer match. Retrying the same cached bond cannot repair it.
         0x13 -> "bluetooth_pairing_repair_required"
+        // GATT_CONN_TERMINATE_LOCAL_HOST. Immediately after a new LE bond,
+        // Android can close its bonding link while the app's first GATT is
+        // opening. Pairing may retry this one condition once after the device
+        // is observed advertising again; ordinary connections never retry it.
+        0x16 -> "gatt_local_host_terminated"
         else -> "gatt_status_$status"
     }
 
@@ -24,5 +29,58 @@ internal object GattStatusPolicy {
         // missing/stale SMP bond. Never expose those as an opaque descriptor error.
         0x05, 0x0f -> "bluetooth_pairing_repair_required"
         else -> "notify_descriptor_write_failed"
+    }
+}
+
+/** Allows one fresh-bond recovery and rejects every broader GATT retry loop. */
+internal object FreshBondGattRetryPolicy {
+    fun shouldRetry(freshBond: Boolean, retriesUsed: Int, failureCode: String?): Boolean =
+        freshBond && retriesUsed == 0 && failureCode == "gatt_local_host_terminated"
+
+    fun shouldRetryBeforeGrant(
+        freshBond: Boolean,
+        retriesUsed: Int,
+        failureCode: String?,
+        pairingPendingSeen: Boolean,
+        candidateStored: Boolean,
+    ): Boolean = !pairingPendingSeen && !candidateStored &&
+        shouldRetry(freshBond, retriesUsed, failureCode)
+}
+
+internal data class FreshBondGattResult<T>(
+    val device: T,
+    val result: ConnectResult,
+    val retriesUsed: Int,
+)
+
+/** Waits for post-bond advertising and owns the single allowed status-22 retry. */
+internal object FreshBondGattConnector {
+    suspend fun <T> open(
+        freshBond: Boolean,
+        initialDevice: T,
+        awaitAdvertisement: suspend () -> T,
+        connect: suspend (T) -> ConnectResult,
+    ): FreshBondGattResult<T> {
+        var device = if (freshBond) awaitAdvertisement() else initialDevice
+        var retriesUsed = 0
+        while (true) {
+            val result = connect(device)
+            val code = (result as? ConnectResult.Failed)?.code
+            if (!FreshBondGattRetryPolicy.shouldRetry(freshBond, retriesUsed, code)) {
+                return FreshBondGattResult(device, result, retriesUsed)
+            }
+            retriesUsed += 1
+            device = awaitAdvertisement()
+        }
+    }
+}
+
+/** Separates an explicit firmware rejection from ambiguous handshake loss. */
+internal object ControllerHandshakeFailurePolicy {
+    fun code(handshakeCode: String?, distinguishPendingRejection: Boolean): String = when {
+        handshakeCode == "controller_rejected" && distinguishPendingRejection ->
+            "pending_controller_rejected"
+        handshakeCode == "controller_rejected" -> "controller_authorization_rejected"
+        else -> "controller_auth_failed"
     }
 }
