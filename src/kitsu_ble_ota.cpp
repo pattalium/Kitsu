@@ -751,9 +751,20 @@ bool KitsuBleOta::loadExistingState() {
       (!runningPresent || runningJournalState != kJournalReady)) {
     return rollback("image_invalid");
   }
+  const BleOtaBootState inactiveBoot =
+      inactivePresent && inactiveJournalState == kJournalReady
+      ? platform_->bootState(inactive_)
+      : BleOtaBootState::Unknown;
+  const bool inactiveRolledBack =
+      inactiveBoot == BleOtaBootState::Invalid ||
+      inactiveBoot == BleOtaBootState::Aborted;
+  // A bound running PendingVerify image is the current boot attempt and must
+  // be validated first.  Otherwise, durable failed-state evidence for the
+  // inactive Ready image describes the newer attempted update and outranks
+  // the older running Valid journal after a bootloader rollback.
   if (runningPresent && runningJournalState == kJournalReady &&
       (runningBoot == BleOtaBootState::PendingVerify ||
-       runningBoot == BleOtaBootState::Valid)) {
+       (runningBoot == BleOtaBootState::Valid && !inactiveRolledBack))) {
     memcpy(updateId_, runningId, sizeof(updateId_));
     memcpy(expectedImageSha256_, runningSha,
            sizeof(expectedImageSha256_));
@@ -810,9 +821,7 @@ bool KitsuBleOta::loadExistingState() {
     journalHeaderReady_ = true;
     resumed_ = true;
     error_ = "begin_required";
-    const BleOtaBootState inactiveBoot = platform_->bootState(inactive_);
-    state_ = inactiveBoot == BleOtaBootState::Invalid ||
-                     inactiveBoot == BleOtaBootState::Aborted
+    state_ = inactiveRolledBack
         ? BleOtaState::RolledBack
         : BleOtaState::ReadyToReboot;
     return true;

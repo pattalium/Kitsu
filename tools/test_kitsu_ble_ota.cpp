@@ -339,6 +339,64 @@ std::vector<uint8_t> fixtureImage() {
   return image;
 }
 
+std::string completeUpdate(KitsuBleOta& ota,
+                           const std::string& manifest) {
+  std::string receipt = call(ota, "firmware.update.begin",
+                             beginRequest(manifest));
+  expect(receipt, "\"state\":\"receiving\"");
+  const std::string updateId = updateIdFrom(receipt);
+  const std::vector<uint8_t> image = fixtureImage();
+  uint32_t offset = 0U;
+  while (offset < image.size()) {
+    const size_t bytes = std::min<size_t>(4096U, image.size() - offset);
+    receipt = call(ota, "firmware.update.write",
+                   writeRequest(updateId, offset, image.data() + offset,
+                                bytes));
+    expect(receipt, "\"ok\":true");
+    offset += static_cast<uint32_t>(bytes);
+  }
+  receipt = call(ota, "firmware.update.finish", idRequest(updateId));
+  expect(receipt, "\"ok\":true");
+  expect(receipt, "\"state\":\"ready_to_reboot\"");
+  return updateId;
+}
+
+void buildBothSlotsReady(MemoryPlatform& platform,
+                         const char* inactiveVersion,
+                         std::string& runningId,
+                         std::string& inactiveId) {
+  {
+    KitsuBleOta firstInstall;
+    assert(firstInstall.begin(platform, "0.11.4"));
+    runningId = completeUpdate(firstInstall, exactManifest("0.12.0"));
+  }
+
+  platform.runningApp1 = true;
+  platform.app1State = BleOtaBootState::Valid;
+  platform.app0State = BleOtaBootState::Valid;
+  {
+    KitsuBleOta secondInstall;
+    assert(secondInstall.begin(platform, "0.12.0"));
+    assert(secondInstall.status().state == BleOtaState::Confirmed);
+    inactiveId = completeUpdate(secondInstall,
+                                exactManifest(inactiveVersion));
+  }
+}
+
+void expectRestoredState(MemoryPlatform& platform, BleOtaBootState runningBoot,
+                         BleOtaBootState inactiveBoot,
+                         BleOtaState expectedState,
+                         const std::string& expectedId) {
+  platform.app1State = runningBoot;
+  platform.app0State = inactiveBoot;
+  KitsuBleOta restored;
+  assert(restored.begin(platform, "0.12.0"));
+  assert(restored.status().state == expectedState);
+  assert(restored.status().updateIdValid);
+  const std::string receipt = call(restored, "firmware.update.status", "{}");
+  assert(updateIdFrom(receipt) == expectedId);
+}
+
 void testSha256KnownVector() {
   using Access = kitsu868::connectivity::KitsuBleOtaTestAccess;
   Access::Context context{};
@@ -664,6 +722,62 @@ void testPendingImageWithoutValidJournalRollsBackAtBegin() {
   assert(!corruptJournal.wroteRunning);
 }
 
+void testBothReadyRollbackStatePrecedence() {
+  MemoryPlatform samePackage;
+  std::string sameRunningId;
+  std::string sameInactiveId;
+  buildBothSlotsReady(samePackage, "0.12.0", sameRunningId,
+                      sameInactiveId);
+  assert(sameRunningId == sameInactiveId);
+
+  {
+    MemoryPlatform invalid = samePackage;
+    expectRestoredState(invalid, BleOtaBootState::Valid,
+                        BleOtaBootState::Invalid, BleOtaState::RolledBack,
+                        sameInactiveId);
+  }
+  {
+    MemoryPlatform aborted = samePackage;
+    expectRestoredState(aborted, BleOtaBootState::Valid,
+                        BleOtaBootState::Aborted, BleOtaState::RolledBack,
+                        sameInactiveId);
+  }
+  {
+    MemoryPlatform corrupt = samePackage;
+    corrupt.app0[kBleOtaMaximumImageBytes] ^= 0x01U;
+    expectRestoredState(corrupt, BleOtaBootState::Valid,
+                        BleOtaBootState::Invalid, BleOtaState::Confirmed,
+                        sameRunningId);
+  }
+
+  MemoryPlatform differentPackage;
+  std::string differentRunningId;
+  std::string differentInactiveId;
+  buildBothSlotsReady(differentPackage, "0.13.0", differentRunningId,
+                      differentInactiveId);
+  assert(differentRunningId != differentInactiveId);
+
+  {
+    MemoryPlatform invalid = differentPackage;
+    expectRestoredState(invalid, BleOtaBootState::Valid,
+                        BleOtaBootState::Invalid, BleOtaState::RolledBack,
+                        differentInactiveId);
+  }
+  {
+    MemoryPlatform runningPending = differentPackage;
+    expectRestoredState(runningPending, BleOtaBootState::PendingVerify,
+                        BleOtaBootState::Invalid, BleOtaState::PendingVerify,
+                        differentRunningId);
+    assert(!runningPending.rollbackCalled);
+  }
+  {
+    MemoryPlatform inactivePending = differentPackage;
+    expectRestoredState(inactivePending, BleOtaBootState::Valid,
+                        BleOtaBootState::PendingVerify,
+                        BleOtaState::Confirmed, differentRunningId);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -676,6 +790,7 @@ int main() {
   testPartitionInvariantAndDataReadback();
   testStrictSemverGrammar();
   testPendingImageWithoutValidJournalRollsBackAtBegin();
+  testBothReadyRollbackStatePrecedence();
   static_assert(kBleOtaMaximumImageBytes == 0x2ff000UL,
                 "the final inactive-app sector is the OTA journal");
   return 0;
