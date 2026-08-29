@@ -21,8 +21,8 @@ fun configured(name: String, fallback: String): String =
 
 fun quoted(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
-val kitsuVersionCode = 29
-val kitsuVersionName = "2.2.8"
+val kitsuVersionCode = 30
+val kitsuVersionName = "2.2.9"
 val kitsuBuildToolsVersion = "36.0.0"
 val appIconSource = rootProject.layout.projectDirectory.file("../../../assets/brand/kitsu-app-icon.png")
 val generatedAppIconResources = layout.buildDirectory.dir("generated/kitsuAppIcon/res")
