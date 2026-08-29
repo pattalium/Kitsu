@@ -20,6 +20,8 @@ using kitsu868::connectivity::KitsuBleSession;
 using kitsu868::connectivity::KitsuDeviceSecurity;
 using kitsu868::connectivity::SecurityMode;
 using kitsu868::connectivity::SecurityResult;
+using kitsu868::connectivity::kBleControllerBackoffMs;
+using kitsu868::connectivity::kKitsuControllerCapacity;
 using kitsu868::connectivity::kKitsuSecretBytes;
 using kitsu868::connectivity::kSecurityBlobCapacity;
 using kitsu868::connectivity::kSecurityNonceBytes;
@@ -302,6 +304,9 @@ struct Fixture {
 void pairController(Fixture& fixture, uint8_t controllerId[16],
                     uint8_t controllerRoot[32]) {
   const uint32_t now = 1000U;
+  const uint8_t controllerCountBefore =
+      fixture.security.status().controllerCount;
+  assert(controllerCountBefore < kKitsuControllerCapacity);
   fixture.session.onSecureLinkEstablished(true, true, true, true, now);
   fixture.session.setPairingWindow(true, 60000U, now);
   uint8_t clientNonce[16]{};
@@ -315,7 +320,7 @@ void pairController(Fixture& fixture, uint8_t controllerId[16],
   fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
                           request.size(), now + 1U);
   assert(fixture.session.status(now + 1U).physicalConfirmationPending);
-  assert(fixture.security.status().controllerCount == 0U);
+  assert(fixture.security.status().controllerCount == controllerCountBefore);
   assert(fixture.transport.frames.back().find("\"pair_pending\"") !=
          std::string::npos);
 
@@ -350,7 +355,8 @@ void pairController(Fixture& fixture, uint8_t controllerId[16],
                           commit.size(), now + 3U);
   assert(fixture.transport.frames.back().find("\"pair_ok\"") !=
          std::string::npos);
-  assert(fixture.security.status().controllerCount == 1U);
+  assert(fixture.security.status().controllerCount ==
+         controllerCountBefore + 1U);
   uint8_t persisted[32]{};
   assert(fixture.security.findControllerRoot(controllerId, persisted));
   assert(memcmp(persisted, controllerRoot, sizeof(persisted)) == 0);
@@ -648,6 +654,245 @@ void testPairingNeverPersistsBeforeCommit() {
   assert(fixture.security.status().controllerCount == 0U);
 }
 
+void testPairingWindowSurvivesSecureLinkReconnect() {
+  Fixture fixture;
+  const uint32_t openedAt = 5000U;
+  fixture.session.setPairingWindow(true, 1000U, openedAt);
+  fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                          openedAt + 10U);
+  fixture.session.onLinkClosed(openedAt + 20U);
+  assert(fixture.session.status(openedAt + 20U).pairingWindowOpen);
+  assert(fixture.session.status(openedAt + 20U).state ==
+         BleSessionState::Disconnected);
+
+  fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                          openedAt + 200U);
+  fixture.session.onLinkClosed(openedAt + 210U);
+  assert(fixture.session.status(openedAt + 210U).pairingWindowOpen);
+  fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                          openedAt + 900U);
+  uint8_t nonce[16]{};
+  memset(nonce, 0x31, sizeof(nonce));
+  const std::string request =
+      "{\"v\":1,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+      b64(nonce, sizeof(nonce)) +
+      "\",\"label\":\"Reconnect phone\",\"platform\":\"android\"}";
+  fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                          request.size(), openedAt + 950U);
+  assert(fixture.transport.frames.back().find("\"pair_pending\"") !=
+         std::string::npos);
+  assert(fixture.transport.frames.back().find("\"expires_in_ms\":50") !=
+         std::string::npos);
+  assert(fixture.session.status(openedAt + 950U).physicalConfirmationPending);
+}
+
+void testClosedAndExpiredPairingWindowsRejectReconnect() {
+  {
+    Fixture fixture;
+    const uint32_t openedAt = 6000U;
+    fixture.session.setPairingWindow(true, 1000U, openedAt);
+    fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                            openedAt + 10U);
+    fixture.session.onLinkClosed(openedAt + 20U);
+    fixture.session.setPairingWindow(false, 0U, openedAt + 21U);
+    fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                            openedAt + 30U);
+    uint8_t nonce[16]{};
+    memset(nonce, 0x41, sizeof(nonce));
+    const std::string request =
+        "{\"v\":1,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+        b64(nonce, sizeof(nonce)) +
+        "\",\"label\":\"Closed window\",\"platform\":\"android\"}";
+    fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                            request.size(), openedAt + 40U);
+    assert(fixture.transport.frames.back().find("\"pairing_closed\"") !=
+           std::string::npos);
+    assert(!fixture.session.status(openedAt + 40U).pairingWindowOpen);
+    assert(!fixture.session.status(openedAt + 40U)
+                .physicalConfirmationPending);
+  }
+
+  {
+    Fixture fixture;
+    const uint32_t openedAt = 7000U;
+    fixture.session.setPairingWindow(true, 100U, openedAt);
+    fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                            openedAt + 10U);
+    fixture.session.onLinkClosed(openedAt + 20U);
+    assert(fixture.session.status(openedAt + 99U).pairingWindowOpen);
+    fixture.session.loop(openedAt + 100U);
+    assert(!fixture.session.status(openedAt + 100U).pairingWindowOpen);
+    fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                            openedAt + 101U);
+    uint8_t nonce[16]{};
+    memset(nonce, 0x51, sizeof(nonce));
+    const std::string request =
+        "{\"v\":1,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+        b64(nonce, sizeof(nonce)) +
+        "\",\"label\":\"Expired window\",\"platform\":\"ios\"}";
+    fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                            request.size(), openedAt + 102U);
+    assert(fixture.transport.frames.back().find("\"pairing_closed\"") !=
+           std::string::npos);
+    assert(!fixture.session.status(openedAt + 102U)
+                .physicalConfirmationPending);
+  }
+}
+
+void testPendingPairingGrantCannotCrossReconnect() {
+  Fixture fixture;
+  const uint32_t openedAt = 8000U;
+  fixture.session.setPairingWindow(true, 1000U, openedAt);
+  fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                          openedAt + 10U);
+  uint8_t clientNonce[16]{};
+  memset(clientNonce, 0x61, sizeof(clientNonce));
+  const std::string request =
+      "{\"v\":1,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+      b64(clientNonce, sizeof(clientNonce)) +
+      "\",\"label\":\"Interrupted phone\",\"platform\":\"android\"}";
+  fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                          request.size(), openedAt + 20U);
+  assert(fixture.session.confirmPendingPairing(openedAt + 30U));
+  const std::string grant = fixture.transport.frames.back();
+
+  uint8_t controllerId[16]{};
+  uint8_t controllerRoot[32]{};
+  uint8_t deviceNonce[16]{};
+  decodeField(grant, "controller_id_b64", controllerId,
+              sizeof(controllerId));
+  decodeField(grant, "root_b64", controllerRoot, sizeof(controllerRoot));
+  decodeField(grant, "device_nonce_b64", deviceNonce, sizeof(deviceNonce));
+  uint8_t clientProof[32]{};
+  assert(kitsu868::companion::makePairingProof(
+             controllerRoot, "client", controllerId, "KT1234", clientNonce,
+             deviceNonce, fixture.crypto, clientProof) == ProtocolResult::Ok);
+  const std::string staleCommit =
+      "{\"v\":1,\"type\":\"pair_commit\",\"proof_b64\":\"" +
+      b64(clientProof, sizeof(clientProof)) + "\"}";
+
+  fixture.session.onLinkClosed(openedAt + 40U);
+  assert(fixture.session.status(openedAt + 40U).pairingWindowOpen);
+  assert(!fixture.session.confirmPendingPairing(openedAt + 41U));
+  fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                          openedAt + 50U);
+  fixture.session.onFrame(
+      reinterpret_cast<const uint8_t*>(staleCommit.data()),
+      staleCommit.size(), openedAt + 60U);
+  assert(fixture.transport.frames.back().find("\"auth_failed\"") !=
+         std::string::npos);
+  assert(fixture.security.status().controllerCount == 0U);
+  assert(!fixture.session.status(openedAt + 60U)
+              .physicalConfirmationPending);
+}
+
+void testAuthenticatedSessionCannotCrossReconnect() {
+  Fixture fixture;
+  uint8_t controllerId[16]{};
+  uint8_t controllerRoot[32]{};
+  pairController(fixture, controllerId, controllerRoot);
+
+  uint8_t c2d[32]{};
+  uint8_t d2c[32]{};
+  authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+  uint8_t nonce[16]{};
+  uint8_t requestId[16]{};
+  memset(nonce, 0x71, sizeof(nonce));
+  memset(requestId, 0x72, sizeof(requestId));
+  static const uint8_t payload[] = "{}";
+  uint8_t staleRequest[1024]{};
+  size_t staleRequestBytes = 0U;
+  assert(kitsu868::companion::encodeEnvelope(
+             EnvelopeChannel::Request, 1U, nonce, requestId, "action.apply",
+             payload, sizeof(payload) - 1U, c2d, fixture.crypto,
+             staleRequest, sizeof(staleRequest), staleRequestBytes) ==
+         ProtocolResult::Ok);
+
+  fixture.session.onLinkClosed(2100U);
+  assert(!fixture.session.status(2100U).applicationAuthenticated);
+  fixture.session.onSecureLinkEstablished(true, true, true, true, 2101U);
+  fixture.session.onFrame(staleRequest, staleRequestBytes, 2102U);
+  assert(fixture.operations.calls == 0U);
+  assert(!fixture.session.status(2102U).applicationAuthenticated);
+  assert(fixture.transport.frames.back().find("\"auth_failed\"") !=
+         std::string::npos);
+}
+
+void testPairingCapacityAndAuthenticationBackoffRemainEnforced() {
+  {
+    Fixture fixture;
+    uint8_t controllerId[16]{};
+    uint8_t controllerRoot[32]{};
+    for (size_t controller = 0U; controller < kKitsuControllerCapacity;
+         ++controller) {
+      pairController(fixture, controllerId, controllerRoot);
+    }
+    assert(fixture.security.status().controllerCount ==
+           kKitsuControllerCapacity);
+
+    fixture.session.onSecureLinkEstablished(true, true, true, true, 3000U);
+    fixture.session.setPairingWindow(true, 1000U, 3000U);
+    uint8_t nonce[16]{};
+    memset(nonce, 0x81, sizeof(nonce));
+    const std::string request =
+        "{\"v\":1,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+        b64(nonce, sizeof(nonce)) +
+        "\",\"label\":\"Fifth phone\",\"platform\":\"android\"}";
+    fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                            request.size(), 3001U);
+    assert(fixture.transport.frames.back().find("\"controller_full\"") !=
+           std::string::npos);
+    assert(!fixture.session.status(3001U).physicalConfirmationPending);
+  }
+
+  {
+    Fixture fixture;
+    const uint32_t openedAt = 10000U;
+    fixture.session.setPairingWindow(true, 60000U, openedAt);
+    fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                            openedAt + 1U);
+    static const uint8_t invalidFrame[] = "{}";
+    fixture.session.onFrame(invalidFrame, sizeof(invalidFrame) - 1U,
+                            openedAt + 2U);
+    fixture.session.onFrame(invalidFrame, sizeof(invalidFrame) - 1U,
+                            openedAt + 3U);
+    fixture.session.onFrame(invalidFrame, sizeof(invalidFrame) - 1U,
+                            openedAt + 4U);
+    assert(fixture.session.status(openedAt + 4U).proofFailures == 3U);
+    assert(fixture.session.status(openedAt + 4U).state ==
+           BleSessionState::Closing);
+
+    fixture.session.onLinkClosed(openedAt + 5U);
+    assert(fixture.session.status(openedAt + 5U).state ==
+           BleSessionState::Backoff);
+    assert(fixture.session.status(openedAt + 5U).pairingWindowOpen);
+    fixture.transport.disconnected = false;
+    fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                            openedAt + 6U);
+    assert(fixture.session.status(openedAt + 6U).state ==
+           BleSessionState::Backoff);
+    assert(fixture.transport.disconnected);
+
+    const uint32_t backoffEnds = openedAt + 4U + kBleControllerBackoffMs;
+    fixture.session.loop(backoffEnds);
+    assert(fixture.session.status(backoffEnds).state ==
+           BleSessionState::Disconnected);
+    fixture.transport.disconnected = false;
+    fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                            backoffEnds + 1U);
+    uint8_t nonce[16]{};
+    memset(nonce, 0x91, sizeof(nonce));
+    const std::string request =
+        "{\"v\":1,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+        b64(nonce, sizeof(nonce)) +
+        "\",\"label\":\"After backoff\",\"platform\":\"android\"}";
+    fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                            request.size(), backoffEnds + 2U);
+    assert(fixture.transport.frames.back().find("\"pair_pending\"") !=
+           std::string::npos);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -657,5 +902,10 @@ int main() {
   testPartialControllerForgetCannotKeepUsingSession();
   testStrictControlsAndTimeout();
   testPairingNeverPersistsBeforeCommit();
+  testPairingWindowSurvivesSecureLinkReconnect();
+  testClosedAndExpiredPairingWindowsRejectReconnect();
+  testPendingPairingGrantCannotCrossReconnect();
+  testAuthenticatedSessionCannotCrossReconnect();
+  testPairingCapacityAndAuthenticationBackoffRemainEnforced();
   return 0;
 }

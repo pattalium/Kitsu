@@ -380,7 +380,7 @@ void testStatusPages() {
       {"SCORE 65535", 111, 1},
   };
   const Label diagnostics[] = {
-      {"KITSU", 5, 2},   {"0.20.0", 27, 1}, {"KTFFFF", 43, 1},
+      {"KITSU", 5, 2},   {"0.20.1", 27, 1}, {"KTFFFF", 43, 1},
       {"OLED ERR", 59, 1}, {"MESH ERR", 75, 1},
       {"STORE ERR", 91, 1}, {"NO PACK", 107, 1},
   };
@@ -441,6 +441,10 @@ void testPairPhoneVariants() {
   const Label unavailable[] = {
       {"PAIR PHONE", 4, 1}, {"BLE OFF", 39, 2},
       {"STORAGE", 72, 1}, {"TAP BACK", 106, 1}};
+  const Label storageBlocked[] = {
+      {"PAIR PHONE", 4, 1}, {"STORAGE FULL", 24, 1},
+      {"PAIR BLOCKED", 49, 1}, {"HOLD RETRY", 78, 1},
+      {"TAP BACK", 105, 1}};
   const Label comparison[] = {
       {"PAIR PHONE", 4, 1}, {"MATCH CODE", 22, 1},
       {"999999", 42, 2}, {"HOLD IF SAME", 78, 1},
@@ -464,6 +468,7 @@ void testPairPhoneVariants() {
       {"CLOSED", 48, 2}, {"HOLD REOPEN", 78, 1},
       {"TAP BACK", 106, 1}};
   assertScreen(unavailable);
+  assertScreen(storageBlocked);
   assertScreen(comparison);
   assertScreen(grant);
   assertScreen(authenticated);

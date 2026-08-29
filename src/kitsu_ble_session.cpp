@@ -421,7 +421,7 @@ void KitsuBleSession::onSecureLinkEstablished(
   resetForSecureLink(nowMillis);
 }
 
-void KitsuBleSession::onLinkClosed(uint32_t) {
+void KitsuBleSession::onLinkClosed(uint32_t nowMillis) {
   if (!begun_) return;
   clearPendingPairing();
   clearSessionSecrets();
@@ -429,8 +429,13 @@ void KitsuBleSession::onLinkClosed(uint32_t) {
   linkEncrypted_ = false;
   linkAuthenticated_ = false;
   linkBonded_ = false;
-  pairingWindowOpen_ = false;
-  pairingWindowDeadline_ = 0U;
+  // Android may replace the OS-bonding link before starting the protocol.
+  // The physical pairing window is device-scoped, not connection-scoped.
+  if (pairingWindowOpen_ &&
+      deadlineReached(nowMillis, pairingWindowDeadline_)) {
+    pairingWindowOpen_ = false;
+    pairingWindowDeadline_ = 0U;
+  }
   stateDeadline_ = 0U;
   closeAt_ = 0U;
   closeAfterTransmit_ = false;

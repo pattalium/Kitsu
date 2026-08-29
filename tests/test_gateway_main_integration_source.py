@@ -311,7 +311,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn(
             "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
         )
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.0"', MAIN)
+        self.assertIn('FIRMWARE_VERSION[] = "0.20.1"', MAIN)
         setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
         self.assertIn("chatSession = esp_random()", setup)
         self.assertIn("if (chatSession == 0U) chatSession = 1U", setup)
@@ -319,6 +319,31 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             setup.index("chatSession = esp_random()"),
             setup.index("companionBle.begin()"),
         )
+
+    def test_pairing_reserves_nvs_before_opening_and_defers_journal_flushes(self):
+        setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
+        bridge = MAIN.split("class FirmwareBleBridge", 1)[1].split(
+            "FirmwareBleBridge companionBle", 1
+        )[0]
+        urgent = MAIN.split("} else if (recorded.urgent)", 1)[1].split(
+            "} else {", 1
+        )[0]
+        journal_tick = MAIN.split("void tickDiscoveryJournal", 1)[1].split(
+            "ChatJournalEntry*", 1
+        )[0]
+
+        self.assertLess(
+            setup.index("companionBle.preparePairingStorage()"),
+            setup.index("loadState()"),
+        )
+        self.assertLess(
+            bridge.index("preparePairingStorage()"),
+            bridge.index("link_.openPairingWindow"),
+        )
+        self.assertIn("pairingStorageReserved(journalNow)", urgent)
+        self.assertIn("pairingStorageReserved(now)", journal_tick)
+        self.assertIn('uiTextCentered("STORAGE FULL"', MAIN)
+        self.assertIn('uiTextCentered("PAIR BLOCKED"', MAIN)
 
     def test_message_pages_fit_worst_case_escaped_payloads(self):
         # Quotes are legal MeshCore text and double in JSON, so they are the

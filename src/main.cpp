@@ -28,6 +28,7 @@
 #include "kitsu_device_security.h"
 #include "kitsu_esp32_security.h"
 #include "kitsu_legacy_connectivity_retirement.h"
+#include "kitsu_nvs_headroom.h"
 #include "kitsu_mesh_config.h"
 #include "kitsu_message_read_contract.h"
 #include "kitsu_mesh_transport.h"
@@ -50,7 +51,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.20.0";
+constexpr char FIRMWARE_VERSION[] = "0.20.1";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 constexpr uint32_t SIGNAL_STATE_MAGIC = 0x4b534731;  // "KSG1"
@@ -167,6 +168,7 @@ kitsu868::connectivity::Esp32DeviceSecurityPlatform connectivityPlatform;
 kitsu868::connectivity::KitsuDeviceSecurity deviceSecurity;
 kitsu868::connectivity::Esp32LegacyConnectivityRetirementPlatform
     legacyConnectivityRetirementPlatform;
+kitsu868::connectivity::Esp32NvsHeadroomPlatform pairingNvsHeadroomPlatform;
 kitsu868::connectivity::Esp32KitsuBleOtaPlatform bleOtaPlatform;
 kitsu868::connectivity::KitsuBleOta bleOta;
 kitsu868::connectivity::BleActionReplayCache bleActionReplayCache;
@@ -831,8 +833,31 @@ class FirmwareBleBridge final
     session_.loop(now);
   }
 
+  bool preparePairingStorage() {
+    pairingHeadroom_ =
+        kitsu868::connectivity::KitsuNvsHeadroom::preparePairing(
+            pairingNvsHeadroomPlatform);
+    pairingStorageChecked_ = true;
+    pairingStorageReady_ =
+        kitsu868::connectivity::pairingHeadroomReady(pairingHeadroom_);
+    Serial.printf(
+        "KITSU_PAIR_STORAGE result=%s ready=%s free=%u usable=%u "
+        "required=%u reclaimed_action=%s reclaimed_bluedroid=%s\n",
+        kitsu868::connectivity::nvsHeadroomResultName(
+            pairingHeadroom_.result),
+        pairingStorageReady_ ? "true" : "false",
+        static_cast<unsigned>(pairingHeadroom_.stats.freeEntries),
+        static_cast<unsigned>(
+            kitsu868::connectivity::pairingUsableEntries(pairingHeadroom_)),
+        static_cast<unsigned>(
+            kitsu868::connectivity::kPairingRequiredFreeEntries),
+        pairingHeadroom_.retiredActionReplay ? "true" : "false",
+        pairingHeadroom_.retiredBluedroid ? "true" : "false");
+    return pairingStorageReady_;
+  }
+
   bool openPairing(uint32_t now) {
-    if (!begun_ || !link_.openPairingWindow(
+    if (!begun_ || !preparePairingStorage() || !link_.openPairingWindow(
                        now, kitsu868::connectivity::kBlePairingWindowMaximumMs)) {
       return false;
     }
@@ -870,6 +895,16 @@ class FirmwareBleBridge final
     return begun_ && session_.confirmPendingPairing(now);
   }
   bool ready() const { return begun_; }
+  bool pairingStorageBlocked() const {
+    return pairingStorageChecked_ && !pairingStorageReady_;
+  }
+  bool pairingStorageReserved(uint32_t now) const {
+    if (!begun_ || !pairingStorageReady_) return false;
+    const kitsu868::connectivity::BleLinkStatus link = link_.status(now);
+    const kitsu868::connectivity::BleSessionStatus session =
+        session_.status(now);
+    return link.pairingWindowOpen && !session.applicationAuthenticated;
+  }
   bool localControllerRecoveryLocked() const {
     return !begun_ || localControllerRecoveryLocked_;
   }
@@ -940,6 +975,9 @@ class FirmwareBleBridge final
   kitsu868::connectivity::KitsuBleGattLink link_{};
   kitsu868::connectivity::KitsuBleSession session_{};
   kitsu868::connectivity::Esp32CompanionCrypto crypto_{};
+  kitsu868::connectivity::NvsHeadroomStatus pairingHeadroom_{};
+  bool pairingStorageChecked_ = false;
+  bool pairingStorageReady_ = false;
   bool begun_ = false;
   bool localControllerRecoveryLocked_ = false;
 };
@@ -7357,7 +7395,12 @@ void renderPairPhone() {
       companionBle.linkStatus(now);
   const kitsu868::connectivity::BleSessionStatus session =
       companionBle.sessionStatus(now);
-  if (link.numericComparisonPending) {
+  if (!link.connected && companionBle.pairingStorageBlocked()) {
+    uiTextCentered("STORAGE FULL", 24);
+    uiTextCentered("PAIR BLOCKED", 49);
+    uiTextCentered("HOLD RETRY", 78);
+    uiTextCentered("TAP BACK", 105);
+  } else if (link.numericComparisonPending) {
     char passkey[7]{};
     snprintf(passkey, sizeof(passkey), "%06lu",
              static_cast<unsigned long>(link.numericComparison));
@@ -9116,7 +9159,12 @@ bool openBluetoothControl(uint32_t now) {
   if (!companionBle.ready()) return false;
   const kitsu868::connectivity::BleLinkStatus link =
       companionBle.linkStatus(now);
-  if (!link.connected && !companionBle.openPairing(now)) return false;
+  if (!link.connected && !companionBle.openPairing(now)) {
+    if (companionBle.pairingStorageBlocked()) {
+      enterScreen(Screen::PairPhone);
+    }
+    return false;
+  }
   enterScreen(Screen::PairPhone);
   return true;
 }
@@ -12151,12 +12199,19 @@ void processMeshAdvert() {
                       kitsu868::discovery::journalResultName(recorded.result));
       } else if (recorded.urgent) {
         discoveredPeer = recorded.newPeer;
-        const kitsu868::discovery::JournalResult flushed =
-            discoveryJournal.flush();
-        if (flushed != kitsu868::discovery::JournalResult::Ok) {
-          discoveryJournalDirtyAt = millis();
-          Serial.printf("KITSU_WARN discovery_flush=%s urgent=true\n",
-                        kitsu868::discovery::journalResultName(flushed));
+        const uint32_t journalNow = millis();
+        if (companionBle.pairingStorageReserved(journalNow)) {
+          discoveryJournalDirtyAt = journalNow;
+          Serial.println(
+              "KITSU_DISCOVERY_FLUSH deferred=pairing urgent=true");
+        } else {
+          const kitsu868::discovery::JournalResult flushed =
+              discoveryJournal.flush();
+          if (flushed != kitsu868::discovery::JournalResult::Ok) {
+            discoveryJournalDirtyAt = journalNow;
+            Serial.printf("KITSU_WARN discovery_flush=%s urgent=true\n",
+                          kitsu868::discovery::journalResultName(flushed));
+          }
         }
       } else {
         discoveredPeer = recorded.newPeer;
@@ -12202,6 +12257,7 @@ void processFloodAdvertStatus() {
 
 void tickDiscoveryJournal(uint32_t now) {
   if (!discoveryJournalReady) return;
+  if (companionBle.pairingStorageReserved(now)) return;
   const kitsu868::discovery::JournalStatus status = discoveryJournal.status();
   if (!status.dirty ||
       static_cast<uint32_t>(now - discoveryJournalDirtyAt) <
@@ -12556,12 +12612,14 @@ void printSelfTest() {
   Serial.printf(
       "KITSU_SELFTEST {\"firmware\":\"%s\",\"version\":\"%s\","
       "\"board\":\"heltec-v3.2\",\"oled\":%s,\"radio\":%s,"
-      "\"radio_code\":%d,\"storage\":%s,\"button_released\":%s,"
+      "\"radio_code\":%d,\"storage\":%s,\"pairing_storage\":%s,"
+      "\"button_released\":%s,"
       "\"tx_enabled\":false,\"boot\":%lu,\"uid\":\"%s\","
       "\"companion\":\"%s\",\"orientation\":\"portrait\",",
       FIRMWARE_NAME, FIRMWARE_VERSION,
       oledDetected ? "true" : "false", radioReady ? "true" : "false",
       radioInitCode, storageReady ? "true" : "false",
+      companionBle.pairingStorageBlocked() ? "false" : "true",
       digitalRead(PIN_BUTTON) == HIGH ? "true" : "false",
       static_cast<unsigned long>(wisp.boots), wisp.uid.c_str(),
       escapedCompanion.c_str());
@@ -15336,6 +15394,7 @@ void setup() {
                 kitsu868::connectivity::
                     legacyConnectivityRetirementResultName(legacyRetirement),
                 legacyConnectivityRetirementReady ? "true" : "false");
+  (void)companionBle.preparePairingStorage();
   loadState();
   loadNearbySequenceCursor();
   nearbySessionNonce = esp_random();

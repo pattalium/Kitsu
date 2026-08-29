@@ -170,7 +170,7 @@ class RxRearmPolicySourceTests(unittest.TestCase):
         self.assertIn("impl_->driver.currentReceiveSnapshot(", snapshot)
 
     def test_version_and_ci_are_pinned(self) -> None:
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.0"', MAIN)
+        self.assertIn('FIRMWARE_VERSION[] = "0.20.1"', MAIN)
         self.assertIn("tests.test_rx_rearm", CI)
         self.assertIn("test_kitsu_rx_rearm.cmd", CI)
 
