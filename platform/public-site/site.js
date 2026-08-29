@@ -3,8 +3,8 @@ const DOWNLOAD_SIGNATURE = "/downloads/latest.json.sig";
 const RELEASE_PUBLIC_KEY_B64URL = "JAAR8Unpz7n7h_q02cpFc8HH_7OHF3ZYAAXsQa7lE4I";
 const ANDROID_SIGNING_CERTIFICATE_SHA256 = "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc";
 const REQUIRED_PACKAGE_ID = "ptl.kitsu.app";
-const REQUIRED_VERSION = "2.2.6";
-const REQUIRED_VERSION_CODE = 27;
+const REQUIRED_VERSION = "2.2.7";
+const REQUIRED_VERSION_CODE = 28;
 const RELEASE_FIELDS = Object.freeze([
   "schema",
   "status",
