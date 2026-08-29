@@ -45,6 +45,7 @@
 #include "signal_trail.h"
 #include "social_progression.h"
 #include "wild_creature_catalog.h"
+#include "wild_guide_portraits.h"
 
 namespace {
 
@@ -7028,27 +7029,18 @@ bool catalogCreatureOwned(const kitsu868::wild::Creature& creature) {
       encounterCodes.findByPackId(creature.packId, record);
 }
 
-void drawCatalogPortrait(const kitsu868::wild::Creature& creature,
-                         uint8_t top, uint8_t scale) {
+void drawGuidePortrait(const kitsu868::wild::Creature& creature,
+                       int16_t top) {
   const uint8_t* bitmap = nullptr;
   size_t bitmapBytes = 0U;
-  if (!kitsu868::wild::portraitBitmap(creature.portrait, bitmap,
-                                     bitmapBytes) ||
-      bitmapBytes != kitsu868::wild::kPortraitBytes) {
+  if (!kitsu868::wild::guidePortraitBitmap(creature.portrait, bitmap,
+                                           bitmapBytes) ||
+      bitmapBytes != kitsu868::wild::kGuidePortraitBytes) {
     return;
   }
-  const uint8_t left = static_cast<uint8_t>(
-      (UI_WIDTH - kitsu868::wild::kPortraitWidth * scale) / 2U);
-  for (uint8_t y = 0U; y < kitsu868::wild::kPortraitHeight; ++y) {
-    for (uint8_t x = 0U; x < kitsu868::wild::kPortraitWidth; ++x) {
-      const size_t byteIndex =
-          static_cast<size_t>(y) * (kitsu868::wild::kPortraitWidth / 8U) +
-          x / 8U;
-      if ((bitmap[byteIndex] & (1U << (x & 7U))) != 0U) {
-        uiFillRect(left + x * scale, top + y * scale, scale, scale);
-      }
-    }
-  }
+  uiXbm((UI_WIDTH - kitsu868::wild::kGuidePortraitWidth) / 2, top,
+        kitsu868::wild::kGuidePortraitWidth,
+        kitsu868::wild::kGuidePortraitHeight, bitmap);
 }
 
 void drawUnknownCreatureSilhouette() {
@@ -7066,24 +7058,33 @@ void renderFieldGuide() {
   }
   const bool seen = funStateReady &&
       kitsu868::fun::creatureSeen(funDiscovery, fieldGuideIndex);
-  uiTextCentered("FIELD GUIDE", 2);
-  uiTextCenteredFit(seen ? creature.name : "???", 14, 1);
-  if (seen) drawCatalogPortrait(creature, 27, 2U);
-  else drawUnknownCreatureSilhouette();
-  uiTextCentered(seen ? signalRarityName(creature.rarity) : "UNDISCOVERED",
-                 66);
-  uiTextCentered(seen
-                     ? "SEEN " + String(kitsu868::fun::creatureEncounterCount(
-                                      funDiscovery, fieldGuideIndex))
-                     : "FOLLOW SIGNALS",
-                 80);
-  uiTextCentered(catalogCreatureOwned(creature) ? "OWNED" : "NOT OWNED", 94);
-  uiTextCentered("ROSTER " + String(fieldGuideIndex + 1U) + "/" +
-                     String(kitsu868::fun::kCatalogCreatureCount),
-                 106);
-  uiTextCentered("TRAIL " + String(signalTrail.missCount()) + "/" +
-                     String(kitsu868::signal::kSignalTrailMaximumMisses),
-                 118);
+  if (!seen) {
+    uiTextCentered("FIELD GUIDE", 2);
+    uiTextCenteredFit("???", 14, 1);
+    drawUnknownCreatureSilhouette();
+    uiTextCentered("UNDISCOVERED", 66);
+    uiTextCentered("FOLLOW SIGNALS", 80);
+    uiTextCentered(catalogCreatureOwned(creature) ? "OWNED" : "NOT OWNED",
+                   94);
+    uiTextCentered("ROSTER " + String(fieldGuideIndex + 1U) + "/" +
+                       String(kitsu868::fun::kCatalogCreatureCount),
+                   106);
+    uiTextCentered("TRAIL " + String(signalTrail.missCount()) + "/" +
+                       String(kitsu868::signal::kSignalTrailMaximumMisses),
+                   118);
+    return;
+  }
+
+  uiWrappedText(creature.name, 0, 2U, 8U);
+  drawGuidePortrait(creature, 17);
+  uiTextCentered(signalRarityName(creature.rarity), 99);
+  uiTextCentered(catalogCreatureOwned(creature) ? "OWNED" : "NOT OWNED",
+                 109);
+  uiTextCentered(String(fieldGuideIndex + 1U) + "/" +
+                     String(kitsu868::fun::kCatalogCreatureCount) + " S" +
+                     String(kitsu868::fun::creatureEncounterCount(
+                         funDiscovery, fieldGuideIndex)),
+                 119);
 }
 
 void renderGoals() {
@@ -7575,50 +7576,23 @@ void renderControllerResult() {
 }
 
 void renderWildEncounter() {
-  uiTextCentered("WILD ENCOUNTER", 2);
   if (!wildEncounterView.available || !wildEncounterView.creature.name) {
+    uiTextCentered("WILD ENCOUNTER", 2);
     uiTextCentered("SIGNAL LOST", 48, 2);
     uiTextCentered("TAP OR HOLD", 108);
     return;
   }
 
-  uiTextCenteredFit(wildEncounterView.creature.name, 15, 1);
-  const uint8_t* bitmap = nullptr;
-  size_t bitmapBytes = 0U;
-  if (kitsu868::wild::portraitBitmap(wildEncounterView.creature.portrait,
-                                    bitmap, bitmapBytes) &&
-      bitmapBytes == kitsu868::wild::kPortraitBytes) {
-    constexpr uint8_t scale = 2U;
-    constexpr uint8_t left =
-        (64U - kitsu868::wild::kPortraitWidth * scale) / 2U;
-    constexpr uint8_t top = 29U;
-    for (uint8_t y = 0U; y < kitsu868::wild::kPortraitHeight; ++y) {
-      for (uint8_t x = 0U; x < kitsu868::wild::kPortraitWidth; ++x) {
-        const size_t byteIndex =
-            static_cast<size_t>(y) * (kitsu868::wild::kPortraitWidth / 8U) +
-            x / 8U;
-        if ((bitmap[byteIndex] & (1U << (x & 7U))) != 0U) {
-          uiFillRect(left + x * scale, top + y * scale, scale, scale);
-        }
-      }
-    }
-  }
+  uiWrappedText(wildEncounterView.creature.name, 0, 2U, 8U);
+  drawGuidePortrait(wildEncounterView.creature, 17);
 
   String rarity = signalRarityName(wildEncounterView.creature.rarity);
   rarity.replace("_", " ");
   rarity.toUpperCase();
-  uiTextCenteredFit(rarity, 69, 1);
+  uiTextCenteredFit(rarity, 99, 1);
   uiTextCentered(wildEncounterView.codeRevealed ? "CODE FOUND" : "NO CODE",
-                 85);
-  uiTextCentered(
-      wildEncounterView.guaranteed
-          ? wildEncounterView.source ==
-                    kitsu868::signal::MeshOperationKind::RepeaterDiscovered
-                ? "REPEATER FIND"
-                : "TRAIL FIND"
-          : "SIGNAL FIND",
-      99);
-  uiTextCentered("TAP OR HOLD", 114);
+                 109);
+  uiTextCentered("TAP OR HOLD", 119);
 }
 
 void renderDisplay(bool force = false) {

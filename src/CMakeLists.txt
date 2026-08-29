@@ -43,6 +43,7 @@ idf_component_register(
     "signal_trail.cpp"
     "social_progression.cpp"
     "wild_creature_catalog.cpp"
+    "wild_guide_portraits.cpp"
   INCLUDE_DIRS "."
   # PlatformIO mounts Arduino-ESP32 as an IDF component using the package
   # directory name, not the framework selector name (`arduino`).

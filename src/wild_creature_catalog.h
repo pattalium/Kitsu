@@ -39,10 +39,10 @@ constexpr size_t kCreaturesPerRarity = 3U;
 constexpr size_t kCatalogCreatureCount =
     signal::kRarityCount * kCreaturesPerRarity;
 
-// Compact XBM-style 1-bit portraits. Bits are least-significant-bit first in
-// each byte and rows are tightly packed. The OLED renderer scales these 2x to
-// 32x36 so every catalog creature has a distinct static encounter portrait
-// without depending on an installed animation pack.
+// Compact XBM-style 1-bit catalog thumbnails. Bits are least-significant-bit
+// first in each byte and rows are tightly packed. These remain the stable
+// radio/app catalog representation; the OLED guide and encounter screens use
+// separate native 64x80 first-Idle frames from wild_guide_portraits.h.
 constexpr uint8_t kPortraitWidth = 16U;
 constexpr uint8_t kPortraitHeight = 18U;
 constexpr size_t kPortraitBytes =

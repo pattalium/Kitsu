@@ -346,21 +346,19 @@ void testWildEncounterVariants() {
       {"TAP OR HOLD", 108, 1},
   };
   const Label revealed[] = {
-      {"WILD ENCOUNTER", 2, 1},
-      {"TASMANIAN DEVIL", 15, 1},
-      {"VERY RARE", 69, 1},
-      {"CODE FOUND", 85, 1},
-      {"REPEATER FIND", 99, 1},
-      {"TAP OR HOLD", 114, 1},
+      {"TASMANIAN", 0, 1},
+      {"DEVIL", 8, 1},
+      {"VERY RARE", 99, 1},
+      {"CODE FOUND", 109, 1},
+      {"TAP OR HOLD", 119, 1},
   };
   const Label hidden[] = {
-      {"NO CODE", 85, 1},
-      {"SIGNAL FIND", 99, 1},
+      {"NO CODE", 109, 1},
   };
   assertScreen(unavailable);
   assertScreen(revealed);
   assertScreen(hidden);
-  assert(kitsu868::portrait::rectangleFits(16, 29, 32, 36));
+  assert(kitsu868::portrait::rectangleFits(0, 17, 64, 80));
 }
 
 void testStatusPages() {
@@ -414,20 +412,26 @@ void testStatusPages() {
 }
 
 void testFieldGuideAndGoals() {
-  const Label guide[] = {
-      {"FIELD GUIDE", 2, 1}, {"TASMANIAN DEVIL", 14, 1},
+  const Label unseen[] = {
+      {"FIELD GUIDE", 2, 1}, {"???", 14, 1},
       {"UNDISCOVERED", 66, 1}, {"FOLLOW SIGNALS", 80, 1},
       {"NOT OWNED", 94, 1}, {"ROSTER 21/21", 106, 1},
       {"TRAIL 20/20", 118, 1},
+  };
+  const Label seen[] = {
+      {"TASMANIAN", 0, 1}, {"DEVIL", 8, 1},
+      {"VERY RARE", 99, 1},
+      {"NOT OWNED", 109, 1}, {"21/21 S65535", 119, 1},
   };
   const Label goals[] = {
       {"SESSION GOALS", 5, 1}, {"CARE 2/2", 29, 1},
       {"GAME 1/1", 47, 1}, {"SIGNAL 1/1", 65, 1},
       {"AURA ACTIVE", 87, 2}, {"HOLD BACK", 113, 1},
   };
-  assertScreen(guide);
+  assertScreen(unseen);
+  assertScreen(seen);
   assertScreen(goals);
-  assert(kitsu868::portrait::rectangleFits(16, 27, 32, 36));
+  assert(kitsu868::portrait::rectangleFits(0, 17, 64, 80));
   assert(kitsu868::portrait::rectangleFits(27, 30, 10, 10));
   assert(kitsu868::portrait::rectangleFits(22, 40, 20, 20));
   assert(kitsu868::portrait::rectangleFits(18, 48, 28, 8));

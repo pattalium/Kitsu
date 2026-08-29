@@ -197,8 +197,9 @@ private fun FieldGuideCreatureCard(entry: FieldGuideEntry) {
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            NearbyKitsuPortrait(
-                creature = nearbyCreaturePresentation(creature.packId),
+            FieldGuideCreaturePortrait(
+                packId = creature.packId,
+                name = creature.name,
                 modifier = Modifier
                     .size(72.dp)
                     .alpha(if (entry.discovery == FieldGuideDiscovery.UNSEEN) 0.42f else 1f),
