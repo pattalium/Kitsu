@@ -3,8 +3,8 @@ const DOWNLOAD_SIGNATURE = "/downloads/latest.json.sig";
 const RELEASE_PUBLIC_KEY_B64URL = "JAAR8Unpz7n7h_q02cpFc8HH_7OHF3ZYAAXsQa7lE4I";
 const ANDROID_SIGNING_CERTIFICATE_SHA256 = "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc";
 const REQUIRED_PACKAGE_ID = "ptl.kitsu.app";
-const REQUIRED_VERSION = "2.2.10";
-const REQUIRED_VERSION_CODE = 31;
+const REQUIRED_VERSION = "2.2.11";
+const REQUIRED_VERSION_CODE = 32;
 const RELEASE_FIELDS = Object.freeze([
   "schema",
   "status",
@@ -118,7 +118,7 @@ async function loadAndroidRelease() {
     link.removeAttribute("aria-disabled");
     document.querySelector("#android-status").textContent = `Verified local-first Android manifest · version ${release.version}`;
     document.querySelector("#android-title").textContent = `Kitsu ${release.version} Android`;
-    document.querySelector("#android-detail").textContent = "Signed local-first Android release with authenticated Bluetooth, saved-device controls, messages, offline firmware updates, and no account or Internet requirement.";
+    document.querySelector("#android-detail").textContent = "Signed local-first Android release with authenticated Bluetooth, resilient clock-sync recovery, saved-device controls, messages, offline firmware updates, and no account or Internet requirement.";
     document.querySelector("#android-digest").textContent = `SHA-256 ${release.sha256.toUpperCase()}`;
   } catch {
     showReleaseFailure();

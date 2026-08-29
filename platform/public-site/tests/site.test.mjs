@@ -202,23 +202,23 @@ test("source landing instructions match the local-only device controls", async (
   assert.doesNotMatch(enhancements, /The Web Serial flasher can install an unlocked pack/i);
 });
 
-test("fails closed outside the exact Android 2.2.10 production contract", async () => {
+test("fails closed outside the exact Android 2.2.11 production contract", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /Kitsu Android 2\.2\.10 · version code 31/i);
+  assert.match(html, /Kitsu Android 2\.2\.11 · version code 32/i);
   assert.match(html, /Changing app tracks is a clean install/i);
   assert.match(html, /Forget authorization/i);
   assert.match(html, /Direct and Play builds cannot update one another/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
   assert.match(script, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
-  assert.match(script, /REQUIRED_VERSION = "2\.2\.10"/);
-  assert.match(script, /REQUIRED_VERSION_CODE = 31/);
-  assert.match(readme, /exact Android 2\.2\.10 \/ version-code 31/i);
+  assert.match(script, /REQUIRED_VERSION = "2\.2\.11"/);
+  assert.match(script, /REQUIRED_VERSION_CODE = 32/);
+  assert.match(readme, /exact Android 2\.2\.11 \/ version-code 32/i);
   assert.match(readme, /do not cross-update/i);
   assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
@@ -747,7 +747,7 @@ test("keeps public release binaries outside text conversion", async () => {
   ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
 });
 
-test("publishes the byte-exact signed local-first Android 2.2.10 release", async () => {
+test("publishes the byte-exact signed local-first Android 2.2.11 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -763,14 +763,14 @@ test("publishes the byte-exact signed local-first Android 2.2.10 release", async
     channel: "stable",
     buildType: "release",
     packageId: "ptl.kitsu.app",
-    version: "2.2.10",
-    versionCode: 31,
+    version: "2.2.11",
+    versionCode: 32,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-android-2.2.10-6f089701db5bc7ed86976192ae66bc8a.apk",
-    bytes: 2799221,
-    sha256: "6f089701db5bc7ed86976192ae66bc8ac3a1c221d92dc405fb88fa6309cba6ee",
+    url: "/downloads/kitsu-android-2.2.11-01c1b122dac3064ec5e9e422f7b61fb8.apk",
+    bytes: 2799220,
+    sha256: "01c1b122dac3064ec5e9e422f7b61fb8725367e4c0dd94c2c2c5ab54a291b61f",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-29T09:09:20Z",
+    publishedAt: "2026-08-29T23:19:38Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -800,6 +800,7 @@ test("publishes the byte-exact signed local-first Android 2.2.10 release", async
     "kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
     "kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
     "kitsu-android-2.2.10-6f089701db5bc7ed86976192ae66bc8a.apk",
+    "kitsu-android-2.2.11-01c1b122dac3064ec5e9e422f7b61fb8.apk",
     "kitsu-android-2.2.3-5575ce664d9fd262ea705cb7b02676d5.apk",
     "kitsu-android-2.2.4-b23727da3603fdc5b35b3146fb8d3eb1.apk",
     "kitsu-android-2.2.5-4f0cc3bb5fd1059c9d6096a41350aa8f.apk",
@@ -926,6 +927,21 @@ test("archives the previous stable manifest and signature under immutable 2.2.6 
   assert.equal(verify(null, manifestBytes, publicKey, signatureBytes), true);
 });
 
+test("archives the previous stable manifest and signature under immutable 2.2.10 names", async () => {
+  const downloads = path.join(root, "downloads");
+  const archivedManifest = path.join(downloads, "android-stable-2.2.10-20260829t090920z.json");
+  const archivedSignature = path.join(downloads, "android-stable-2.2.10-20260829t090920z.json.sig");
+  const publicKey = createPublicKey(await readFile(path.join(downloads, "update-ed25519-public.pem")));
+  const manifestBytes = await readFile(archivedManifest);
+  const signatureBytes = await readFile(archivedSignature);
+
+  assert.equal(manifestBytes.length, 540);
+  assert.equal(await sha256(archivedManifest), "6ed16bfa01b803a3f2db0e354085d58a01c6c0d457bc377baf770a84d8b773fb");
+  assert.equal(signatureBytes.length, 64);
+  assert.equal(await sha256(archivedSignature), "f7010dfbf4fc442c17a2037e83dc6cd1056db164a3268bea1fdf9c1cff65fdfe");
+  assert.equal(verify(null, manifestBytes, publicKey, signatureBytes), true);
+});
+
 test("ships every referenced local release asset", async () => {
   const files = [
     "styles.css",
@@ -955,6 +971,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/kitsu-android-2.2.5-4f0cc3bb5fd1059c9d6096a41350aa8f.apk",
     "downloads/kitsu-android-2.2.6-12f462cd3d938ef9c32c5a9e4709d4c2.apk",
     "downloads/kitsu-android-2.2.10-6f089701db5bc7ed86976192ae66bc8a.apk",
+    "downloads/kitsu-android-2.2.11-01c1b122dac3064ec5e9e422f7b61fb8.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
     "downloads/android-stable-2.0.0-20260822t123928z.json",
     "downloads/android-stable-2.0.0-20260822t123928z.json.sig",
@@ -970,6 +987,8 @@ test("ships every referenced local release asset", async () => {
     "downloads/android-stable-2.2.5-20260828t143256z.json.sig",
     "downloads/android-stable-2.2.6-20260829t015805z.json",
     "downloads/android-stable-2.2.6-20260829t015805z.json.sig",
+    "downloads/android-stable-2.2.10-20260829t090920z.json",
+    "downloads/android-stable-2.2.10-20260829t090920z.json.sig",
   ];
   await Promise.all(files.map((file) => access(path.join(root, file))));
 });
