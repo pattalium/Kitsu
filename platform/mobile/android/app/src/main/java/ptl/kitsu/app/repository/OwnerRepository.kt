@@ -122,7 +122,11 @@ class OwnerRepository(
     private val refreshMutex = Mutex()
     private val messageRefreshMutex = Mutex()
     private val messageReadMutex = Mutex()
+    /** Serializes every operation that may select, issue, repair, or remove a controller root. */
+    private val credentialLifecycleMutex = Mutex()
     private val initialHydration = CompletableDeferred<Unit>()
+    /** Process-local proof from one explicit firmware rejection; never persisted. */
+    private var provenMissingController: BondedCompanion? = null
 
     init {
         require(advertiseSubmissionTimeoutMillis > 0L) { "advertise_timeout_required" }
@@ -190,7 +194,13 @@ class OwnerRepository(
         }
     }
 
-    suspend fun connectAndRefresh(userInitiated: Boolean = false) {
+    suspend fun connectAndRefresh(userInitiated: Boolean = false) =
+        credentialLifecycleMutex.withLock {
+            provenMissingController = null
+            connectAndRefreshUnlocked(userInitiated)
+        }
+
+    private suspend fun connectAndRefreshUnlocked(userInitiated: Boolean) {
         initialHydration.await()
         if (mutableState.value.pairing || mutableState.value.repairingBluetoothPairing) return
         val selected = mutableState.value.activeDeviceAddress ?: credentials.bondedCompanion()?.deviceAddress
@@ -222,8 +232,13 @@ class OwnerRepository(
         mutableState.value = mutableState.value.copy(loading = false, errorCode = code)
     }
 
-    suspend fun selectDevice(deviceAddress: String) {
+    suspend fun selectDevice(deviceAddress: String) = credentialLifecycleMutex.withLock {
+        selectDeviceUnlocked(deviceAddress)
+    }
+
+    private suspend fun selectDeviceUnlocked(deviceAddress: String) {
         initialHydration.await()
+        provenMissingController = null
         if (mutableState.value.activeDeviceAddress.equals(deviceAddress, ignoreCase = true)) return
         stopEvents()
         coordinator.disconnect(suppressAutomaticReconnect = false)
@@ -232,26 +247,31 @@ class OwnerRepository(
         clearLiveData(selected.deviceAddress)
     }
 
-    suspend fun connectDevice(deviceAddress: String) {
-        selectDevice(deviceAddress)
-        connectAndRefresh(userInitiated = true)
+    suspend fun connectDevice(deviceAddress: String) = credentialLifecycleMutex.withLock {
+        provenMissingController = null
+        selectDeviceUnlocked(deviceAddress)
+        connectAndRefreshUnlocked(userInitiated = true)
     }
 
     fun recordUserDisconnectIntent(): Boolean = coordinator.recordUserDisconnectIntent()
 
     suspend fun disconnectByUser() {
+        // Cancellation must be signalled before waiting for the lifecycle owner.
         pairingService.cancelPairing()
-        stopEvents()
-        coordinator.disconnect(suppressAutomaticReconnect = true)
-        mutableState.value = mutableState.value.copy(
-            connection = coordinator.state.value,
-            loading = false,
-            errorCode = null,
-            pairing = false,
-            pairingProgress = null,
-            repairingBluetoothPairing = false,
-            bluetoothPairingRepairProgress = null,
-        )
+        credentialLifecycleMutex.withLock {
+            provenMissingController = null
+            stopEvents()
+            coordinator.disconnect(suppressAutomaticReconnect = true)
+            mutableState.value = mutableState.value.copy(
+                connection = coordinator.state.value,
+                loading = false,
+                errorCode = null,
+                pairing = false,
+                pairingProgress = null,
+                repairingBluetoothPairing = false,
+                bluetoothPairingRepairProgress = null,
+            )
+        }
     }
 
     suspend fun refresh() {
@@ -759,7 +779,12 @@ class OwnerRepository(
         }
     }
 
-    suspend fun pairController(label: String) {
+    suspend fun pairController(label: String) = credentialLifecycleMutex.withLock {
+        pairControllerUnlocked(label)
+    }
+
+    private suspend fun pairControllerUnlocked(label: String) {
+        provenMissingController = null
         stopEvents()
         coordinator.disconnect(suppressAutomaticReconnect = false)
         mutableState.value = mutableState.value.copy(pairing = true, pairingProgress = null, errorCode = null)
@@ -769,7 +794,7 @@ class OwnerRepository(
             }
             reloadDevices()
             mutableState.value = mutableState.value.copy(pairing = false, pairingProgress = null)
-            connectAndRefresh(userInitiated = true)
+            connectAndRefreshUnlocked(userInitiated = true)
         } catch (failure: Throwable) {
             runCatching { reloadDevices() }
             mutableState.value = mutableState.value.copy(
@@ -781,7 +806,12 @@ class OwnerRepository(
         }
     }
 
-    suspend fun finishPendingPairing() {
+    suspend fun finishPendingPairing() = credentialLifecycleMutex.withLock {
+        finishPendingPairingUnlocked()
+    }
+
+    private suspend fun finishPendingPairingUnlocked() {
+        provenMissingController = null
         stopEvents()
         coordinator.disconnect(suppressAutomaticReconnect = false)
         mutableState.value = mutableState.value.copy(
@@ -798,7 +828,7 @@ class OwnerRepository(
             }
             reloadDevices()
             mutableState.value = mutableState.value.copy(pairing = false, pairingProgress = null)
-            connectAndRefresh(userInitiated = true)
+            connectAndRefreshUnlocked(userInitiated = true)
         } catch (failure: Throwable) {
             runCatching { reloadDevices() }
             mutableState.value = mutableState.value.copy(
@@ -815,10 +845,14 @@ class OwnerRepository(
     /**
      * Repairs only the selected saved controller's Android SMP bond.
      *
-     * The controller ID/root is snapshotted and verified unchanged. The one GATT
-     * connection below is the only retry allowed after a newly completed OS bond.
+     * The controller ID/root is snapshotted and verified unchanged. After the
+     * initial post-bond GATT, only one status-22 recovery attempt is permitted.
      */
-    suspend fun repairBluetoothPairing(deviceAddress: String) {
+    suspend fun repairBluetoothPairing(deviceAddress: String) = credentialLifecycleMutex.withLock {
+        repairBluetoothPairingUnlocked(deviceAddress)
+    }
+
+    private suspend fun repairBluetoothPairingUnlocked(deviceAddress: String) {
         initialHydration.await()
         val before = credentials.bondedCompanions().firstOrNull {
             it.deviceAddress.equals(deviceAddress, ignoreCase = true)
@@ -831,6 +865,8 @@ class OwnerRepository(
 
         stopEvents()
         coordinator.disconnect(suppressAutomaticReconnect = false)
+        // A new repair invocation supersedes any prior in-memory rejection proof.
+        provenMissingController = null
         mutableState.value = mutableState.value.copy(
             loading = false,
             errorCode = null,
@@ -860,11 +896,23 @@ class OwnerRepository(
                     "one_fresh_gatt_retry",
                 ),
             )
-            val connection = coordinator.connect(userInitiated = true)
+            var postBondRetries = 0
+            var connection = coordinator.connect(userInitiated = true)
+            if (BluetoothPairingRepairPolicy.shouldRetryPostBondGatt(
+                    connection.detail,
+                    postBondRetries,
+                )
+            ) {
+                postBondRetries += 1
+                connection = coordinator.connect(userInitiated = true)
+            }
             if (!connection.connected) {
                 val code = if (ControllerForgetPolicy.controllerAlreadyAbsent(connection.detail)) {
                     BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING
                 } else connection.detail
+                if (code == BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING) {
+                    provenMissingController = before
+                }
                 throw PairingException(code)
             }
             mutableState.value = mutableState.value.copy(
@@ -902,12 +950,26 @@ class OwnerRepository(
     fun cancelBluetoothPairingRepair() = pairingService.cancelPairing()
 
     /** Revokes this app's authenticated controller on Kitsu before deleting the local root. */
-    suspend fun forgetController(deviceAddress: String) {
+    suspend fun forgetController(deviceAddress: String) = credentialLifecycleMutex.withLock {
+        forgetControllerUnlocked(deviceAddress)
+    }
+
+    private suspend fun forgetControllerUnlocked(deviceAddress: String) {
         val pending = credentials.pendingControllerForgetAddress()
         if (pending != null && !pending.equals(deviceAddress, ignoreCase = true)) {
             throw TransportException("controller_forget_pending")
         }
-        selectDevice(deviceAddress)
+        val current = credentials.bondedCompanion()
+        if (ControllerForgetPolicy.mayCompleteLocally(
+                provenMissing = provenMissingController,
+                current = current,
+                requestedAddress = deviceAddress,
+            )
+        ) {
+            completeControllerForget(deviceAddress, expectedCredential = current)
+            return
+        }
+        selectDeviceUnlocked(deviceAddress)
 
         var connection = coordinator.state.value
         if (!connection.connected || !coordinator.isConnectedTo(deviceAddress)) {
@@ -1186,9 +1248,18 @@ class OwnerRepository(
         ) throw TransportException(failureCode)
     }
 
-    private suspend fun completeControllerForget(deviceAddress: String) {
+    private suspend fun completeControllerForget(
+        deviceAddress: String,
+        expectedCredential: BondedCompanion? = null,
+    ) {
+        if (provenMissingController?.deviceAddress.equals(deviceAddress, ignoreCase = true)) {
+            provenMissingController = null
+        }
         stopEvents()
         coordinator.disconnect(suppressAutomaticReconnect = false)
+        if (expectedCredential != null && credentials.bondedCompanion() != expectedCredential) {
+            throw TransportException("controller_authorization_changed")
+        }
         credentials.removeBondedCompanion(deviceAddress)
         credentials.savePendingControllerForgetAddress(null)
         withContext(Dispatchers.IO) { cache.clear() }

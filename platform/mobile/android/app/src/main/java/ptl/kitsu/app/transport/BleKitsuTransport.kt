@@ -364,8 +364,8 @@ class BleKitsuTransport(
             throw PairingException("bluetooth_pairing_repair_cancelled", failure)
         } finally {
             // Bond repair never owns an authenticated application session. The
-            // repository performs exactly one fresh GATT attempt after this newly
-            // completed bond and reuses the saved controller capability there.
+            // repository performs the initial post-bond GATT and at most one
+            // status-22 recovery, reusing the saved controller capability there.
             withContext(NonCancellable) { disconnect() }
             if (pairingJob === activeJob) pairingJob = null
         }
