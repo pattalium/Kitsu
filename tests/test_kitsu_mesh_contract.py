@@ -68,6 +68,42 @@ def record(prefix: str, value: dict) -> str:
 
 
 class CommandContractTest(unittest.TestCase):
+    def test_reapplying_identical_settings_never_reinitializes_radio(self) -> None:
+        configure = cpp_function(
+            TRANSPORT_SOURCE,
+            "TransportStatus configureRadio(const Settings& next)",
+        )
+        self.assertIn("sameSettings(next, settings)", configure)
+        self.assertIn("sameRuntimeConfiguration", configure)
+        self.assertLess(
+            configure.index("sameSettings(next, settings)"),
+            configure.index("client.cancelQueuedSends()"),
+        )
+        busy_guard = "if (active && !driver.isInRecvMode())"
+        self.assertIn(busy_guard, configure)
+        self.assertLess(
+            configure.index("sameSettings(next, settings)"),
+            configure.index(busy_guard),
+        )
+        self.assertLess(
+            configure.index(busy_guard),
+            configure.index("if (sameRuntimeConfiguration)"),
+        )
+        privacy_fast_path = configure.split(
+            "if (sameRuntimeConfiguration)", 1
+        )[1].split("client.cancelAllSends()", 1)[0]
+        self.assertIn("settings = next", privacy_fast_path)
+        self.assertNotIn("physical.standby()", privacy_fast_path)
+        self.assertNotIn("physical.begin(", privacy_fast_path)
+        self.assertLess(
+            configure.index("sameRuntimeConfiguration"),
+            configure.index("physical.standby()"),
+        )
+        self.assertLess(
+            configure.index("sameRuntimeConfiguration"),
+            configure.index("physical.begin("),
+        )
+
     def test_sx1262_irq_uses_latched_loop_polling_not_idf_ipc(self) -> None:
         attach = cpp_function(
             TRANSPORT_SOURCE,

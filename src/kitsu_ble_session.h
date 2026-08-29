@@ -31,6 +31,9 @@ struct BleSessionStatus {
   bool pairingWindowOpen = false;
   bool physicalConfirmationPending = false;
   bool applicationAuthenticated = false;
+  // True only after one authenticated request has been verified and its
+  // matching response has been accepted by the BLE transport on this link.
+  bool authenticatedRequestBarrier = false;
   uint8_t proofFailures = 0U;
   uint64_t nextClientSequence = 1U;
   uint64_t nextDeviceSequence = 1U;
@@ -129,6 +132,7 @@ class KitsuBleSession {
   bool linkBonded_ = false;
   bool pairingWindowOpen_ = false;
   bool controllerKnown_ = false;
+  bool authenticatedRequestBarrier_ = false;
   uint8_t proofFailures_ = 0U;
   uint32_t stateDeadline_ = 0U;
   uint32_t pairingWindowDeadline_ = 0U;

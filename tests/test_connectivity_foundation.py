@@ -74,6 +74,18 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
             self.assertIn(required, clock)
         self.assertNotIn("wifiRuntime", clock)
         self.assertNotIn("gateway", clock.lower())
+        self.assertIn("CLOCK_SYNC_TOLERANCE_SECONDS", clock)
+        self.assertIn("delta <= CLOCK_SYNC_TOLERANCE_SECONDS", clock)
+        self.assertLess(
+            clock.index("delta <= CLOCK_SYNC_TOLERANCE_SECONDS"),
+            clock.index("commitClockMutation(before"),
+        )
+        for exact_error in (
+            "clock_value_rejected",
+            "clock_storage_failed",
+            "clock_runtime_failed",
+        ):
+            self.assertIn(exact_error, clock)
 
         commit = cpp_function(source, "bool commitClockMutation(")
         self.assertLess(

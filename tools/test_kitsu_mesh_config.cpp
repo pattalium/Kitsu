@@ -233,6 +233,30 @@ void testHostStoreBoundary() {
         "host build cleanly excludes ESP32 Preferences access");
 }
 
+void testSemanticSettingsEquality() {
+  mesh::Settings off = mesh::defaultSettings();
+  mesh::Settings sameOff = off;
+  check(mesh::sameSettings(off, sameOff),
+        "OFF to identical OFF is a semantic no-op");
+  sameOff.txPolicy = mesh::TxPolicy::ExplicitSession;
+  check(!mesh::sameSettings(off, sameOff),
+        "disabled TX-policy mutation remains persistently meaningful");
+
+  mesh::Settings on = mesh::defaultSettings();
+  on.enabled = true;
+  on.txPolicy = mesh::TxPolicy::ExplicitSession;
+  mesh::Settings sameOn = on;
+  check(mesh::sameSettings(on, sameOn),
+        "ON to identical ON is a semantic no-op");
+  ++sameOn.radio.frequencyHz;
+  check(!mesh::sameSettings(on, sameOn),
+        "radio mutation is not mistaken for an idempotent apply");
+  sameOn = on;
+  check(mesh::setFixedLocation(sameOn, {44426300L, 26102600L}) ==
+            mesh::Status::Ok && !mesh::sameSettings(on, sameOn),
+        "privacy mutation is not mistaken for an idempotent apply");
+}
+
 }  // namespace
 
 int main() {
@@ -241,6 +265,7 @@ int main() {
   testRadioAndTxGate();
   testPersistenceCodec();
   testHostStoreBoundary();
+  testSemanticSettingsEquality();
 
   if (failures != 0) {
     std::cerr << "TEST_FAIL kitsu_mesh_config failures=" << failures << '\n';

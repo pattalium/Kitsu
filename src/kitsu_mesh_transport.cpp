@@ -3512,15 +3512,44 @@ struct KitsuMeshTransport::Impl final : public AdvertSink {
   TransportStatus configureRadio(const Settings& next) {
     txGate.lock();
     driver.revokeOneShot();
+
+    const bool runtimeMatches = next.enabled
+        ? active && settings.enabled && sameRadioProfile(next.radio,
+                                                        settings.radio)
+        : !active;
+    // Reapplying a validated, identical record is a security no-op except for
+    // relocking TX above.  In particular, do not destroy already admitted RX
+    // work, queued sends, or reinitialize the SX1262/NimBLE coexistence path.
+    // If runtime state does not match (for example after failed radio init),
+    // deliberately fall through so the same request can repair it.
+    if (runtimeMatches && sameSettings(next, settings)) {
+      return next.enabled ? TransportStatus::Ok : TransportStatus::Disabled;
+    }
+
     client.cancelQueuedSends();
     clearOutboundQueue();
 
     // An asynchronous frame that already owns the radio cannot be recalled.
-    // Leave its tracker intact and reject the profile mutation until the next
-    // command, after logTx/logTxFail has reported the honest outcome.
+    // Exact equality above is safe, but every semantic mutation (including a
+    // privacy/TX-policy-only change) must wait until the old decision is no
+    // longer on air. Leave its tracker and current settings intact.
     if (active && !driver.isInRecvMode()) {
       return TransportStatus::InvalidArgument;
     }
+
+    // Location and TX policy are not physical-radio parameters.  They still
+    // revoke queued work above so an old privacy/TX decision cannot leak into
+    // a later advert, but they must not reset a healthy receiver.
+    const bool sameRuntimeConfiguration = runtimeMatches &&
+        (next.enabled
+             ? settings.enabled && sameRadioProfile(next.radio,
+                                                    settings.radio)
+             : !settings.enabled);
+    if (sameRuntimeConfiguration) {
+      settings = next;
+      return next.enabled ? TransportStatus::Ok : TransportStatus::Disabled;
+    }
+
     client.cancelAllSends();
     // Echo correlation is profile-local. A successful radio/profile reset
     // must not let a late frame from the old profile mutate a recent row.

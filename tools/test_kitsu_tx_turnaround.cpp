@@ -90,6 +90,7 @@ int main() {
     TxTurnaroundCompletion completion;
     assert(run(radio, completion, 10U) == TxTurnaroundResult::Completed);
     assert(radio.starts == 1U && radio.txDoneConsumes == 1U);
+    assert(radio.yields == 2U && radio.polls == 3U);
     assert(radio.nSent == 1U && radio.finishes == 1U);
     assert(radio.rearms == 1U);
     assert(radio.boardBefore == 1U && radio.boardAfter == 1U);
@@ -120,6 +121,7 @@ int main() {
     TxTurnaroundCompletion completion;
     assert(run(radio, completion, 3U) == TxTurnaroundResult::TimedOut);
     assert(radio.finishes == 1U && radio.rearms == 1U);
+    assert(radio.yields == 3U && radio.polls == 5U);
     assert(radio.nSent == 0U && radio.boardAfter == 1U);
     assert(!completion.takeForDispatcher());
     assert(!completion.consumeReportedFinish());

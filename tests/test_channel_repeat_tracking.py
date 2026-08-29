@@ -246,7 +246,7 @@ class MessagesV3CompatibilitySourceTests(unittest.TestCase):
         self.assertIn("buildMessagesV3", handler)
         # This capability is exposed only once the coordinated v3 release is
         # promoted; strict 0.15.x companions continue to request messages.v2.
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.1"', MAIN)
+        self.assertIn('FIRMWARE_VERSION[] = "0.20.2"', MAIN)
 
     def test_v4_adds_explicit_observation_and_bounded_tokens_only(self) -> None:
         v3_item = cpp_function(MAIN, "bool appendMessageV3Item(")

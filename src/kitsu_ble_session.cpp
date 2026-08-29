@@ -322,6 +322,7 @@ bool operationAllowed(const char* operation) {
       "messages.mark_read",
       "encounter.codes.get.v1", "encounter.neighbors.get.v1",
       "encounter.neighbor.action.v1", "encounter.catalog.get.v1",
+      "encounter.discovery.get.v1",
       "fun.state.get.v1", "fun.expedition.start.v1",
       "fun.expedition.claim.v1", "fun.story.start.v1",
       "fun.story.advance.v1", "fun.story.choose.v1",
@@ -378,6 +379,7 @@ void KitsuBleSession::clearSessionSecrets() {
   secureZero(clientToDeviceKey_, sizeof(clientToDeviceKey_));
   secureZero(deviceToClientKey_, sizeof(deviceToClientKey_));
   controllerKnown_ = false;
+  authenticatedRequestBarrier_ = false;
   expectedClientSequence_ = 1U;
   nextDeviceSequence_ = 1U;
 }
@@ -936,11 +938,15 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
     responseBytes = sizeof(rejected) - 1U;
   }
   if (!sendAuthenticated(companion::EnvelopeChannel::Response,
-                         request.requestId, request.operation,
-                         responseScratch_, responseBytes)) {
+                          request.requestId, request.operation,
+                          responseScratch_, responseBytes)) {
     failAndClose(nowMillis);
     return false;
   }
+  // An authenticated session alone is not enough to emit unsolicited events:
+  // Android establishes its sequence/clock state with the first request.  Set
+  // the barrier only after that request's response is safely queued.
+  authenticatedRequestBarrier_ = true;
   return true;
 }
 
@@ -1043,6 +1049,7 @@ void KitsuBleSession::cancelPendingPairing() {
 bool KitsuBleSession::sendEvent(const char* operation,
                                 const uint8_t* payload,
                                 size_t payloadBytes) {
+  if (!authenticatedRequestBarrier_) return false;
   uint8_t requestId[16]{};
   if (!crypto_ || !crypto_->randomBytes(requestId, sizeof(requestId))) {
     return false;
@@ -1066,6 +1073,7 @@ BleSessionStatus KitsuBleSession::status(uint32_t nowMillis) const {
       state_ == BleSessionState::PairingAwaitingPhysical;
   output.applicationAuthenticated =
       state_ == BleSessionState::Authenticated;
+  output.authenticatedRequestBarrier = authenticatedRequestBarrier_;
   output.proofFailures = proofFailures_;
   output.nextClientSequence = expectedClientSequence_;
   output.nextDeviceSequence = nextDeviceSequence_;

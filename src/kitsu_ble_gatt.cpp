@@ -24,6 +24,26 @@ bool deadlineReached(uint32_t now, uint32_t deadline) {
   return static_cast<int32_t>(now - deadline) >= 0;
 }
 
+// NimBLE host result values are stable in the pinned 2.5.1 ble_hs.h.  Keep
+// this adapter independent of private NimBLE headers while still making the
+// retry policy explicit and host-testable.
+bool notifyStatusSucceeded(int code) {
+  return code == 0 || code == 14;  // BLE_HS_EDONE is indication-complete.
+}
+
+bool notifyStatusRetryable(int code) {
+  switch (code) {
+    case 1:   // BLE_HS_EAGAIN
+    case 2:   // BLE_HS_EALREADY (defensive)
+    case 6:   // BLE_HS_ENOMEM
+    case 15:  // BLE_HS_EBUSY
+    case 20:  // BLE_HS_ENOMEM_EVT
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 struct KitsuBleGattLink::Impl {
@@ -32,6 +52,11 @@ struct KitsuBleGattLink::Impl {
 
   struct EventRecord {
     BleLinkEvent event = BleLinkEvent::Connected;
+    uint32_t generation = 0U;
+    uint16_t handle = kNoConnection;
+    bool disconnectReasonAvailable = false;
+    int disconnectReason = 0;
+    uint32_t disconnectAtMillis = 0U;
   };
 
   class ServerCallbacks final : public NimBLEServerCallbacks {
@@ -44,8 +69,8 @@ struct KitsuBleGattLink::Impl {
     }
 
     void onDisconnect(NimBLEServer*, NimBLEConnInfo& connection,
-                      int) override {
-      impl->onDisconnect(connection);
+                      int reason) override {
+      impl->onDisconnect(connection, reason, millis());
     }
 
     void onMTUChange(uint16_t mtu, NimBLEConnInfo& connection) override {
@@ -111,25 +136,51 @@ struct KitsuBleGattLink::Impl {
     txQueued = false;
     txBytes = 0U;
     txOffset = 0U;
+    notifyAttemptActive = false;
+    notifyStatusReady = false;
+    notifyAttemptHandle = kNoConnection;
+    notifyAttemptGeneration = 0U;
+    notifyAttemptOffset = 0U;
+    notifyAttemptBytes = 0U;
+    notifyAttemptDeadline = 0U;
+    notifyRetryAt = 0U;
+    notifyAttemptCount = 0U;
+    disconnectRequested = false;
+    disconnectIssued = false;
+    disconnectHandle = kNoConnection;
+    disconnectGeneration = 0U;
     parser.begin(rxStorage, sizeof(rxStorage),
                  companion::kMaximumHandshakeFrameBytes,
                  companion::kFrameAssemblyTimeoutMs);
   }
 
-  void pushEventLocked(BleLinkEvent event) {
+  void pushEventLocked(BleLinkEvent event, uint32_t generation,
+                       uint16_t handle) {
     const uint8_t next = static_cast<uint8_t>(
         (eventWrite + 1U) % kEventQueueCapacity);
     if (next == eventRead) {
       eventRead = static_cast<uint8_t>(
           (eventRead + 1U) % kEventQueueCapacity);
     }
+    events[eventWrite] = EventRecord{};
     events[eventWrite].event = event;
+    events[eventWrite].generation = generation;
+    events[eventWrite].handle = handle;
     eventWrite = next;
+  }
+
+  void pushEventLocked(BleLinkEvent event) {
+    pushEventLocked(event, connectionGeneration, connectionHandle);
   }
 
   void requestDisconnectLocked(BleLinkEvent event) {
     pushEventLocked(event);
-    disconnectRequested = true;
+    if (connected && connectionHandle != kNoConnection) {
+      disconnectRequested = true;
+      disconnectIssued = true;
+      disconnectHandle = connectionHandle;
+      disconnectGeneration = connectionGeneration;
+    }
   }
 
   void onConnect(NimBLEServer* callbackServer,
@@ -142,6 +193,8 @@ struct KitsuBleGattLink::Impl {
       reject = true;
     } else {
       clearConnectionLocked();
+      ++connectionGeneration;
+      if (connectionGeneration == 0U) ++connectionGeneration;
       connected = true;
       advertising = false;
       connectionHandle = handle;
@@ -164,12 +217,26 @@ struct KitsuBleGattLink::Impl {
     }
   }
 
-  void onDisconnect(NimBLEConnInfo& connection) {
+  void onDisconnect(NimBLEConnInfo& connection, int reason,
+                    uint32_t nowMillis) {
     portENTER_CRITICAL(&mux);
     if (connectionHandle == connection.getConnHandle()) {
+      const uint32_t departedGeneration = connectionGeneration;
+      const uint16_t departedHandle = connectionHandle;
+      disconnectReasonAvailable = true;
+      lastDisconnectReason = reason;
+      lastDisconnectedHandle = departedHandle;
+      lastDisconnectedGeneration = departedGeneration;
+      lastDisconnectAtMillis = nowMillis;
       clearConnectionLocked();
       advertising = !localControllerRecoveryLocked;
-      pushEventLocked(BleLinkEvent::Disconnected);
+      pushEventLocked(BleLinkEvent::Disconnected, departedGeneration,
+                      departedHandle);
+      const uint8_t eventIndex = static_cast<uint8_t>(
+          (eventWrite + kEventQueueCapacity - 1U) % kEventQueueCapacity);
+      events[eventIndex].disconnectReasonAvailable = true;
+      events[eventIndex].disconnectReason = reason;
+      events[eventIndex].disconnectAtMillis = nowMillis;
     }
     portEXIT_CRITICAL(&mux);
   }
@@ -233,9 +300,15 @@ struct KitsuBleGattLink::Impl {
     const uint8_t* input = value.data();
     const size_t inputBytes = value.size();
     portENTER_CRITICAL(&mux);
-    if (connectionHandle != connection.getConnHandle() ||
-        !encrypted || !authenticated || !bonded || requestInFlight ||
-        frameReady || inputBytes == 0U) {
+    // A callback from a departed/other connection is not evidence that the
+    // current controller violated the protocol. In particular, never let a
+    // late host callback for handle A close a replacement link B.
+    if (connectionHandle != connection.getConnHandle()) {
+      portEXIT_CRITICAL(&mux);
+      return;
+    }
+    if (!encrypted || !authenticated || !bonded || !notifySubscribed ||
+        requestInFlight || frameReady || inputBytes == 0U) {
       requestDisconnectLocked(BleLinkEvent::ProtocolViolation);
       portEXIT_CRITICAL(&mux);
       return;
@@ -256,18 +329,89 @@ struct KitsuBleGattLink::Impl {
   void onSubscribe(NimBLEConnInfo& connection, uint16_t subscription) {
     portENTER_CRITICAL(&mux);
     if (connectionHandle == connection.getConnHandle()) {
+      const bool wasSubscribed = notifySubscribed;
       notifySubscribed = (subscription & 0x01U) != 0U;
+      if (wasSubscribed && !notifySubscribed) {
+        notifyAttemptActive = false;
+        notifyStatusReady = false;
+        notifyRetryAt = 0U;
+        notifyAttemptCount = 0U;
+        txQueued = false;
+        txBytes = 0U;
+        txOffset = 0U;
+        requestInFlight = false;
+        requestDisconnectLocked(BleLinkEvent::TransportFailure);
+      }
     }
     portEXIT_CRITICAL(&mux);
   }
 
   void onNotifyStatus(NimBLEConnInfo& connection, int code) {
-    if (code == 0) return;
+    // NimBLE-Arduino 2.5.1 does not populate ConnInfo for NOTIFY_TX.  Bind
+    // completion to the one internally recorded attempt rather than trusting
+    // connection.getConnHandle(), which is commonly zero/default here.
+    (void)connection;
     portENTER_CRITICAL(&mux);
-    if (connectionHandle == connection.getConnHandle()) {
-      requestDisconnectLocked(BleLinkEvent::ProtocolViolation);
+    if (notifyAttemptActive && connected &&
+        notifyAttemptGeneration == connectionGeneration &&
+        notifyAttemptHandle == connectionHandle) {
+      notifyAttemptStatus = code;
+      notifyStatusReady = true;
+      notifyStatusAvailable = true;
+      lastNotifyStatus = code;
+      lastNotifyStatusAtMillis = millis();
     }
     portEXIT_CRITICAL(&mux);
+  }
+
+  bool notifyAttemptMatchesLocked() const {
+    return notifyAttemptActive && connected && txQueued &&
+        notifyAttemptGeneration == connectionGeneration &&
+        notifyAttemptHandle == connectionHandle &&
+        txOffset <= txBytes && notifyAttemptOffset == txOffset &&
+        notifyAttemptBytes != 0U &&
+        notifyAttemptBytes <= txBytes - txOffset;
+  }
+
+  void completeNotifyAttemptLocked(uint32_t nowMillis, int code,
+                                   bool retryableWithoutStatus = false) {
+    if (!notifyAttemptMatchesLocked()) {
+      notifyAttemptActive = false;
+      notifyStatusReady = false;
+      return;
+    }
+
+    const size_t completedBytes = notifyAttemptBytes;
+    notifyAttemptActive = false;
+    notifyStatusReady = false;
+    notifyAttemptDeadline = 0U;
+    notifyStatusAvailable = true;
+    lastNotifyStatus = code;
+    lastNotifyStatusAtMillis = nowMillis;
+
+    if (notifyStatusSucceeded(code)) {
+      txOffset += completedBytes;
+      notifyAttemptCount = 0U;
+      notifyRetryAt = 0U;
+      if (txOffset == txBytes) {
+        txQueued = false;
+        txBytes = 0U;
+        txOffset = 0U;
+        requestInFlight = false;
+      }
+      return;
+    }
+
+    const bool retryable = retryableWithoutStatus ||
+        notifyStatusRetryable(code);
+    if (retryable && notifyAttemptCount < kBleNotifyMaximumAttempts &&
+        notifySubscribed && !disconnectRequested) {
+      notifyRetryAt = nowMillis +
+          kBleNotifyRetryBaseMs * static_cast<uint32_t>(notifyAttemptCount);
+      return;
+    }
+    notifyRetryAt = 0U;
+    requestDisconnectLocked(BleLinkEvent::TransportFailure);
   }
 
   KitsuBleGattLink* owner;
@@ -309,11 +453,33 @@ struct KitsuBleGattLink::Impl {
   bool requestInFlight = false;
   bool txQueued = false;
   bool disconnectRequested = false;
+  bool disconnectIssued = false;
+  bool notifyAttemptActive = false;
+  bool notifyStatusReady = false;
+  bool disconnectReasonAvailable = false;
+  bool notifyStatusAvailable = false;
   uint16_t connectionHandle = kNoConnection;
+  uint16_t disconnectHandle = kNoConnection;
+  uint16_t notifyAttemptHandle = kNoConnection;
+  uint16_t lastDisconnectedHandle = kNoConnection;
   uint16_t mtu = 23U;
   uint32_t numericComparison = 0U;
   uint32_t numericDeadline = 0U;
   uint32_t pairingWindowDeadline = 0U;
+  uint32_t connectionGeneration = 0U;
+  uint32_t disconnectGeneration = 0U;
+  uint32_t notifyAttemptGeneration = 0U;
+  size_t notifyAttemptOffset = 0U;
+  size_t notifyAttemptBytes = 0U;
+  uint32_t notifyAttemptDeadline = 0U;
+  uint32_t notifyRetryAt = 0U;
+  uint8_t notifyAttemptCount = 0U;
+  int notifyAttemptStatus = 0;
+  int lastDisconnectReason = 0;
+  int lastNotifyStatus = 0;
+  uint32_t lastDisconnectAtMillis = 0U;
+  uint32_t lastDisconnectedGeneration = 0U;
+  uint32_t lastNotifyStatusAtMillis = 0U;
 };
 
 KitsuBleGattLink::KitsuBleGattLink() = default;
@@ -427,9 +593,17 @@ void KitsuBleGattLink::loop(uint32_t nowMillis) {
     rejectNumeric = true;
     impl_->pushEventLocked(BleLinkEvent::FrameTimedOut);
   }
-  handle = impl_->connectionHandle;
-  disconnectNow = impl_->disconnectRequested;
-  impl_->disconnectRequested = false;
+  disconnectNow = impl_->disconnectRequested && impl_->connected &&
+      impl_->disconnectHandle == impl_->connectionHandle &&
+      impl_->disconnectGeneration == impl_->connectionGeneration;
+  handle = disconnectNow ? impl_->disconnectHandle : kNoConnection;
+  if (impl_->disconnectRequested) {
+    // Consume both the matching request and a stale token from a dead link.
+    // A later connection can never inherit an earlier generation's close.
+    impl_->disconnectRequested = false;
+    impl_->disconnectHandle = kNoConnection;
+    impl_->disconnectGeneration = 0U;
+  }
   portEXIT_CRITICAL(&impl_->mux);
 
   if (rejectNumeric) confirmNumericComparison(false);
@@ -439,18 +613,41 @@ void KitsuBleGattLink::loop(uint32_t nowMillis) {
 
   // Deliver link events in order from the Arduino loop, not the BLE host task.
   for (;;) {
-    BleLinkEvent event = BleLinkEvent::Connected;
+    Impl::EventRecord record{};
     bool available = false;
     portENTER_CRITICAL(&impl_->mux);
     if (impl_->eventRead != impl_->eventWrite) {
-      event = impl_->events[impl_->eventRead].event;
+      record = impl_->events[impl_->eventRead];
       impl_->eventRead = static_cast<uint8_t>(
           (impl_->eventRead + 1U) % kEventQueueCapacity);
       available = true;
     }
     portEXIT_CRITICAL(&impl_->mux);
     if (!available) break;
-    impl_->delegate->onBleLinkEvent(event, status(nowMillis));
+    BleLinkStatus eventStatus = status(nowMillis);
+    eventStatus.eventConnectionGeneration = record.generation;
+    eventStatus.eventConnectionHandle = record.handle;
+    eventStatus.eventMatchesCurrentConnection =
+        eventStatus.connected && record.generation != 0U &&
+        record.generation == eventStatus.connectionGeneration &&
+        record.handle == eventStatus.connectionHandle;
+    if (record.disconnectReasonAvailable) {
+      eventStatus.disconnectReasonAvailable = true;
+      eventStatus.lastDisconnectReason = record.disconnectReason;
+      eventStatus.lastDisconnectedHandle = record.handle;
+      eventStatus.lastDisconnectedGeneration = record.generation;
+      eventStatus.lastDisconnectAtMillis = record.disconnectAtMillis;
+    }
+    // A queued connect/auth/failure event must never mutate a session after
+    // its link has closed or after generation B replaced generation A, even
+    // when NimBLE reuses the same numeric handle. A disconnect remains an
+    // explicit diagnostic event; the bridge decides whether its generation
+    // was the latest closed link before clearing application state.
+    if (!eventStatus.eventMatchesCurrentConnection &&
+        record.event != BleLinkEvent::Disconnected) {
+      continue;
+    }
+    impl_->delegate->onBleLinkEvent(record.event, eventStatus);
   }
 
   const uint8_t* frame = nullptr;
@@ -491,13 +688,34 @@ void KitsuBleGattLink::loop(uint32_t nowMillis) {
     portEXIT_CRITICAL(&impl_->mux);
   }
 
-  // At most one MTU chunk per Arduino iteration gives NimBLE bounded
+  // Complete or retry exactly one outstanding notification.  NimBLE 2.5.1
+  // reports NOTIFY_TX without populated ConnInfo. Its notification callback
+  // is normally synchronous with notify(), but the token and timeout also
+  // tolerate delayed/missing callbacks in the host or a future stack change.
+  portENTER_CRITICAL(&impl_->mux);
+  if (impl_->notifyAttemptActive) {
+    if (impl_->notifyStatusReady) {
+      impl_->completeNotifyAttemptLocked(nowMillis,
+                                         impl_->notifyAttemptStatus);
+    } else if (deadlineReached(nowMillis, impl_->notifyAttemptDeadline)) {
+      // A true return with no callback must not hold requestInFlight forever.
+      impl_->completeNotifyAttemptLocked(nowMillis, -2, true);
+    }
+  }
+  portEXIT_CRITICAL(&impl_->mux);
+
+  // At most one MTU chunk attempt per Arduino iteration gives NimBLE bounded
   // backpressure without blocking the creature/radio loop.
   const uint8_t* chunk = nullptr;
   size_t chunkBytes = 0U;
   uint16_t txHandle = kNoConnection;
+  uint32_t txGeneration = 0U;
+  size_t txOffset = 0U;
   portENTER_CRITICAL(&impl_->mux);
-  if (impl_->txQueued && impl_->connected && impl_->encrypted &&
+  const bool retryReady = impl_->notifyRetryAt == 0U ||
+      deadlineReached(nowMillis, impl_->notifyRetryAt);
+  if (!impl_->notifyAttemptActive && !impl_->disconnectIssued &&
+      retryReady && impl_->txQueued && impl_->connected && impl_->encrypted &&
       impl_->authenticated && impl_->bonded && impl_->notifySubscribed) {
     const size_t mtuPayload = impl_->mtu > 3U
         ? static_cast<size_t>(impl_->mtu - 3U)
@@ -509,19 +727,37 @@ void KitsuBleGattLink::loop(uint32_t nowMillis) {
     chunkBytes = remaining < maximumChunk ? remaining : maximumChunk;
     chunk = impl_->txStorage + impl_->txOffset;
     txHandle = impl_->connectionHandle;
+    txGeneration = impl_->connectionGeneration;
+    txOffset = impl_->txOffset;
+    impl_->notifyAttemptActive = true;
+    impl_->notifyStatusReady = false;
+    impl_->notifyAttemptHandle = txHandle;
+    impl_->notifyAttemptGeneration = txGeneration;
+    impl_->notifyAttemptOffset = txOffset;
+    impl_->notifyAttemptBytes = chunkBytes;
+    impl_->notifyAttemptDeadline = nowMillis +
+        kBleNotifyCompletionTimeoutMs;
+    impl_->notifyRetryAt = 0U;
+    if (impl_->notifyAttemptCount < 0xffU) ++impl_->notifyAttemptCount;
   }
   portEXIT_CRITICAL(&impl_->mux);
 
-  if (chunk && impl_->tx->notify(chunk, chunkBytes, txHandle)) {
+  if (chunk) {
+    const bool accepted = impl_->tx->notify(chunk, chunkBytes, txHandle);
     portENTER_CRITICAL(&impl_->mux);
-    if (impl_->connectionHandle == txHandle && impl_->txQueued) {
-      impl_->txOffset += chunkBytes;
-      if (impl_->txOffset == impl_->txBytes) {
-        impl_->txQueued = false;
-        impl_->txBytes = 0U;
-        impl_->txOffset = 0U;
-        impl_->requestInFlight = false;
-      }
+    const bool sameAttempt = impl_->notifyAttemptActive &&
+        impl_->notifyAttemptHandle == txHandle &&
+        impl_->notifyAttemptGeneration == txGeneration &&
+        impl_->notifyAttemptOffset == txOffset &&
+        impl_->notifyAttemptBytes == chunkBytes;
+    if (sameAttempt && impl_->notifyStatusReady) {
+      // Handles a synchronous fake/host callback without waiting a loop turn.
+      impl_->completeNotifyAttemptLocked(nowMillis,
+                                         impl_->notifyAttemptStatus);
+    } else if (sameAttempt && !accepted) {
+      // mbuf allocation can make notify() return false with no callback and no
+      // exposed host code. Treat it as bounded local backpressure.
+      impl_->completeNotifyAttemptLocked(nowMillis, -1, true);
     }
     portEXIT_CRITICAL(&impl_->mux);
   }
@@ -566,7 +802,12 @@ bool KitsuBleGattLink::setLocalControllerRecoveryLocked(bool locked) {
     impl_->pairingWindowDeadline = 0U;
     rejectNumeric = impl_->numericPending;
     connected = impl_->connected;
-    impl_->disconnectRequested = impl_->disconnectRequested || connected;
+    if (connected) {
+      impl_->disconnectRequested = true;
+      impl_->disconnectIssued = true;
+      impl_->disconnectHandle = impl_->connectionHandle;
+      impl_->disconnectGeneration = impl_->connectionGeneration;
+    }
     impl_->advertising = false;
   } else {
     connected = impl_->connected;
@@ -674,6 +915,10 @@ bool KitsuBleGattLink::queueFrame(const uint8_t* json, size_t jsonBytes) {
   impl_->txBytes = framedBytes;
   impl_->txOffset = 0U;
   impl_->txQueued = true;
+  impl_->notifyAttemptActive = false;
+  impl_->notifyStatusReady = false;
+  impl_->notifyRetryAt = 0U;
+  impl_->notifyAttemptCount = 0U;
   portEXIT_CRITICAL(&impl_->mux);
   return true;
 }
@@ -681,7 +926,12 @@ bool KitsuBleGattLink::queueFrame(const uint8_t* json, size_t jsonBytes) {
 void KitsuBleGattLink::disconnect() {
   if (!impl_) return;
   portENTER_CRITICAL(&impl_->mux);
-  impl_->disconnectRequested = true;
+  if (impl_->connected && impl_->connectionHandle != kNoConnection) {
+    impl_->disconnectRequested = true;
+    impl_->disconnectIssued = true;
+    impl_->disconnectHandle = impl_->connectionHandle;
+    impl_->disconnectGeneration = impl_->connectionGeneration;
+  }
   portEXIT_CRITICAL(&impl_->mux);
 }
 
@@ -704,6 +954,15 @@ BleLinkStatus KitsuBleGattLink::status(uint32_t nowMillis) const {
   output.connectionHandle = impl_->connectionHandle;
   output.mtu = impl_->mtu;
   output.numericComparison = impl_->numericComparison;
+  output.connectionGeneration = impl_->connectionGeneration;
+  output.disconnectReasonAvailable = impl_->disconnectReasonAvailable;
+  output.lastDisconnectReason = impl_->lastDisconnectReason;
+  output.lastDisconnectedHandle = impl_->lastDisconnectedHandle;
+  output.lastDisconnectedGeneration = impl_->lastDisconnectedGeneration;
+  output.lastDisconnectAtMillis = impl_->lastDisconnectAtMillis;
+  output.notifyStatusAvailable = impl_->notifyStatusAvailable;
+  output.lastNotifyStatus = impl_->lastNotifyStatus;
+  output.lastNotifyStatusAtMillis = impl_->lastNotifyStatusAtMillis;
   if (impl_->pairingWindowOpen &&
       !deadlineReached(nowMillis, impl_->pairingWindowDeadline)) {
     output.pairingWindowRemainingMs =

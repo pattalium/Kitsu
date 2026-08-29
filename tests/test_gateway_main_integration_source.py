@@ -136,6 +136,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             "mesh.configure",
             "action.apply",
             "controller.forget",
+            "encounter.discovery.get.v1",
             "firmware.update.status",
             "firmware.update.begin",
             "firmware.update.write",
@@ -191,6 +192,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             "void processMeshMessages", 1
         )[0]
         self.assertIn("status.applicationAuthenticated", service)
+        self.assertIn("status.authenticatedRequestBarrier", service)
         self.assertIn("BleOtaState::Receiving", service)
         self.assertIn("BleOtaState::ReadyToReboot", service)
         self.assertIn("companionBle.bleTransmitIdle()", service)
@@ -206,6 +208,30 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             loop.index("processMeshMessages()"),
             loop.index("serviceCompanionBleRefresh(now)"),
         )
+
+    def test_no_code_encounter_discovery_is_exported_in_catalog_order(self):
+        builder = MAIN.split("bool buildEncounterDiscovery", 1)[1].split(
+            "const char* expeditionDurationWire", 1
+        )[0]
+        self.assertIn('kitsu.encounter-discovery.v1', builder)
+        self.assertIn("kCatalogCreatureCount", builder)
+        self.assertIn("wild::creatureAt(index, creature)", builder)
+        self.assertIn("validateDiscoveryState(funDiscovery)", builder)
+        self.assertIn("validOperationKind(", builder)
+        for field in ("pack_id", "encounter_count", "last_source"):
+            self.assertIn(f'\\"{field}\\"', builder)
+        for forbidden in ("creature_name", "rarity", "code"):
+            self.assertNotIn(forbidden, builder)
+        self.assertIn('output += "null"', builder)
+        dispatch = MAIN.split("bool handleCompanionBleRequest", 1)[1].split(
+            "namespace {", 1
+        )[0]
+        self.assertIn('"encounter.discovery.get.v1"', dispatch)
+        serial = MAIN.split("void printGuideList", 1)[1].split(
+            "int8_t hexNibble", 1
+        )[0]
+        self.assertIn("buildEncounterDiscovery", serial)
+        self.assertIn("KITSU_GUIDE_LIST", serial)
 
     def test_state_is_local_truth_without_server_placeholders(self):
         state = MAIN.split("bool buildState", 1)[1].split(
@@ -311,7 +337,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn(
             "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
         )
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.1"', MAIN)
+        self.assertIn('FIRMWARE_VERSION[] = "0.20.2"', MAIN)
         setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
         self.assertIn("chatSession = esp_random()", setup)
         self.assertIn("if (chatSession == 0U) chatSession = 1U", setup)

@@ -205,7 +205,7 @@ class AdvertRepeatTrackerSourceTests(unittest.TestCase):
         self.assertIn("takeFloodAdvertStatusChanged()", TRANSPORT_HEADER)
         self.assertIn("mesh_last_flood_advert_v2", state)
         self.assertIn("repeat_sources_truncated", state)
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.1"', MAIN)
+        self.assertIn('FIRMWARE_VERSION[] = "0.20.2"', MAIN)
 
     def test_legacy_and_v2_flood_views_share_one_snapshot(self) -> None:
         state = cpp_function(MAIN, "bool buildState(")

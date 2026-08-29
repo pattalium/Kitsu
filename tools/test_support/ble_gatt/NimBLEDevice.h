@@ -100,15 +100,50 @@ class NimBLECharacteristic {
     callbacks_ = callbacks;
   }
   const NimBLEAttValue& getValue() const { return value_; }
-  bool notify(const uint8_t*, size_t, uint16_t handle) {
+  bool notify(const uint8_t* bytes, size_t byteCount, uint16_t handle) {
     notifiedHandles.push_back(handle);
-    return notifyResult;
+    notifiedValues.emplace_back(bytes, bytes + byteCount);
+    const bool result = nextNotifyResult < notifyResults.size()
+        ? notifyResults[nextNotifyResult++]
+        : notifyResult;
+    if (statusOnNotify && callbacks_) {
+      // Mirrors NimBLE-Arduino 2.5.1's NOTIFY_TX bug: peerInfo is not filled
+      // from the event handle before the C++ callback is invoked.
+      NimBLEConnInfo emptyConnection{};
+      callbacks_->onStatus(this, emptyConnection, notifyStatusCode);
+    }
+    return result;
+  }
+
+  void simulateStatus(int code) {
+    if (!callbacks_) return;
+    NimBLEConnInfo emptyConnection{};
+    callbacks_->onStatus(this, emptyConnection, code);
+  }
+
+  void simulateSubscribe(uint16_t handle, uint16_t subscription) {
+    if (!callbacks_) return;
+    NimBLEConnInfo connection(handle);
+    callbacks_->onSubscribe(this, connection, subscription);
+  }
+
+  void simulateWrite(uint16_t handle, const uint8_t* bytes,
+                     size_t byteCount) {
+    if (!callbacks_) return;
+    value_.assign(bytes, byteCount);
+    NimBLEConnInfo connection(handle);
+    callbacks_->onWrite(this, connection);
   }
 
   NimBLECharacteristicCallbacks* callbacks() const { return callbacks_; }
 
   bool notifyResult = true;
+  bool statusOnNotify = false;
+  int notifyStatusCode = 0;
+  size_t nextNotifyResult = 0U;
+  std::vector<bool> notifyResults{};
   std::vector<uint16_t> notifiedHandles{};
+  std::vector<std::vector<uint8_t>> notifiedValues{};
 
  private:
   NimBLECharacteristicCallbacks* callbacks_ = nullptr;
@@ -121,6 +156,11 @@ class NimBLEService {
                                                uint16_t) {
     characteristics_.push_back(std::make_unique<NimBLECharacteristic>());
     return characteristics_.back().get();
+  }
+
+  NimBLECharacteristic* characteristicAt(size_t index) const {
+    return index < characteristics_.size() ? characteristics_[index].get()
+                                           : nullptr;
   }
 
  private:
@@ -177,6 +217,9 @@ class NimBLEServer {
       if (peer.getConnHandle() == handle) return peer;
     }
     return NimBLEConnInfo{};
+  }
+  NimBLECharacteristic* testCharacteristicAt(size_t index) const {
+    return service_ ? service_->characteristicAt(index) : nullptr;
   }
 
   void simulateConnect(NimBLEConnInfo connection) {

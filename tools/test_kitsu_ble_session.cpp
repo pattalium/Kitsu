@@ -469,6 +469,7 @@ void testEncounterOperationsReachDelegate() {
       "encounter.neighbors.get.v1",
       "encounter.neighbor.action.v1",
       "encounter.catalog.get.v1",
+      "encounter.discovery.get.v1",
   };
   static const uint8_t payload[] = "{}";
   for (size_t index = 0U;
@@ -512,13 +513,78 @@ void testEncounterOperationsReachDelegate() {
   uint8_t requestJson[1024]{};
   size_t requestBytes = 0U;
   assert(kitsu868::companion::encodeEnvelope(
-             EnvelopeChannel::Request, 5U, nonce, requestId,
+             EnvelopeChannel::Request, 6U, nonce, requestId,
              "encounter.unsupported.v1", payload, sizeof(payload) - 1U, c2d,
              fixture.crypto, requestJson, sizeof(requestJson), requestBytes) ==
          ProtocolResult::Ok);
   fixture.session.onFrame(requestJson, requestBytes, 2020U);
-  assert(fixture.operations.calls == 4U);
+  assert(fixture.operations.calls == 5U);
   assert(fixture.session.status(2020U).state == BleSessionState::Closing);
+}
+
+void testUnsolicitedEventBarrierRequiresQueuedAuthenticatedResponse() {
+  {
+    Fixture fixture;
+    uint8_t controllerId[16]{};
+    uint8_t controllerRoot[32]{};
+    pairController(fixture, controllerId, controllerRoot);
+    uint8_t c2d[32]{};
+    uint8_t d2c[32]{};
+    authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+    static const uint8_t payload[] = "{}";
+    const size_t framesBefore = fixture.transport.frames.size();
+    assert(!fixture.session.status(2004U).authenticatedRequestBarrier);
+    assert(!fixture.session.sendEvent("companion.refresh", payload,
+                                      sizeof(payload) - 1U));
+    assert(fixture.transport.frames.size() == framesBefore);
+
+    uint8_t nonce[16]{};
+    uint8_t requestId[16]{};
+    memset(nonce, 0x31, sizeof(nonce));
+    memset(requestId, 0x32, sizeof(requestId));
+    uint8_t requestJson[1024]{};
+    size_t requestBytes = 0U;
+    assert(kitsu868::companion::encodeEnvelope(
+               EnvelopeChannel::Request, 1U, nonce, requestId, "clock.sync",
+               payload, sizeof(payload) - 1U, c2d, fixture.crypto,
+               requestJson, sizeof(requestJson), requestBytes) ==
+           ProtocolResult::Ok);
+    fixture.session.onFrame(requestJson, requestBytes, 2010U);
+    assert(fixture.session.status(2010U).authenticatedRequestBarrier);
+    assert(fixture.session.sendEvent("companion.refresh", payload,
+                                     sizeof(payload) - 1U));
+
+    fixture.session.onLinkClosed(2011U);
+    assert(!fixture.session.status(2011U).authenticatedRequestBarrier);
+    assert(!fixture.session.sendEvent("companion.refresh", payload,
+                                      sizeof(payload) - 1U));
+  }
+
+  {
+    Fixture fixture;
+    uint8_t controllerId[16]{};
+    uint8_t controllerRoot[32]{};
+    pairController(fixture, controllerId, controllerRoot);
+    uint8_t c2d[32]{};
+    uint8_t d2c[32]{};
+    authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+    fixture.transport.failSend = true;
+    static const uint8_t payload[] = "{}";
+    uint8_t nonce[16]{};
+    uint8_t requestId[16]{};
+    memset(nonce, 0x41, sizeof(nonce));
+    memset(requestId, 0x42, sizeof(requestId));
+    uint8_t requestJson[1024]{};
+    size_t requestBytes = 0U;
+    assert(kitsu868::companion::encodeEnvelope(
+               EnvelopeChannel::Request, 1U, nonce, requestId, "clock.sync",
+               payload, sizeof(payload) - 1U, c2d, fixture.crypto,
+               requestJson, sizeof(requestJson), requestBytes) ==
+           ProtocolResult::Ok);
+    fixture.session.onFrame(requestJson, requestBytes, 2010U);
+    assert(!fixture.session.status(2010U).authenticatedRequestBarrier);
+    assert(fixture.session.status(2010U).state == BleSessionState::Closing);
+  }
 }
 
 void testAuthenticatedControllerForgetDrainsReceipt() {
@@ -898,6 +964,7 @@ void testPairingCapacityAndAuthenticationBackoffRemainEnforced() {
 int main() {
   testPairingHandshakeEnvelopeAndReplay();
   testEncounterOperationsReachDelegate();
+  testUnsolicitedEventBarrierRequiresQueuedAuthenticatedResponse();
   testAuthenticatedControllerForgetDrainsReceipt();
   testPartialControllerForgetCannotKeepUsingSession();
   testStrictControlsAndTimeout();

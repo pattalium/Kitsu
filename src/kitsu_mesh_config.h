@@ -159,6 +159,10 @@ Status decodeSettings(const uint8_t* input, size_t inputBytes,
                       Settings& output);
 
 bool sameRadioProfile(const RadioProfile& a, const RadioProfile& b);
+// Semantic comparison for the complete persisted record.  Do not use a raw
+// struct comparison here: padding is implementation-defined and CurrentOnce
+// still has meaningful, explicitly validated RAM state.
+bool sameSettings(const Settings& a, const Settings& b);
 
 // A second safety gate above the transport.  It begins locked, is never
 // persisted, requires explicit user approval plus a valid selected profile,

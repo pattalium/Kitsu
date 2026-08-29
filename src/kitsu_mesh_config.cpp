@@ -385,6 +385,13 @@ bool sameRadioProfile(const RadioProfile& a, const RadioProfile& b) {
       a.preambleSymbols == b.preambleSymbols;
 }
 
+bool sameSettings(const Settings& a, const Settings& b) {
+  return a.enabled == b.enabled && a.locationMode == b.locationMode &&
+      a.fixedLocation.latitudeE6 == b.fixedLocation.latitudeE6 &&
+      a.fixedLocation.longitudeE6 == b.fixedLocation.longitudeE6 &&
+      a.txPolicy == b.txPolicy && sameRadioProfile(a.radio, b.radio);
+}
+
 bool TxGate::unlockForSession(const Settings& settings,
                               bool explicitUserApproval) {
   lock();

@@ -51,7 +51,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.20.1";
+constexpr char FIRMWARE_VERSION[] = "0.20.2";
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 constexpr uint32_t SIGNAL_STATE_MAGIC = 0x4b534731;  // "KSG1"
@@ -62,6 +62,7 @@ constexpr uint32_t DIALOGUE_STATE_MAGIC = 0x4b444731;  // "KDG1"
 constexpr uint32_t PARTY_REWARD_STATE_MAGIC = 0x4b505231;  // "KPR1"
 constexpr uint32_t CLOCK_NTP_STABILITY_MS = 2000UL;
 constexpr uint32_t CLOCK_NTP_RESYNC_MS = 6UL * 60UL * 60UL * 1000UL;
+constexpr uint64_t CLOCK_SYNC_TOLERANCE_SECONDS = 2ULL;
 
 constexpr int16_t UI_WIDTH = 64;
 constexpr int16_t UI_HEIGHT = 128;
@@ -742,10 +743,13 @@ bool persistDialogueState();
 bool persistExpeditionState();
 bool persistPartyRewardState();
 bool persistClockState();
+bool clockReading(uint32_t now,
+                  kitsu868::timekeeping::ClockReading& output,
+                  bool requireTrusted);
 bool commitClockMutation(
     const kitsu868::timekeeping::KitsuClock& before,
     uint32_t previousGeneration, uint8_t previousSlot, uint32_t now,
-    bool applyRuntime);
+    bool applyRuntime, const char** error = nullptr);
 bool persistCompanionProgression();
 bool persistAdventureProgression();
 bool persistSocialProgression();
@@ -793,6 +797,7 @@ bool commitMeshRadioSettings(const kitsu868::mesh::Settings& candidate,
                              const char*& error);
 void enterScreen(Screen next);
 const char* signalRarityName(kitsu868::signal::Rarity rarity);
+const char* signalOperationName(kitsu868::signal::MeshOperationKind kind);
 
 bool isFirmwareUpdateOperation(const char* operation) {
   if (!operation) return false;
@@ -929,14 +934,48 @@ class FirmwareBleBridge final
       kitsu868::connectivity::BleLinkEvent event,
       const kitsu868::connectivity::BleLinkStatus& status) override {
     switch (event) {
+      case kitsu868::connectivity::BleLinkEvent::Connected:
+        // A fresh GATT generation must never inherit the previous
+        // application session while link security is still negotiating.
+        if (status.eventMatchesCurrentConnection) {
+          session_.onLinkClosed(millis());
+        }
+        break;
       case kitsu868::connectivity::BleLinkEvent::LinkAuthenticated:
         session_.onSecureLinkEstablished(
             status.secureConnections, status.encrypted,
             status.authenticated, status.bonded, millis());
         break;
       case kitsu868::connectivity::BleLinkEvent::Disconnected:
+        if (status.disconnectReasonAvailable) {
+          Serial.printf(
+              "KITSU_BLE_DISCONNECT {\"reason\":%ld,\"at_ms\":%lu,"
+              "\"handle\":%u,\"generation\":%lu}\n",
+              static_cast<long>(status.lastDisconnectReason),
+              static_cast<unsigned long>(status.lastDisconnectAtMillis),
+              static_cast<unsigned>(status.lastDisconnectedHandle),
+              static_cast<unsigned long>(
+                  status.lastDisconnectedGeneration));
+        }
+        if (!status.connected &&
+            status.eventConnectionGeneration != 0U &&
+            status.eventConnectionGeneration == status.connectionGeneration) {
+          session_.onLinkClosed(millis());
+        }
+        break;
       case kitsu868::connectivity::BleLinkEvent::LinkRejected:
         session_.onLinkClosed(millis());
+        break;
+      case kitsu868::connectivity::BleLinkEvent::TransportFailure:
+        if (status.notifyStatusAvailable) {
+          Serial.printf(
+              "KITSU_BLE_TRANSPORT {\"notify_status\":%ld,"
+              "\"at_ms\":%lu,\"handle\":%u,\"generation\":%lu}\n",
+              static_cast<long>(status.lastNotifyStatus),
+              static_cast<unsigned long>(status.lastNotifyStatusAtMillis),
+              static_cast<unsigned>(status.connectionHandle),
+              static_cast<unsigned long>(status.connectionGeneration));
+        }
         break;
       default:
         break;
@@ -2754,15 +2793,49 @@ bool syncClock(const uint8_t* payload, size_t payloadBytes, String& output) {
   const kitsu868::timekeeping::KitsuClock before = kitsuClock;
   const uint32_t previousGeneration = clockSnapshotGeneration;
   const uint8_t previousSlot = clockSnapshotSlot;
+  kitsu868::timekeeping::ClockReading current{};
+  const bool currentTrusted = clockReading(now, current, true);
+  const uint64_t requested = static_cast<uint64_t>(epoch);
+  const uint64_t delta = currentTrusted
+      ? (current.unixSeconds >= requested
+             ? current.unixSeconds - requested
+             : requested - current.unixSeconds)
+      : UINT64_MAX;
   const kitsu868::timekeeping::ClockResult setResult =
       kitsuClock.setFromUnixSeconds(
           epoch, 0U, kitsu868::timekeeping::ClockSource::AuthenticatedApp,
           kitsuClock.utcOffsetMinutes(), now);
-  if (setResult != kitsu868::timekeeping::ClockResult::Ok ||
-      !commitClockMutation(before, previousGeneration, previousSlot, now,
-                           true)) {
-    output = "{\"ok\":false,\"error\":\"system_clock_failed\"}";
+  if (setResult != kitsu868::timekeeping::ClockResult::Ok) {
+    kitsuClock = before;
+    output = "{\"ok\":false,\"error\":\"clock_value_rejected\"}";
     return true;
+  }
+
+  if (delta <= CLOCK_SYNC_TOLERANCE_SECONDS) {
+    // Keep the runtime anchor exact, but do not burn another alternating NVS
+    // slot for the same trusted time on every Android reconnect/action.
+    if (!applyClockToRuntime(now)) {
+      kitsuClock = before;
+      if (before.trusted() && !applyClockToRuntime(now)) {
+        Serial.println("KITSU_WARN clock_runtime=rollback_failed");
+      }
+      output = "{\"ok\":false,\"error\":\"clock_runtime_failed\"}";
+      return true;
+    }
+  } else {
+    if (!clockStateReady) {
+      kitsuClock = before;
+      output = "{\"ok\":false,\"error\":\"clock_storage_failed\"}";
+      return true;
+    }
+    const char* error = nullptr;
+    if (!commitClockMutation(before, previousGeneration, previousSlot, now,
+                             true, &error)) {
+      output = "{\"ok\":false,\"error\":\"";
+      output += error ? error : "clock_runtime_failed";
+      output += "\"}";
+      return true;
+    }
   }
   output = "{\"schema\":\"kitsu.clock.v1\",\"epoch\":";
   output += String(epoch);
@@ -3601,6 +3674,62 @@ bool buildEncounterCatalog(const uint8_t* payload, size_t payloadBytes,
       output.length() <= kitsu868::companion::kMaximumEnvelopePayloadBytes;
 }
 
+bool buildEncounterDiscovery(const uint8_t* payload, size_t payloadBytes,
+                             String& output) {
+  if (!emptyObject(payload, payloadBytes) || !funStateReady ||
+      kitsu868::wild::creatureCount() !=
+          kitsu868::fun::kCatalogCreatureCount ||
+      !kitsu868::fun::validateDiscoveryState(funDiscovery)) {
+    return false;
+  }
+
+  // Validate the complete state and catalog before emitting a partial JSON
+  // document. validateDiscoveryState intentionally accepts opaque source
+  // bytes for persistence compatibility; this public endpoint fails closed.
+  for (uint8_t index = 0U;
+       index < kitsu868::fun::kCatalogCreatureCount; ++index) {
+    kitsu868::wild::Creature creature{};
+    const bool seen = (funDiscovery.seenMask &
+        (UINT32_C(1) << index)) != 0U;
+    if (!kitsu868::wild::creatureAt(index, creature) ||
+        creature.packId == 0U || !creature.name ||
+        (seen && !kitsu868::signal::validOperationKind(
+            static_cast<kitsu868::signal::MeshOperationKind>(
+                funDiscovery.lastSources[index])))) {
+      return false;
+    }
+  }
+
+  output = "{\"schema\":\"kitsu.encounter-discovery.v1\",\"items\":[";
+  output.reserve(2400U);
+  for (uint8_t index = 0U;
+       index < kitsu868::fun::kCatalogCreatureCount; ++index) {
+    kitsu868::wild::Creature creature{};
+    if (!kitsu868::wild::creatureAt(index, creature)) return false;
+    const bool seen = (funDiscovery.seenMask &
+        (UINT32_C(1) << index)) != 0U;
+    if (index != 0U) output += ',';
+    output += "{\"pack_id\":";
+    output += String(static_cast<unsigned long>(creature.packId));
+    output += ",\"encounter_count\":";
+    output += String(funDiscovery.encounterCounts[index]);
+    output += ",\"last_source\":";
+    if (!seen) {
+      output += "null";
+    } else {
+      output += '"';
+      output += signalOperationName(
+          static_cast<kitsu868::signal::MeshOperationKind>(
+              funDiscovery.lastSources[index]));
+      output += '"';
+    }
+    output += '}';
+  }
+  output += "]}";
+  return output.length() <=
+      kitsu868::companion::kMaximumEnvelopePayloadBytes;
+}
+
 const char* expeditionDurationWire(kitsu868::expedition::Duration value) {
   using kitsu868::expedition::Duration;
   switch (value) {
@@ -4407,6 +4536,9 @@ __attribute__((noinline)) bool handleCompanionBleRequest(
   } else if (strcmp(request.operation, "encounter.catalog.get.v1") == 0) {
     handled = companion_api::buildEncounterCatalog(payload, payloadBytes,
                                                     response);
+  } else if (strcmp(request.operation, "encounter.discovery.get.v1") == 0) {
+    handled = companion_api::buildEncounterDiscovery(payload, payloadBytes,
+                                                      response);
   } else if (strcmp(request.operation, "fun.state.get.v1") == 0) {
     handled = companion_api::buildFunState(payload, payloadBytes, response);
   } else if (strcmp(request.operation, "fun.expedition.start.v1") == 0) {
@@ -4974,8 +5106,8 @@ bool applyClockToRuntime(uint32_t now) {
   const timeval systemTime{static_cast<time_t>(reading.unixSeconds),
                            static_cast<suseconds_t>(reading.millisecond) * 1000};
   if (settimeofday(&systemTime, nullptr) != 0) return false;
-  (void)meshTransport.setEpoch(static_cast<uint32_t>(reading.unixSeconds));
-  return true;
+  return meshTransport.setEpoch(static_cast<uint32_t>(reading.unixSeconds)) ==
+      kitsu868::mesh::TransportStatus::Ok;
 }
 
 bool persistClockState() {
@@ -4998,11 +5130,13 @@ bool persistClockState() {
 bool commitClockMutation(
     const kitsu868::timekeeping::KitsuClock& before,
     uint32_t previousGeneration, uint8_t previousSlot, uint32_t now,
-    bool applyRuntime) {
+    bool applyRuntime, const char** error) {
+  if (error) *error = nullptr;
   if (clockStateReady && kitsuClock.set() && !persistClockState()) {
     kitsuClock = before;
     clockSnapshotGeneration = previousGeneration;
     clockSnapshotSlot = previousSlot;
+    if (error) *error = "clock_storage_failed";
     return false;
   }
   if (!applyRuntime || applyClockToRuntime(now)) return true;
@@ -5025,6 +5159,7 @@ bool commitClockMutation(
   if (before.trusted() && !applyClockToRuntime(now)) {
     Serial.println("KITSU_WARN clock_runtime=rollback_failed");
   }
+  if (error) *error = "clock_runtime_failed";
   return false;
 }
 
@@ -12316,7 +12451,8 @@ void serviceCompanionBleRefresh(uint32_t now) {
   }
   const kitsu868::connectivity::BleSessionStatus status =
       companionBle.sessionStatus(now);
-  if (!status.applicationAuthenticated) return;
+  if (!status.applicationAuthenticated ||
+      !status.authenticatedRequestBarrier) return;
   const bool periodicDue = companionBleRefreshAt == 0U ||
       static_cast<int32_t>(now - companionBleRefreshAt) >= 0;
   if ((!companionBleRefreshDirty && !periodicDue) ||
@@ -12768,6 +12904,18 @@ void printJournal() {
                 companionBrain.memoryCount());
 }
 
+void printGuideList() {
+  static const uint8_t emptyObject[] = {'{', '}'};
+  String output;
+  if (!companion_api::buildEncounterDiscovery(
+          emptyObject, sizeof(emptyObject), output)) {
+    Serial.println("KITSU_ERROR guide_list=unavailable");
+    return;
+  }
+  Serial.print("KITSU_GUIDE_LIST ");
+  Serial.println(output);
+}
+
 int8_t hexNibble(char value) {
   if (value >= '0' && value <= '9') return value - '0';
   if (value >= 'a' && value <= 'f') return value - 'a' + 10;
@@ -12848,6 +12996,14 @@ bool commitMeshRadioSettings(const kitsu868::mesh::Settings& candidate,
 
   const kitsu868::mesh::Settings previous = meshSettings;
   meshTransport.lockTransmit();
+  const bool exactNoOp = kitsu868::mesh::sameSettings(candidate, previous) &&
+      (candidate.enabled ? meshTransport.active() : !meshTransport.active());
+  if (exactNoOp) {
+    refreshMeshRuntimeStatus(candidate.enabled
+        ? kitsu868::mesh::TransportStatus::Ok
+        : kitsu868::mesh::TransportStatus::Disabled);
+    return true;
+  }
   const kitsu868::mesh::TransportStatus applied =
       meshTransport.applySettings(candidate);
   if (applied != kitsu868::mesh::TransportStatus::Ok &&
@@ -15119,6 +15275,7 @@ void executeSerialCommand(String command) {
   if (command == "status" || command == "selftest") printSelfTest();
   else if (command == "sync" || command == "brain") printSync();
   else if (command == "journal") printJournal();
+  else if (command == "guide list") printGuideList();
   else if (command == "pet") petWisp();
   else if (command == "feed") feedKitsu();
   else if (command == "play") playKitsu();
@@ -15176,7 +15333,7 @@ void executeSerialCommand(String command) {
     }
   } else if (command == "help") {
     Serial.println(
-        "KITSU_HELP selftest|sync|journal|pet|feed|play|game <signal|pounce|echo|tap|cancel>|activity <status|start|daily|ghost|tap|press|release|cancel>|adventure <status|start|route|steps|decide|finish|acknowledge|privacy|home|zone|precise|hotspot|terrain|objective|risk|weather|journal>|profile <status|inspect|nickname|quick|quiet|replay|request|answer>|social <status|leaderboard|scan|host [mode]|join|ready [0|1]|begin|contribute value|leave>|clock <status|set|unix|offset|edit|ntp>|listen|sleep|wake|stop|inject <38hex>|anim <role>|mesh <status|config|time|tx|location|introduce|publish-map>|chat <status|contacts|channels|inbox|contact|channel|send>|help");
+        "KITSU_HELP selftest|sync|journal|guide list|pet|feed|play|game <signal|pounce|echo|tap|cancel>|activity <status|start|daily|ghost|tap|press|release|cancel>|adventure <status|start|route|steps|decide|finish|acknowledge|privacy|home|zone|precise|hotspot|terrain|objective|risk|weather|journal>|profile <status|inspect|nickname|quick|quiet|replay|request|answer>|social <status|leaderboard|scan|host [mode]|join|ready [0|1]|begin|contribute value|leave>|clock <status|set|unix|offset|edit|ntp>|listen|sleep|wake|stop|inject <38hex>|anim <role>|mesh <status|config|time|tx|location|introduce|publish-map>|chat <status|contacts|channels|inbox|contact|channel|send>|help");
   } else if (command.length()) {
     Serial.printf("KITSU_ERROR unknown_command=%s\n", command.c_str());
   }

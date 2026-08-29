@@ -18,6 +18,9 @@ constexpr char kKitsuGattTxUuid[] =
     "7f820003-735b-4b57-9a48-5f5f4b495453";
 constexpr uint32_t kBlePairingWindowMaximumMs = 60000UL;
 constexpr uint32_t kBleNumericComparisonTimeoutMs = 30000UL;
+constexpr uint32_t kBleNotifyCompletionTimeoutMs = 250UL;
+constexpr uint32_t kBleNotifyRetryBaseMs = 8UL;
+constexpr uint8_t kBleNotifyMaximumAttempts = 4U;
 
 enum class BleLinkEvent : uint8_t {
   Connected = 0,
@@ -26,6 +29,9 @@ enum class BleLinkEvent : uint8_t {
   LinkRejected,
   FrameTimedOut,
   ProtocolViolation,
+  // Local NimBLE/host transport failure. This is deliberately distinct from
+  // a malformed or unauthenticated peer frame.
+  TransportFailure,
   Disconnected,
 };
 
@@ -46,6 +52,18 @@ struct BleLinkStatus {
   uint16_t mtu = 23U;
   uint32_t numericComparison = 0U;
   uint32_t pairingWindowRemainingMs = 0U;
+  uint32_t connectionGeneration = 0U;
+  uint32_t eventConnectionGeneration = 0U;
+  uint16_t eventConnectionHandle = 0xffffU;
+  bool eventMatchesCurrentConnection = false;
+  bool disconnectReasonAvailable = false;
+  int32_t lastDisconnectReason = 0;
+  uint16_t lastDisconnectedHandle = 0xffffU;
+  uint32_t lastDisconnectedGeneration = 0U;
+  uint32_t lastDisconnectAtMillis = 0U;
+  bool notifyStatusAvailable = false;
+  int32_t lastNotifyStatus = 0;
+  uint32_t lastNotifyStatusAtMillis = 0U;
 };
 
 struct BleBondClearStatus {
