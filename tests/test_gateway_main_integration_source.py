@@ -291,6 +291,28 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         ):
             self.assertIn(field, state)
 
+    def test_replay_capacity_is_transient_and_precedes_side_effects(self):
+        action = MAIN.split("bool applyAction", 1)[1].split(
+            "bool buildState", 1
+        )[0]
+        capacity = action.split(
+            "if (!bleActionReplayCache.remember(command, actionNow))", 1
+        )[1].split("if (!persistActionReplay())", 1)[0]
+        self.assertIn("restoreActionReplaySnapshotInMemory()", capacity)
+        self.assertIn('return rejected("idempotency_busy")', capacity)
+        self.assertIn('return rejected("idempotency_unavailable")', capacity)
+        self.assertIn("bleActionReplayReady = false", capacity)
+        self.assertNotIn("persistActionReplay()", capacity)
+        self.assertNotIn("petWisp()", capacity)
+        self.assertLess(
+            action.index("bleActionReplayCache.remember(command, actionNow)"),
+            action.index("switch (command.kind)"),
+        )
+        readiness = MAIN.split(
+            "const char* bleAdvertiseReadinessError", 1
+        )[1].split("bool decodeCanonicalPeerKey", 1)[0]
+        self.assertNotIn("idempotency_busy", readiness)
+
     def test_message_gap_is_relative_to_the_requested_cursor(self):
         messages = MAIN.split("bool buildMessages", 1)[1].split(
             "}  // namespace companion_api", 1
@@ -337,7 +359,11 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn(
             "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
         )
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.2"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.3"', MAIN)
+        self.assertIn(
+            'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
+            MAIN,
+        )
         setup = MAIN.split("void setup()", 1)[1].split("void loop()", 1)[0]
         self.assertIn("chatSession = esp_random()", setup)
         self.assertIn("if (chatSession == 0U) chatSession = 1U", setup)
@@ -351,12 +377,15 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         bridge = MAIN.split("class FirmwareBleBridge", 1)[1].split(
             "FirmwareBleBridge companionBle", 1
         )[0]
-        urgent = MAIN.split("} else if (recorded.urgent)", 1)[1].split(
-            "} else {", 1
+        advert = MAIN.split("void processMeshAdvert()", 1)[1].split(
+            "void processFloodAdvertStatus()", 1
         )[0]
         journal_tick = MAIN.split("void tickDiscoveryJournal", 1)[1].split(
             "ChatJournalEntry*", 1
         )[0]
+        storage_window = MAIN.split("bool backgroundStorageWindowReady", 1)[
+            1
+        ].split("bool discoveryWriteHeadroomAvailable", 1)[0]
 
         self.assertLess(
             setup.index("companionBle.preparePairingStorage()"),
@@ -366,8 +395,11 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             bridge.index("preparePairingStorage()"),
             bridge.index("link_.openPairingWindow"),
         )
-        self.assertIn("pairingStorageReserved(journalNow)", urgent)
-        self.assertIn("pairingStorageReserved(now)", journal_tick)
+        self.assertIn("pairingStorageReserved(journalNow)", advert)
+        self.assertIn("discoveryStorageRetry.markDirty", advert)
+        self.assertNotIn("discoveryJournal.flush()", advert)
+        self.assertIn("backgroundStorageWindowReady(now)", journal_tick)
+        self.assertIn("pairingStorageReserved(now)", storage_window)
         self.assertIn('uiTextCentered("STORAGE FULL"', MAIN)
         self.assertIn('uiTextCentered("PAIR BLOCKED"', MAIN)
 

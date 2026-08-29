@@ -16,6 +16,21 @@ import {
   ESP32S3_CHIP_ID,
   ESP_IMAGE_CHECKSUM_SEED,
   ESP_IMAGE_HEADER_BYTES,
+  FIRMWARE_APP0_OFFSET,
+  FIRMWARE_APP1_OFFSET,
+  FIRMWARE_CONNECTIVITY_BYTES,
+  FIRMWARE_CONNECTIVITY_OFFSET,
+  FIRMWARE_COREDUMP_BYTES,
+  FIRMWARE_COREDUMP_OFFSET,
+  FIRMWARE_DEVICE_CLASS,
+  FIRMWARE_FLASH_BYTES,
+  FIRMWARE_LAYOUT_ID,
+  FIRMWARE_NVS_BYTES,
+  FIRMWARE_NVS_OFFSET,
+  FIRMWARE_OTA_DATA_BYTES,
+  FIRMWARE_OTA_DATA_OFFSET,
+  FIRMWARE_SPIFFS_BYTES,
+  FIRMWARE_SPIFFS_OFFSET,
   HEADER_BYTES,
   MAGIC,
   MAX_IMAGE_BYTES,
@@ -24,12 +39,28 @@ import {
   assembleBundle,
   inspectBundle,
   parseCanonicalManifest,
+  parseFirmwareIdentity,
   prepareManifest,
   sha256,
   validateEsp32S3Application,
 } from "./package_kitsu_ble_firmware.mjs";
 
-function esp32S3Image(dataBytes = 70_000) {
+function crc32(bytes) {
+  let value = 0xffff_ffff;
+  for (const byte of bytes) {
+    value ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value >>> 1) ^ ((value & 1) ? 0xedb8_8320 : 0);
+    }
+  }
+  return (value ^ 0xffff_ffff) >>> 0;
+}
+
+function esp32S3Image(
+  dataBytes = 70_000,
+  firmwareVersion = "0.12.0",
+  { duplicateIdentity = false, layout = FIRMWARE_LAYOUT_ID } = {},
+) {
   assert.equal(dataBytes % 4, 0);
   const header = Buffer.alloc(ESP_IMAGE_HEADER_BYTES);
   header[0] = 0xe9;
@@ -45,6 +76,24 @@ function esp32S3Image(dataBytes = 70_000) {
   segmentHeader.writeUInt32LE(dataBytes, 4);
   const data = Buffer.alloc(dataBytes);
   for (let index = 0; index < data.length; index += 1) data[index] = index & 0xff;
+  let prefix =
+    `KITSU-ID1|schema=1|length=0000|version=${firmwareVersion}|` +
+    `device_class=${FIRMWARE_DEVICE_CLASS}|layout=${layout}|` +
+    `flash=00800000|nvs=00009000/00040000|` +
+    `otadata=00049000/00002000|` +
+    `app0=00050000|app1=00350000|slot=00300000|` +
+    `journal=00001000|max=002ff000|` +
+    `spiffs=00670000/00140000|conn=007b0000/00040000|` +
+    `coredump=007f0000/00010000`;
+  const total = Buffer.byteLength(`${prefix}|crc32=00000000|end\0`, "ascii");
+  prefix = prefix.replace("length=0000", `length=${String(total).padStart(4, "0")}`);
+  const prefixBytes = Buffer.from(prefix, "ascii");
+  const identity = Buffer.from(
+    `${prefix}|crc32=${crc32(prefixBytes).toString(16).padStart(8, "0")}|end\0`,
+    "ascii",
+  );
+  identity.copy(data, 256);
+  if (duplicateIdentity) identity.copy(data, 512);
   const body = Buffer.concat([header, segmentHeader, data]);
   let checksum = ESP_IMAGE_CHECKSUM_SEED;
   for (const value of data) checksum ^= value;
@@ -56,15 +105,18 @@ function esp32S3Image(dataBytes = 70_000) {
   return Buffer.concat([checked, digest]);
 }
 
-function fixture() {
+function fixture({
+  releaseId = "kitsu-0.12.0-ble-1",
+  firmwareVersion = "0.12.0",
+} = {}) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicKeyPem = publicKey.export({ type: "spki", format: "pem" });
   const spki = publicKey.export({ type: "spki", format: "der" });
-  const image = esp32S3Image();
+  const image = esp32S3Image(70_000, firmwareVersion);
   const manifest = prepareManifest({
     image,
-    releaseId: "kitsu-0.12.0-ble-1",
-    firmwareVersion: "0.12.0",
+    releaseId,
+    firmwareVersion,
   });
   const signature = sign(null, manifest, privateKey);
   const expectedSpkiSha256 = sha256(spki);
@@ -92,6 +144,26 @@ test("builds and round-trips the exact signed offline container", () => {
   assert.deepEqual(report, {
     releaseId: "kitsu-0.12.0-ble-1",
     firmwareVersion: "0.12.0",
+    applicationVersion: "0.12.0",
+    firmwareDeviceClass: FIRMWARE_DEVICE_CLASS,
+    firmwareLayout: FIRMWARE_LAYOUT_ID,
+    flashBytes: FIRMWARE_FLASH_BYTES,
+    nvsOffset: FIRMWARE_NVS_OFFSET,
+    nvsBytes: FIRMWARE_NVS_BYTES,
+    otaDataOffset: FIRMWARE_OTA_DATA_OFFSET,
+    otaDataBytes: FIRMWARE_OTA_DATA_BYTES,
+    app0Offset: FIRMWARE_APP0_OFFSET,
+    app1Offset: FIRMWARE_APP1_OFFSET,
+    partitionBytes: PARTITION_BYTES,
+    journalBytes: 0x1000,
+    maximumImageBytes: MAX_IMAGE_BYTES,
+    spiffsOffset: FIRMWARE_SPIFFS_OFFSET,
+    spiffsBytes: FIRMWARE_SPIFFS_BYTES,
+    connectivityOffset: FIRMWARE_CONNECTIVITY_OFFSET,
+    connectivityBytes: FIRMWARE_CONNECTIVITY_BYTES,
+    coredumpOffset: FIRMWARE_COREDUMP_OFFSET,
+    coredumpBytes: FIRMWARE_COREDUMP_BYTES,
+    firmwareIdentityCrc32: parseFirmwareIdentity(input.image).identityCrc32,
     imageBytes: input.image.length,
     imageSha256: sha256(input.image),
     manifestBytes: input.manifest.length,
@@ -105,6 +177,8 @@ test("builds and round-trips the exact signed offline container", () => {
 test("canonical manifest pins the device, partition, chunk, rollback, and exact image", () => {
   const input = fixture();
   const manifest = parseCanonicalManifest(input.manifest);
+  assert.equal(PARTITION_BYTES, 0x300000);
+  assert.equal(MAX_IMAGE_BYTES, 0x2ff000);
   assert.equal(manifest.device_class, "heltec-wifi-lora-32-v3-esp32s3-8mb");
   assert.equal(manifest.image_format, "esp32s3-app");
   assert.equal(manifest.partition_bytes, PARTITION_BYTES);
@@ -113,8 +187,9 @@ test("canonical manifest pins the device, partition, chunk, rollback, and exact 
   assert.equal(manifest.image_bytes, input.image.length);
   assert.equal(manifest.image_sha256, sha256(input.image));
 
+  const buildMetadataImage = esp32S3Image(70_000, "0.12.0+qa.1");
   const buildMetadata = prepareManifest({
-    image: input.image,
+    image: buildMetadataImage,
     releaseId: "Recovery_1",
     firmwareVersion: "0.12.0+qa.1",
   });
@@ -123,6 +198,17 @@ test("canonical manifest pins the device, partition, chunk, rollback, and exact 
   expectFailure(
     () => parseCanonicalManifest(Buffer.concat([input.manifest, Buffer.from("\n")])),
     /canonical|JSON/,
+  );
+  const legacySlotManifest = Buffer.from(
+    input.manifest.toString("ascii").replace(
+      `\"partition_bytes\":${PARTITION_BYTES}`,
+      `\"partition_bytes\":${0x330000}`,
+    ),
+    "ascii",
+  );
+  expectFailure(
+    () => parseCanonicalManifest(legacySlotManifest),
+    /unsupported/,
   );
   expectFailure(
     () => prepareManifest({ image: input.image, releaseId: "-bad", firmwareVersion: "0.12.0" }),
@@ -140,12 +226,69 @@ test("canonical manifest pins the device, partition, chunk, rollback, and exact 
   );
 });
 
+test("firmware versions use strict bounded SemVer 2.0 grammar", () => {
+  const accepted = [
+    "0.20.3",
+    "0.20.3-rc.1+build.7",
+    "1.0.0-alpha.0",
+    "1.0.0-x-y-z.--",
+    "1.0.0+001",
+  ];
+  for (const firmwareVersion of accepted) {
+    const input = fixture({ firmwareVersion });
+    assert.equal(parseCanonicalManifest(input.manifest).firmware_version, firmwareVersion);
+  }
+
+  const rejected = [
+    "0.20.3+", "0.20.3-", "0.20.3-rc.1+", "0.20.3-rc..1",
+    "0.20.3+build..7", "0.20.3-01", "0.20.3-rc.01", "01.20.3",
+    "0.020.3", "0.20.03", "0.20", "0.20.3_rc1", "0.20.3++build",
+    "0.20.3-rc+build+again", "999999999999999999999.0.0",
+    "9223372036854775808.0.0",
+  ];
+  for (const firmwareVersion of rejected) {
+    expectFailure(
+      () => fixture({ firmwareVersion }),
+      /firmware version is invalid/,
+    );
+  }
+});
+
 test("validates the complete ESP32-S3 app image, checksum, digest, and EOF", () => {
-  const image = esp32S3Image(4096);
-  assert.deepEqual(validateEsp32S3Application(image), {
-    chipId: ESP32S3_CHIP_ID,
-    segmentCount: 1,
-    imageBytes: image.length,
+  const image = esp32S3Image(4096, "0.20.3");
+  const validation = validateEsp32S3Application(image);
+  assert.equal(validation.chipId, ESP32S3_CHIP_ID);
+  assert.equal(validation.segmentCount, 1);
+  assert.equal(validation.imageBytes, image.length);
+  assert.equal(validation.firmwareVersion, "0.20.3");
+  assert.equal(validation.layout, FIRMWARE_LAYOUT_ID);
+  assert.equal(validation.partitionBytes, 0x300000);
+  assert.equal(validation.journalBytes, 0x1000);
+  assert.equal(validation.maximumImageBytes, 0x2ff000);
+  assert.deepEqual(parseFirmwareIdentity(image), {
+    schema: 1,
+    firmwareVersion: "0.20.3",
+    deviceClass: FIRMWARE_DEVICE_CLASS,
+    layout: FIRMWARE_LAYOUT_ID,
+    flashBytes: FIRMWARE_FLASH_BYTES,
+    nvsOffset: FIRMWARE_NVS_OFFSET,
+    nvsBytes: FIRMWARE_NVS_BYTES,
+    otaDataOffset: FIRMWARE_OTA_DATA_OFFSET,
+    otaDataBytes: FIRMWARE_OTA_DATA_BYTES,
+    app0Offset: FIRMWARE_APP0_OFFSET,
+    app1Offset: FIRMWARE_APP1_OFFSET,
+    partitionBytes: 0x300000,
+    journalBytes: 0x1000,
+    maximumImageBytes: 0x2ff000,
+    spiffsOffset: FIRMWARE_SPIFFS_OFFSET,
+    spiffsBytes: FIRMWARE_SPIFFS_BYTES,
+    connectivityOffset: FIRMWARE_CONNECTIVITY_OFFSET,
+    connectivityBytes: FIRMWARE_CONNECTIVITY_BYTES,
+    coredumpOffset: FIRMWARE_COREDUMP_OFFSET,
+    coredumpBytes: FIRMWARE_COREDUMP_BYTES,
+    markerOffset: validation.markerOffset,
+    markerBytes: validation.markerBytes,
+    identityCrc32: validation.identityCrc32,
   });
 
   const wrongChip = Buffer.from(image);
@@ -186,6 +329,27 @@ test("validates the complete ESP32-S3 app image, checksum, digest, and EOF", () 
   expectFailure(
     () => validateEsp32S3Application(Buffer.concat([image, Buffer.from([0])])),
     /truncated or trailing ESP image data/,
+  );
+
+  expectFailure(
+    () => validateEsp32S3Application(
+      esp32S3Image(4096, "0.20.3", { duplicateIdentity: true }),
+    ),
+    /exactly one Kitsu identity/,
+  );
+  expectFailure(
+    () => validateEsp32S3Application(
+      esp32S3Image(4096, "0.20.3", { layout: "legacy-layout" }),
+    ),
+    /schema.*layout/,
+  );
+  expectFailure(
+    () => prepareManifest({
+      image: esp32S3Image(4096, "0.20.4"),
+      releaseId: "identity-mismatch",
+      firmwareVersion: "0.20.3",
+    }),
+    /identity does not match/,
   );
 });
 

@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "kitsu_flash_layout.h"
+
 namespace kitsu868 {
 namespace connectivity {
 
@@ -10,7 +12,7 @@ namespace connectivity {
 // always written to the non-running OTA slot.  Its final sector is a private
 // append-only resume journal and can never contain application bytes.
 constexpr uint8_t kBleOtaProtocolVersion = 1U;
-constexpr uint32_t kBleOtaAppPartitionBytes = 0x330000UL;
+constexpr uint32_t kBleOtaAppPartitionBytes = kKitsuAppPartitionBytes;
 constexpr uint32_t kBleOtaJournalBytes = 0x1000UL;
 constexpr uint32_t kBleOtaMaximumImageBytes =
     kBleOtaAppPartitionBytes - kBleOtaJournalBytes;

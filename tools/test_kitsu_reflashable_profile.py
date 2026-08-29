@@ -26,6 +26,8 @@ def test_selected_environment() -> None:
     assert "framework = arduino" in platformio
     assert "framework = arduino, espidf" not in platformio
     assert "board_build.partitions = partitions_kitsu_8MB.csv" in platformio
+    assert "board_upload.offset_address = 0x050000" in platformio
+    assert "extra_scripts = post:tools/platformio_kitsu_upload_guard.py" in platformio
     assert "-DKITSU_SECURITY_MODE_REFLASHABLE=1" in platformio
     assert "upload_protocol = esptool" in platformio
     assert "KITSU_PRODUCTION_PROFILE" not in platformio
@@ -45,10 +47,10 @@ def test_partition_layout_is_unencrypted_and_recoverable() -> None:
             rows[name] = (int(raw[3].strip(), 0), int(raw[4].strip(), 0),
                           ",".join(raw[5:]).strip().lower())
     expected = {
-        "nvs": (0x9000, 0x5000),
-        "otadata": (0xE000, 0x2000),
-        "app0": (0x10000, 0x330000),
-        "app1": (0x340000, 0x330000),
+        "nvs": (0x9000, 0x40000),
+        "otadata": (0x49000, 0x2000),
+        "app0": (0x50000, 0x300000),
+        "app1": (0x350000, 0x300000),
         "spiffs": (0x670000, 0x140000),
         "kitsu_conn": (0x7B0000, 0x40000),
         "coredump": (0x7F0000, 0x10000),

@@ -45,6 +45,11 @@ jobs:
           tests.test_tx_turnaround
       - name: Default-pack release and source-inventory audit
         run: python tools/test_default_pack_release.py
+      - name: Expanded-storage portable upload and migration safety gates
+        run: |
+          python tools/test_platformio_kitsu_upload_guard.py
+          python tools/test_migrate_kitsu_0203_storage.py
+          python tools/test_kitsu_reflashable_profile.py
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -95,6 +100,9 @@ jobs:
           call tools\test_kitsu_ble_session.cmd || exit /b 1
           call tools\test_kitsu_ble_action.cmd || exit /b 1
           call tools\test_kitsu_ble_ota.cmd || exit /b 1
+          call tools\test_kitsu_flash_layout.cmd || exit /b 1
+          call tools\test_kitsu_nvs_erase_guard.cmd || exit /b 1
+          call tools\test_kitsu_storage_retry.cmd || exit /b 1
           call tools\test_kitsu_advert_repeat_tracker.cmd || exit /b 1
           call tools\test_kitsu_channel_repeat_tracker.cmd || exit /b 1
           call tools\test_kitsu_endpoint_dispatcher.cmd || exit /b 1
@@ -105,6 +113,12 @@ jobs:
           call tools\test_kitsu_rx_rearm.cmd || exit /b 1
           call tools\test_kitsu_transport_scope.cmd || exit /b 1
           call tools\test_kitsu_tx_turnaround.cmd || exit /b 1
+      - name: Expanded-storage upload and migration safety gates
+        shell: cmd
+        run: |
+          python tools\test_platformio_kitsu_upload_guard.py || exit /b 1
+          python tools\test_migrate_kitsu_0203_storage.py || exit /b 1
+          python tools\test_kitsu_reflashable_profile.py || exit /b 1
       - name: Owner-reflashable and no-eFuse release audits
         shell: cmd
         run: |

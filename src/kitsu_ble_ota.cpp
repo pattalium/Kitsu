@@ -129,6 +129,31 @@ bool validReleaseId(const uint8_t* input, size_t bytes) {
   return true;
 }
 
+bool validSemverIdentifiers(const uint8_t* input, size_t bytes,
+                            size_t& cursor, bool prerelease) {
+  while (cursor < bytes) {
+    const size_t start = cursor;
+    bool numeric = true;
+    while (cursor < bytes && input[cursor] != '.' && input[cursor] != '+') {
+      const uint8_t value = input[cursor];
+      if (!asciiAlphaNumeric(value) && value != '-') return false;
+      if (value < '0' || value > '9') numeric = false;
+      ++cursor;
+    }
+    if (cursor == start ||
+        (prerelease && numeric && cursor - start > 1U && input[start] == '0')) {
+      return false;
+    }
+    if (cursor == bytes || input[cursor] == '+') return true;
+    // A dot must be followed by another non-empty identifier.
+    ++cursor;
+    if (cursor == bytes || input[cursor] == '.' || input[cursor] == '+') {
+      return false;
+    }
+  }
+  return false;
+}
+
 bool validSemver(const uint8_t* input, size_t bytes) {
   if (!input || bytes == 0U || bytes > kBleOtaVersionMaximumBytes) {
     return false;
@@ -136,7 +161,13 @@ bool validSemver(const uint8_t* input, size_t bytes) {
   size_t cursor = 0U;
   for (uint8_t component = 0U; component < 3U; ++component) {
     const size_t start = cursor;
+    uint64_t componentValue = 0U;
     while (cursor < bytes && input[cursor] >= '0' && input[cursor] <= '9') {
+      const uint8_t digit = static_cast<uint8_t>(input[cursor] - '0');
+      if (componentValue > (0x7fffffffffffffffULL - digit) / 10ULL) {
+        return false;
+      }
+      componentValue = componentValue * 10ULL + digit;
       ++cursor;
     }
     if (cursor == start ||
@@ -148,16 +179,15 @@ bool validSemver(const uint8_t* input, size_t bytes) {
     }
   }
   if (cursor == bytes) return true;
-  if (input[cursor] != '-' && input[cursor] != '+') return false;
-  ++cursor;
-  const size_t suffix = cursor;
-  while (cursor < bytes) {
-    const uint8_t value = input[cursor++];
-    if (!asciiAlphaNumeric(value) && value != '.' && value != '-') {
-      return false;
-    }
+  if (input[cursor] == '-') {
+    ++cursor;
+    if (!validSemverIdentifiers(input, bytes, cursor, true)) return false;
   }
-  return cursor > suffix;
+  if (cursor < bytes && input[cursor] == '+') {
+    ++cursor;
+    if (!validSemverIdentifiers(input, bytes, cursor, false)) return false;
+  }
+  return cursor == bytes;
 }
 
 bool validSemverString(const char* input) {
@@ -571,12 +601,16 @@ bool KitsuBleOta::begin(BleOtaPlatform& platform,
       running_.address == inactive_.address ||
       !((strcmp(running_.label, "app0") == 0 &&
          running_.subtype == 0x10U &&
+         running_.address == kKitsuApp0Offset &&
          strcmp(inactive_.label, "app1") == 0 &&
-         inactive_.subtype == 0x11U) ||
+         inactive_.subtype == 0x11U &&
+         inactive_.address == kKitsuApp1Offset) ||
         (strcmp(running_.label, "app1") == 0 &&
          running_.subtype == 0x11U &&
+         running_.address == kKitsuApp1Offset &&
          strcmp(inactive_.label, "app0") == 0 &&
-         inactive_.subtype == 0x10U))) {
+         inactive_.subtype == 0x10U &&
+         inactive_.address == kKitsuApp0Offset))) {
     platform_ = nullptr;
     return false;
   }
@@ -1541,12 +1575,16 @@ bool Esp32KitsuBleOtaPlatform::resolvePartitions(
       inactivePart->size != kBleOtaAppPartitionBytes ||
       !((strcmp(runningPart->label, "app0") == 0 &&
          runningPart->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+         runningPart->address == kKitsuApp0Offset &&
          strcmp(inactivePart->label, "app1") == 0 &&
-         inactivePart->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1) ||
+         inactivePart->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1 &&
+         inactivePart->address == kKitsuApp1Offset) ||
         (strcmp(runningPart->label, "app1") == 0 &&
          runningPart->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1 &&
+         runningPart->address == kKitsuApp1Offset &&
          strcmp(inactivePart->label, "app0") == 0 &&
-         inactivePart->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0))) {
+         inactivePart->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+         inactivePart->address == kKitsuApp0Offset))) {
     return false;
   }
   running = BleOtaPartition{};

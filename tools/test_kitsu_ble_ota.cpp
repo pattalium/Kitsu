@@ -18,6 +18,8 @@ using kitsu868::connectivity::kBleOtaDigestBytes;
 using kitsu868::connectivity::kBleOtaHealthyConfirmationMs;
 using kitsu868::connectivity::kBleOtaMaximumImageBytes;
 using kitsu868::connectivity::kBleOtaSignatureBytes;
+using kitsu868::connectivity::kKitsuApp0Offset;
+using kitsu868::connectivity::kKitsuApp1Offset;
 
 namespace kitsu868 {
 namespace connectivity {
@@ -97,7 +99,9 @@ std::string exactManifest(const char* version = "0.12.0") {
       "\"image_format\":\"esp32s3-app\",\"image_bytes\":" +
       std::to_string(kImageBytes) +
       ",\"image_sha256\":\"" + kImageSha +
-      "\",\"partition_bytes\":3342336,\"chunk_bytes\":4096,"
+      "\",\"partition_bytes\":" +
+      std::to_string(kBleOtaAppPartitionBytes) +
+      ",\"chunk_bytes\":4096,"
       "\"rollback\":true}";
 }
 
@@ -132,12 +136,13 @@ class MemoryPlatform final : public BleOtaPlatform {
   bool resolvePartitions(BleOtaPartition& running,
                          BleOtaPartition& inactive) override {
     running = partition(runningApp1 ? "app1" : "app0",
-                        runningApp1 ? 0x340000U : 0x10000U,
+                        runningApp1 ? kKitsuApp1Offset : kKitsuApp0Offset,
                         runningApp1 ? 0x11U : 0x10U);
     inactive = partition(runningApp1 ? "app0" : "app1",
-                         runningApp1 ? 0x10000U : 0x340000U,
+                         runningApp1 ? kKitsuApp0Offset : kKitsuApp1Offset,
                          runningApp1 ? 0x10U : 0x11U);
     if (badInactiveSubtype) inactive.subtype = 0x82U;
+    if (badInactiveAddress) inactive.address += 0x10000U;
     return resolveOk;
   }
 
@@ -214,14 +219,16 @@ class MemoryPlatform final : public BleOtaPlatform {
   }
 
   BleOtaBootState bootState(const BleOtaPartition& partitionValue) override {
-    return partitionValue.address == 0x10000U ? app0State : app1State;
+    return partitionValue.address == kKitsuApp0Offset ? app0State : app1State;
   }
 
   bool setBootPartition(const BleOtaPartition& partitionValue) override {
     if (failBootSelect || !forPartition(partitionValue)) return false;
     selectedBootAddress = partitionValue.address;
     if (partitionValue.address != runningAddress()) {
-      if (partitionValue.address == 0x10000U) app0State = BleOtaBootState::New;
+      if (partitionValue.address == kKitsuApp0Offset) {
+        app0State = BleOtaBootState::New;
+      }
       else app1State = BleOtaBootState::New;
     }
     return true;
@@ -253,12 +260,16 @@ class MemoryPlatform final : public BleOtaPlatform {
   }
 
   uint32_t runningAddress() const {
-    return runningApp1 ? 0x340000U : 0x10000U;
+    return runningApp1 ? kKitsuApp1Offset : kKitsuApp0Offset;
   }
 
   std::vector<uint8_t>* forPartition(const BleOtaPartition& value) {
-    if (value.address == 0x10000U && value.size == app0.size()) return &app0;
-    if (value.address == 0x340000U && value.size == app1.size()) return &app1;
+    if (value.address == kKitsuApp0Offset && value.size == app0.size()) {
+      return &app0;
+    }
+    if (value.address == kKitsuApp1Offset && value.size == app1.size()) {
+      return &app1;
+    }
     return nullptr;
   }
 
@@ -268,7 +279,7 @@ class MemoryPlatform final : public BleOtaPlatform {
   std::vector<std::pair<uint32_t, uint32_t>> writeRanges;
   BleOtaBootState app0State = BleOtaBootState::Valid;
   BleOtaBootState app1State = BleOtaBootState::Unknown;
-  uint32_t selectedBootAddress = 0x10000U;
+  uint32_t selectedBootAddress = kKitsuApp0Offset;
   int signatureVerifyCalls = 0;
   int imageVerifyCalls = 0;
   int markValidCalls = 0;
@@ -276,6 +287,7 @@ class MemoryPlatform final : public BleOtaPlatform {
   int corruptOnWriteCall = -1;
   bool runningApp1 = false;
   bool badInactiveSubtype = false;
+  bool badInactiveAddress = false;
   bool resolveOk = true;
   bool verifyImageOk = true;
   bool markValidOk = true;
@@ -439,7 +451,7 @@ void testResumeFinishAndThirtySecondConfirmation() {
   expect(receipt, "\"ok\":true");
   expect(receipt, "\"state\":\"ready_to_reboot\"");
   assert(platform.imageVerifyCalls == 1);
-  assert(platform.selectedBootAddress == 0x340000U);
+  assert(platform.selectedBootAddress == kKitsuApp1Offset);
   receipt = call(resumed, "firmware.update.reboot", idRequest(updateId));
   expect(receipt, "\"scheduled\":true");
   resumed.loop(10U, true, false);
@@ -555,6 +567,13 @@ void testPartitionInvariantAndDataReadback() {
   assert(badPartition.eraseRanges.empty());
   assert(badPartition.writeRanges.empty());
 
+  MemoryPlatform badAddress;
+  badAddress.badInactiveAddress = true;
+  KitsuBleOta addressRejected;
+  assert(!addressRejected.begin(badAddress, "0.11.4"));
+  assert(badAddress.eraseRanges.empty());
+  assert(badAddress.writeRanges.empty());
+
   MemoryPlatform corruptData;
   // Begin writes and reads back the journal header and initial checkpoint;
   // corrupt the first image-data write after those two durable records.
@@ -579,6 +598,46 @@ void testPartitionInvariantAndDataReadback() {
   expect(receipt, "\"state\":\"idle\"");
   expect(receipt, "\"error\":null");
   assert(!corruptData.wroteRunning);
+}
+
+void testStrictSemverGrammar() {
+  const char* accepted[] = {
+      "0.20.3",
+      "0.20.3-rc.1+build.7",
+      "1.0.0-alpha.0",
+      "1.0.0-x-y-z.--",
+      "1.0.0+001",
+      "2147483648.999999999.0",
+  };
+  for (const char* version : accepted) {
+    MemoryPlatform platform;
+    KitsuBleOta ota;
+    assert(ota.begin(platform, version));
+  }
+
+  const char* rejected[] = {
+      "0.20.3+",
+      "0.20.3-",
+      "0.20.3-rc.1+",
+      "0.20.3-rc..1",
+      "0.20.3+build..7",
+      "0.20.3-01",
+      "0.20.3-rc.01",
+      "01.20.3",
+      "0.020.3",
+      "0.20.03",
+      "0.20",
+      "0.20.3_rc1",
+      "0.20.3++build",
+      "0.20.3-rc+build+again",
+      "999999999999999999999.0.0",
+      "9223372036854775808.0.0",
+  };
+  for (const char* version : rejected) {
+    MemoryPlatform platform;
+    KitsuBleOta ota;
+    assert(!ota.begin(platform, version));
+  }
 }
 
 void testPendingImageWithoutValidJournalRollsBackAtBegin() {
@@ -615,8 +674,9 @@ int main() {
   testAbortRestoresRunningBootSelection();
   testJournalReadbackAndFailedAbortRecovery();
   testPartitionInvariantAndDataReadback();
+  testStrictSemverGrammar();
   testPendingImageWithoutValidJournalRollsBackAtBegin();
-  static_assert(kBleOtaMaximumImageBytes == 0x32f000UL,
+  static_assert(kBleOtaMaximumImageBytes == 0x2ff000UL,
                 "the final inactive-app sector is the OTA journal");
   return 0;
 }

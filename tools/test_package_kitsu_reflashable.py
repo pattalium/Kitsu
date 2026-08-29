@@ -176,7 +176,22 @@ build_flags =
         + extra_section,
         encoding="utf-8",
     )
-    shutil.copyfile(ROOT / packager.PARTITION_LAYOUT, project / packager.PARTITION_LAYOUT)
+    csv_lines = ["# Name,Type,SubType,Offset,Size,Flags"]
+    type_names = {0x00: "app", 0x01: "data"}
+    subtype_names = {
+        (0x01, 0x02): "nvs", (0x01, 0x00): "ota",
+        (0x00, 0x10): "ota_0", (0x00, 0x11): "ota_1",
+        (0x01, 0x82): "spiffs", (0x01, 0x40): "0x40",
+        (0x01, 0x03): "coredump",
+    }
+    for label, type_code, subtype, offset, size, _ in packager.EXPECTED_LAYOUT:
+        csv_lines.append(
+            f"{label},{type_names[type_code]},"
+            f"{subtype_names[(type_code, subtype)]},0x{offset:x},0x{size:x},"
+        )
+    (project / packager.PARTITION_LAYOUT).write_text(
+        "\n".join(csv_lines) + "\n", encoding="utf-8"
+    )
     source = project / "src"
     source.mkdir(exist_ok=True)
     (source / "main.cpp").write_text(
@@ -839,6 +854,17 @@ def test_historical_stable_offset_imports_remain_defined() -> None:
     assert packager.APP_OFFSET == packager.APP0_OFFSET == 0x010000
 
 
+def test_current_0203_layout_is_rejected_by_historical_packager() -> None:
+    try:
+        packager.expected_partition_records(ROOT / "partitions_kitsu_8MB.csv")
+    except SystemExit as error:
+        message = str(error)
+        assert "legacy seven-write reflashable packager" in message
+        assert "migrate_kitsu_0203_storage.py" in message
+    else:
+        raise AssertionError("current 0.20.3 layout was accepted by legacy packager")
+
+
 def test_runner_pins_candidate_and_reviewed_runtime() -> None:
     runner = (TOOLS / "package_kitsu_reflashable.cmd").read_text(encoding="utf-8")
     normalized = runner.replace("/", "\\").lower()
@@ -884,6 +910,7 @@ def main() -> None:
     test_wrong_build_environment_and_nonempty_output_rejected()
     test_legacy_production_entrypoints_withdrawn()
     test_historical_stable_offset_imports_remain_defined()
+    test_current_0203_layout_is_rejected_by_historical_packager()
     test_runner_pins_candidate_and_reviewed_runtime()
     print("Kitsu local-only v2 candidate package tests passed (all contract/guard cases).")
 

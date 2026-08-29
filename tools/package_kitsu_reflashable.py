@@ -147,6 +147,20 @@ EXPECTED_LAYOUT = (
     ("coredump", 0x01, 0x03, 0x7F0000, 0x010000, 0),
 )
 
+# Historical seven-write bundles are retained only for validating already
+# published pre-0.20.3 releases.  They must never package or migrate the active
+# expanded-NVS layout; that transition is table-last and backup-bound in
+# migrate_kitsu_0203_storage.py.
+CURRENT_0203_LAYOUT = (
+    ("nvs", 0x01, 0x02, 0x009000, 0x040000, 0),
+    ("otadata", 0x01, 0x00, 0x049000, 0x002000, 0),
+    ("app0", 0x00, 0x10, 0x050000, 0x300000, 0),
+    ("app1", 0x00, 0x11, 0x350000, 0x300000, 0),
+    ("spiffs", 0x01, 0x82, 0x670000, 0x140000, 0),
+    ("kitsu_conn", 0x01, 0x40, 0x7B0000, 0x040000, 0),
+    ("coredump", 0x01, 0x03, 0x7F0000, 0x010000, 0),
+)
+
 FORBIDDEN_PROFILE_TOKENS = (
     "KITSU_PRODUCTION_PROFILE",
     "KITSU_CONNECTIVITY_DEVELOPMENT",
@@ -269,8 +283,9 @@ def parse_platformio_profile(project_root: Path) -> dict[str, Any]:
         raise SystemExit("reflashable firmware must use the unencrypted 8 MiB layout")
     if upload_protocol != "esptool":
         raise SystemExit("reflashable firmware must retain the esptool serial uploader")
-    if parser.has_option(section, "extra_scripts"):
-        raise SystemExit("reflashable firmware may not run signing/encryption build scripts")
+    extra_scripts = parser.get(section, "extra_scripts", fallback="").strip()
+    if extra_scripts not in ("", "post:tools/platformio_kitsu_upload_guard.py"):
+        raise SystemExit("reflashable firmware has an unreviewed PlatformIO extra script")
 
     source_filter = [
         line.strip()
@@ -494,6 +509,12 @@ def expected_partition_records(layout: Path) -> list[tuple[str, int, int, int, i
                     flags,
                 )
             )
+    if tuple(records) == CURRENT_0203_LAYOUT:
+        raise SystemExit(
+            "the legacy seven-write reflashable packager cannot package or "
+            "migrate the 0.20.3 expanded-NVS layout; use "
+            "tools/migrate_kitsu_0203_storage.py"
+        )
     if tuple(records) != EXPECTED_LAYOUT:
         raise SystemExit(
             "reviewed reflashable partition CSV differs from the exact unencrypted layout"

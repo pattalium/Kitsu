@@ -66,7 +66,11 @@ def cpp_function(source: str, signature: str) -> str:
 
 class RxObservabilitySourceTests(unittest.TestCase):
     def test_version_and_ci_identity_are_current(self) -> None:
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.2"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.3"', MAIN)
+        self.assertIn(
+            'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
+            MAIN,
+        )
         self.assertIn("tests.test_rx_observability", CI)
 
     def test_vendor_patch_documents_bounded_non_clearing_sampling(self) -> None:

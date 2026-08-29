@@ -27,8 +27,10 @@
 #include "kitsu_ble_session.h"
 #include "kitsu_device_security.h"
 #include "kitsu_esp32_security.h"
+#include "kitsu_flash_layout.h"
 #include "kitsu_legacy_connectivity_retirement.h"
 #include "kitsu_nvs_headroom.h"
+#include "kitsu_nvs_erase_guard.h"
 #include "kitsu_mesh_config.h"
 #include "kitsu_message_read_contract.h"
 #include "kitsu_mesh_transport.h"
@@ -36,6 +38,7 @@
 #include "kitsu_party_hotspot.h"
 #include "kitsu_party_modes.h"
 #include "kitsu_rx_rearm_policy.h"
+#include "kitsu_storage_retry.h"
 #include "kitsu_transport_scope.h"
 #include "kitsu_unlock_codes.h"
 #include "mesh_discovery_journal.h"
@@ -51,7 +54,53 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-constexpr char FIRMWARE_VERSION[] = "0.20.2";
+#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.3"
+constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;
+// Signed update tooling locates exactly one copy of this fixed-format marker
+// in the final ESP application.  Keeping it referenced by the boot diagnostic
+// prevents linker garbage collection, while the compile-time layout assertions
+// below bind the textual identity to the constants enforced at runtime.
+constexpr char FIRMWARE_IDENTITY[] =
+    "KITSU-ID1|schema=1|length=0331|version="
+    KITSU_FIRMWARE_VERSION_LITERAL
+    "|device_class=heltec-v3.2|layout=kitsu-8m-dual-ota-3m-v1"
+    "|flash=00800000|nvs=00009000/00040000"
+    "|otadata=00049000/00002000"
+    "|app0=00050000|app1=00350000|slot=00300000"
+    "|journal=00001000|max=002ff000"
+    "|spiffs=00670000/00140000|conn=007b0000/00040000"
+    "|coredump=007f0000/00010000|crc32=068e9051|end";
+static_assert(sizeof(FIRMWARE_IDENTITY) == 331U,
+              "firmware identity length field changed");
+static_assert(kitsu868::connectivity::kKitsuFlashBytes == 0x800000UL,
+              "firmware identity flash size changed");
+static_assert(kitsu868::connectivity::kKitsuNvsOffset == 0x009000UL &&
+                  kitsu868::connectivity::kKitsuNvsBytes == 0x040000UL,
+              "firmware identity NVS geometry changed");
+static_assert(kitsu868::connectivity::kKitsuOtaDataOffset == 0x049000UL &&
+                  kitsu868::connectivity::kKitsuOtaDataBytes == 0x002000UL,
+              "firmware identity OTA-data geometry changed");
+static_assert(kitsu868::connectivity::kKitsuApp0Offset == 0x050000UL,
+              "firmware identity app0 address changed");
+static_assert(kitsu868::connectivity::kKitsuApp1Offset == 0x350000UL,
+              "firmware identity app1 address changed");
+static_assert(kitsu868::connectivity::kKitsuAppPartitionBytes == 0x300000UL,
+              "firmware identity slot size changed");
+static_assert(kitsu868::connectivity::kBleOtaJournalBytes == 0x1000UL,
+              "firmware identity journal size changed");
+static_assert(kitsu868::connectivity::kBleOtaMaximumImageBytes == 0x2ff000UL,
+              "firmware identity image limit changed");
+static_assert(kitsu868::connectivity::kKitsuSpiffsOffset == 0x670000UL &&
+                  kitsu868::connectivity::kKitsuSpiffsBytes == 0x140000UL,
+              "firmware identity SPIFFS geometry changed");
+static_assert(
+    kitsu868::connectivity::kKitsuConnectivityOffset == 0x7b0000UL &&
+        kitsu868::connectivity::kKitsuConnectivityBytes == 0x040000UL,
+    "firmware identity connectivity geometry changed");
+static_assert(kitsu868::connectivity::kKitsuCoredumpOffset == 0x7f0000UL &&
+                  kitsu868::connectivity::kKitsuCoredumpBytes == 0x010000UL,
+              "firmware identity coredump geometry changed");
+#undef KITSU_FIRMWARE_VERSION_LITERAL
 constexpr uint32_t LEGACY_STATE_MAGIC = 0x57535031;
 constexpr uint32_t CORE_STATE_MAGIC = 0x4b433732;  // "KC72"
 constexpr uint32_t SIGNAL_STATE_MAGIC = 0x4b534731;  // "KSG1"
@@ -97,6 +146,8 @@ constexpr uint32_t DREAM_MINIMUM_SLEEP_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t MOMENT_DISPLAY_MS = 6500UL;
 constexpr uint32_t MESH_INTRODUCE_MIN_INTERVAL_MS = 1000UL;
 constexpr uint32_t DISCOVERY_JOURNAL_DEBOUNCE_MS = 5000UL;
+constexpr uint32_t DISCOVERY_URGENT_DEFER_MS = 250UL;
+constexpr uint32_t STORAGE_HEADROOM_RECHECK_MS = 30UL * 60UL * 1000UL;
 constexpr uint32_t BLE_REFRESH_INTERVAL_MS = 30UL * 1000UL;
 constexpr uint32_t BLE_REFRESH_RETRY_MS = 1000UL;
 constexpr uint32_t NEARBY_NEIGHBOR_TTL_MS = 2UL * 60UL * 1000UL;
@@ -170,6 +221,7 @@ kitsu868::connectivity::KitsuDeviceSecurity deviceSecurity;
 kitsu868::connectivity::Esp32LegacyConnectivityRetirementPlatform
     legacyConnectivityRetirementPlatform;
 kitsu868::connectivity::Esp32NvsHeadroomPlatform pairingNvsHeadroomPlatform;
+kitsu868::connectivity::Esp32FlashLayoutPlatform flashLayoutPlatform;
 kitsu868::connectivity::Esp32KitsuBleOtaPlatform bleOtaPlatform;
 kitsu868::connectivity::KitsuBleOta bleOta;
 kitsu868::connectivity::BleActionReplayCache bleActionReplayCache;
@@ -185,6 +237,10 @@ bool bleActionReplayReady = false;
 bool discoveryJournalReady = false;
 uint32_t discoveryBootId = 0U;
 uint32_t discoveryJournalDirtyAt = 0U;
+kitsu868::connectivity::StorageRetrySchedule discoveryStorageRetry;
+kitsu868::connectivity::StorageRetrySchedule brainStorageRetry;
+uint32_t discoveryHeadroomRecheckAt = 0U;
+bool backgroundStorageTransactionUsed = false;
 
 enum class Screen : uint8_t {
   Pet,
@@ -1495,6 +1551,13 @@ bool restoreActionReplaySnapshot() {
   return loaded && persistActionReplay();
 }
 
+bool restoreActionReplaySnapshotInMemory() {
+  const bool loaded = bleActionReplayCache.load(
+      bleActionReplayScratch, sizeof(bleActionReplayScratch));
+  memset(bleActionReplayScratch, 0, sizeof(bleActionReplayScratch));
+  return loaded;
+}
+
 const char* bleMeshErrorName(kitsu868::mesh::TransportStatus status) {
   using kitsu868::mesh::TransportStatus;
   switch (status) {
@@ -1520,6 +1583,7 @@ const char* bleMeshErrorName(kitsu868::mesh::TransportStatus status) {
 
 const char* bleAdvertiseReadinessError(uint32_t& retryAfterMs) {
   retryAfterMs = 0U;
+  if (!bleActionReplayReady) return "idempotency_unavailable";
   if (!companionPack.valid()) return "companion_unavailable";
   if (!meshTransport.identityReady()) return "mesh_identity_unavailable";
   if (!meshSettings.enabled) return "mesh_disabled";
@@ -1769,10 +1833,28 @@ bool applyAction(const uint8_t* payload, size_t payloadBytes,
   if (!snapshotActionReplay()) {
     return rejected("idempotency_unavailable");
   }
-  if (!bleActionReplayCache.remember(command, actionNow) ||
-      !persistActionReplay()) {
-    if (!restoreActionReplaySnapshot()) bleActionReplayReady = false;
-    Serial.println("KITSU_WARN ble_action_replay=flush_failed");
+  if (!bleActionReplayCache.remember(command, actionNow)) {
+    // A full replay window is normal, transient backpressure: all eight
+    // records can still be inside their caller-supplied protection window.
+    // No durable write or action side effect has happened yet. Restore the
+    // exact pre-attempt RAM image and invite the client to retry after an old
+    // reservation expires. A failed restore is an actual replay-storage
+    // integrity failure and must remain fail-closed under the durable error.
+    if (!restoreActionReplaySnapshotInMemory() || !bleActionReplayReady) {
+      bleActionReplayReady = false;
+      Serial.println("KITSU_WARN ble_action_replay=capacity_restore_failed");
+      return rejected("idempotency_unavailable");
+    }
+    Serial.println("KITSU_WARN ble_action_replay=capacity_busy");
+    return rejected("idempotency_busy");
+  }
+  if (!persistActionReplay()) {
+    // The failed reservation did not authorize a side effect. Restore RAM
+    // only: immediately rewriting the old blob just repeats the same NVS
+    // pressure and can damage the previously durable version on IDF 4.4.
+    (void)restoreActionReplaySnapshotInMemory();
+    bleActionReplayReady = false;
+    Serial.println("KITSU_WARN ble_action_replay=storage_write_failed");
     return rejected("idempotency_unavailable");
   }
 
@@ -6092,8 +6174,25 @@ bool reserveNearbySequence(uint16_t sequence) {
 
 void persistProgress() {
   saveState();
-  if (!companionBrain.flush()) {
-    Serial.println("KITSU_WARN brain_flush=false");
+  const uint32_t now = millis();
+  const kitsu868::connectivity::StorageRetryStatus retry =
+      brainStorageRetry.status();
+  if (retry.dirty && !brainStorageRetry.attemptDue(now)) {
+    brainMinutesSinceFlush = 15U;
+    return;
+  }
+  brainStorageRetry.recordAttempt(now);
+  if (companionBrain.flush()) {
+    brainStorageRetry.recordSuccess();
+    brainMinutesSinceFlush = 0U;
+  } else {
+    brainStorageRetry.markDirty(now, 0U);
+    brainStorageRetry.recordFailure(
+        now, kitsu868::connectivity::StorageRetryFailure::Transient);
+    brainMinutesSinceFlush = 15U;
+    Serial.printf("KITSU_WARN brain_flush=false retry=%u\n",
+                  static_cast<unsigned>(
+                      brainStorageRetry.status().failureCount));
   }
 }
 
@@ -12332,25 +12431,20 @@ void processMeshAdvert() {
       if (recorded.result != kitsu868::discovery::JournalResult::Ok) {
         Serial.printf("KITSU_WARN discovery_record=%s\n",
                       kitsu868::discovery::journalResultName(recorded.result));
-      } else if (recorded.urgent) {
-        discoveredPeer = recorded.newPeer;
-        const uint32_t journalNow = millis();
-        if (companionBle.pairingStorageReserved(journalNow)) {
-          discoveryJournalDirtyAt = journalNow;
-          Serial.println(
-              "KITSU_DISCOVERY_FLUSH deferred=pairing urgent=true");
-        } else {
-          const kitsu868::discovery::JournalResult flushed =
-              discoveryJournal.flush();
-          if (flushed != kitsu868::discovery::JournalResult::Ok) {
-            discoveryJournalDirtyAt = journalNow;
-            Serial.printf("KITSU_WARN discovery_flush=%s urgent=true\n",
-                          kitsu868::discovery::journalResultName(flushed));
-          }
-        }
       } else {
         discoveredPeer = recorded.newPeer;
-        discoveryJournalDirtyAt = millis();
+        const uint32_t journalNow = millis();
+        if (!discoveryStorageRetry.status().dirty) {
+          discoveryJournalDirtyAt = journalNow;
+        }
+        discoveryStorageRetry.markDirty(
+            journalNow, recorded.urgent ? DISCOVERY_URGENT_DEFER_MS
+                                        : DISCOVERY_JOURNAL_DEBOUNCE_MS);
+        if (recorded.urgent &&
+            companionBle.pairingStorageReserved(journalNow)) {
+          Serial.println(
+              "KITSU_DISCOVERY_FLUSH deferred=pairing urgent=true");
+        }
       }
     }
     const kitsu868::signal::MeshOperationKind operation = discoveredPeer
@@ -12390,23 +12484,92 @@ void processFloodAdvertStatus() {
   }
 }
 
+bool backgroundStorageWindowReady(uint32_t now) {
+  const kitsu868::connectivity::BleOtaState otaState =
+      bleOta.status().state;
+  return !backgroundStorageTransactionUsed &&
+      !companionBle.pairingStorageReserved(now) &&
+      companionBle.bleTransmitIdle() && !meshTransport.sendInProgress() &&
+      otaState != kitsu868::connectivity::BleOtaState::Receiving &&
+      otaState != kitsu868::connectivity::BleOtaState::ReadyToReboot;
+}
+
+bool discoveryWriteHeadroomAvailable(
+    kitsu868::connectivity::NvsHeadroomStats& stats) {
+  if (!pairingNvsHeadroomPlatform.readStats(stats)) return false;
+  constexpr size_t required =
+      kitsu868::connectivity::kNvsEntriesPerPage +
+      kitsu868::connectivity::nvsBlobEntries(
+          kitsu868::discovery::kDiscoverySnapshotCapacity);
+  return stats.freeEntries >= required;
+}
+
 void tickDiscoveryJournal(uint32_t now) {
   if (!discoveryJournalReady) return;
-  if (companionBle.pairingStorageReserved(now)) return;
   const kitsu868::discovery::JournalStatus status = discoveryJournal.status();
-  if (!status.dirty ||
-      static_cast<uint32_t>(now - discoveryJournalDirtyAt) <
-          DISCOVERY_JOURNAL_DEBOUNCE_MS) {
+  if (!status.dirty) {
+    if (discoveryStorageRetry.status().dirty) {
+      discoveryStorageRetry.recordSuccess();
+    }
     return;
   }
-  const kitsu868::discovery::JournalResult flushed = discoveryJournal.flush();
-  if (flushed != kitsu868::discovery::JournalResult::Ok) {
-    // Keep retry cadence bounded; flush() intentionally leaves the in-RAM
-    // journal dirty and the previous slot recoverable.
+  if (!discoveryStorageRetry.status().dirty) {
     discoveryJournalDirtyAt = now;
-    Serial.printf("KITSU_WARN discovery_flush=%s urgent=false\n",
-                  kitsu868::discovery::journalResultName(flushed));
+    discoveryStorageRetry.markDirty(now, DISCOVERY_JOURNAL_DEBOUNCE_MS);
   }
+
+  kitsu868::connectivity::StorageRetryStatus retry =
+      discoveryStorageRetry.status();
+  if (retry.blockedNoSpace) {
+    if (discoveryHeadroomRecheckAt == 0U ||
+        static_cast<int32_t>(now - discoveryHeadroomRecheckAt) >= 0) {
+      discoveryHeadroomRecheckAt = now + STORAGE_HEADROOM_RECHECK_MS;
+      kitsu868::connectivity::NvsHeadroomStats stats{};
+      if (discoveryWriteHeadroomAvailable(stats)) {
+        discoveryStorageRetry.rearmAfterHeadroom(
+            now, DISCOVERY_JOURNAL_DEBOUNCE_MS);
+      }
+    }
+    return;
+  }
+  if (!discoveryStorageRetry.attemptDue(now) ||
+      !backgroundStorageWindowReady(now)) {
+    return;
+  }
+
+  backgroundStorageTransactionUsed = true;
+  discoveryStorageRetry.recordAttempt(now);
+  const kitsu868::discovery::JournalResult flushed = discoveryJournal.flush();
+  if (flushed == kitsu868::discovery::JournalResult::Ok) {
+    discoveryStorageRetry.recordSuccess();
+    discoveryHeadroomRecheckAt = 0U;
+    return;
+  }
+
+  kitsu868::connectivity::StorageRetryFailure failure =
+      kitsu868::connectivity::StorageRetryFailure::Transient;
+  kitsu868::connectivity::NvsHeadroomStats stats{};
+  if (flushed == kitsu868::discovery::JournalResult::StorageWriteFailed &&
+      pairingNvsHeadroomPlatform.readStats(stats)) {
+    constexpr size_t required =
+        kitsu868::connectivity::kNvsEntriesPerPage +
+        kitsu868::connectivity::nvsBlobEntries(
+            kitsu868::discovery::kDiscoverySnapshotCapacity);
+    if (stats.freeEntries < required) {
+      failure = kitsu868::connectivity::StorageRetryFailure::NoSpace;
+      discoveryHeadroomRecheckAt = now + STORAGE_HEADROOM_RECHECK_MS;
+    }
+  }
+  discoveryStorageRetry.recordFailure(now, failure);
+  retry = discoveryStorageRetry.status();
+  Serial.printf(
+      "KITSU_WARN discovery_flush=%s blocked_no_space=%s retry=%u "
+      "free_entries=%lu dirty_age_ms=%lu\n",
+      kitsu868::discovery::journalResultName(flushed),
+      retry.blockedNoSpace ? "true" : "false",
+      static_cast<unsigned>(retry.failureCount),
+      static_cast<unsigned long>(stats.freeEntries),
+      static_cast<unsigned long>(now - discoveryJournalDirtyAt));
 }
 
 ChatJournalEntry* findChannelJournalByDelivery(
@@ -12676,9 +12839,28 @@ void tickProgression() {
   lastBrainMinuteAt += static_cast<uint32_t>(minutes) * BRAIN_MINUTE_MS;
   brainMinutesSinceFlush = static_cast<uint8_t>(min<uint16_t>(
       15, static_cast<uint16_t>(brainMinutesSinceFlush + minutes)));
-  if (brainMinutesSinceFlush >= 15U) {
-    companionBrain.flush();
-    brainMinutesSinceFlush = 0;
+  if (brainMinutesSinceFlush >= 15U && companionBrain.dirty()) {
+    if (!brainStorageRetry.status().dirty) {
+      brainStorageRetry.markDirty(now, 0U);
+    }
+    if (brainStorageRetry.attemptDue(now) &&
+        backgroundStorageWindowReady(now)) {
+      backgroundStorageTransactionUsed = true;
+      brainStorageRetry.recordAttempt(now);
+      if (companionBrain.flush()) {
+        brainStorageRetry.recordSuccess();
+        brainMinutesSinceFlush = 0U;
+      } else {
+        brainStorageRetry.recordFailure(
+            now, kitsu868::connectivity::StorageRetryFailure::Transient);
+        Serial.printf("KITSU_WARN brain_flush=false retry=%u\n",
+                      static_cast<unsigned>(
+                          brainStorageRetry.status().failureCount));
+      }
+    }
+  } else if (!companionBrain.dirty()) {
+    brainStorageRetry.recordSuccess();
+    brainMinutesSinceFlush = 0U;
   }
 }
 
@@ -12725,6 +12907,27 @@ bool startMeetForNewPack() {
 
 void printSelfTest() {
   sampleBattery(false);
+  kitsu868::connectivity::NvsHeadroomStats nvsStats{};
+  const bool nvsStatsReady = pairingNvsHeadroomPlatform.readStats(nvsStats);
+  const kitsu868::connectivity::StorageRetryStatus discoveryRetry =
+      discoveryStorageRetry.status();
+  const kitsu868::connectivity::StorageRetryStatus brainRetry =
+      brainStorageRetry.status();
+  Serial.printf(
+      "KITSU_STORAGE {\"stats\":%s,\"used_entries\":%lu,"
+      "\"free_entries\":%lu,\"total_entries\":%lu,"
+      "\"discovery_dirty\":%s,\"discovery_blocked_no_space\":%s,"
+      "\"discovery_retry\":%u,\"brain_dirty\":%s,"
+      "\"brain_retry\":%u}\n",
+      nvsStatsReady ? "true" : "false",
+      static_cast<unsigned long>(nvsStats.usedEntries),
+      static_cast<unsigned long>(nvsStats.freeEntries),
+      static_cast<unsigned long>(nvsStats.totalEntries),
+      discoveryRetry.dirty ? "true" : "false",
+      discoveryRetry.blockedNoSpace ? "true" : "false",
+      static_cast<unsigned>(discoveryRetry.failureCount),
+      companionBrain.dirty() ? "true" : "false",
+      static_cast<unsigned>(brainRetry.failureCount));
   const kitsu868::LifetimeCounters& life = companionBrain.lifetime();
   const kitsu868::CompanionMood mood = companionBrain.mood(companionVitals());
   const int bleBondCount = companionBle.bleBondCount();
@@ -15502,9 +15705,15 @@ void initMesh() {
 
 void setup() {
   Serial.begin(115200);
+  if (kitsu868::connectivity::destructiveNvsEraseBlocked()) {
+    Serial.println("KITSU_BLOCKED reason=nvs-destructive-format-prevented");
+    while (true) delay(1000U);
+  }
   delay(300);
-  Serial.printf("\nKITSU_BOOT firmware=%s version=%s board=heltec-v3.2 tx_enabled=false\n",
-                FIRMWARE_NAME, FIRMWARE_VERSION);
+  Serial.printf(
+      "\nKITSU_BOOT firmware=%s version=%s board=heltec-v3.2 "
+      "tx_enabled=false identity=%s\n",
+      FIRMWARE_NAME, FIRMWARE_VERSION, FIRMWARE_IDENTITY);
 
   pinMode(PIN_BUTTON, INPUT_PULLUP);
   rawButton = stableButton = digitalRead(PIN_BUTTON) == LOW;
@@ -15515,6 +15724,18 @@ void setup() {
   analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_2_5db);
 
   initDisplay();
+  const kitsu868::connectivity::FlashLayoutResult flashLayout =
+      kitsu868::connectivity::validateKitsuFlashLayout(flashLayoutPlatform);
+  Serial.printf("KITSU_FLASH_LAYOUT status=%s\n",
+                kitsu868::connectivity::flashLayoutResultName(flashLayout));
+  if (flashLayout != kitsu868::connectivity::FlashLayoutResult::Ready) {
+    // Never let a 0.20.3 application mutate the legacy 20 KiB NVS or an
+    // incomplete serial migration. Arduino has already mounted NVS before
+    // setup(), so the migration workflow separately proves that the exact
+    // expanded image initializes without entering Arduino's erase fallback.
+    Serial.println("KITSU_BLOCKED reason=flash-layout-mismatch");
+    while (true) delay(1000U);
+  }
   // Inspect the web flasher's transaction sectors before mandatory legacy
   // retirement. A canonical PREPARED record makes retirement preserve those
   // two fixed sectors while still erasing and verifying the rest of
@@ -15705,6 +15926,7 @@ void setup() {
 }
 
 void loop() {
+  backgroundStorageTransactionUsed = false;
   pollButton();
   pollSerial();
   const uint32_t now = millis();

@@ -387,12 +387,12 @@ bool Esp32KitsuBleOtaPlatform::resolvePartitions(
   initialize();
   BleOtaPartition app0{};
   std::strncpy(app0.label, "app0", sizeof(app0.label) - 1U);
-  app0.address = 0x10000U;
+  app0.address = kKitsuApp0Offset;
   app0.size = kBleOtaAppPartitionBytes;
   app0.subtype = 0x10U;
   BleOtaPartition app1{};
   std::strncpy(app1.label, "app1", sizeof(app1.label) - 1U);
-  app1.address = 0x340000U;
+  app1.address = kKitsuApp1Offset;
   app1.size = kBleOtaAppPartitionBytes;
   app1.subtype = 0x11U;
   running = app0Running_ ? app0 : app1;

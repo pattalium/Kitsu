@@ -205,7 +205,11 @@ class AdvertRepeatTrackerSourceTests(unittest.TestCase):
         self.assertIn("takeFloodAdvertStatusChanged()", TRANSPORT_HEADER)
         self.assertIn("mesh_last_flood_advert_v2", state)
         self.assertIn("repeat_sources_truncated", state)
-        self.assertIn('FIRMWARE_VERSION[] = "0.20.2"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.3"', MAIN)
+        self.assertIn(
+            'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
+            MAIN,
+        )
 
     def test_legacy_and_v2_flood_views_share_one_snapshot(self) -> None:
         state = cpp_function(MAIN, "bool buildState(")

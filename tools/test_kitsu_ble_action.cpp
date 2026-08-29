@@ -483,8 +483,17 @@ void testCapacityFailsClosedAndReclaimsOnlyExpired() {
   }
   BleActionCommand overflow = commandFor(
       99U, BleActionKind::Pet, kNow + 90U);
+  size_t beforeOverflowBytes = 0U;
+  const uint8_t* beforeOverflow = cache.serialized(beforeOverflowBytes);
+  std::vector<uint8_t> beforeOverflowSnapshot(
+      beforeOverflow, beforeOverflow + beforeOverflowBytes);
   assert(!cache.remember(overflow, kNow));
   assert(cache.inspect(overflow, kNow) == BleActionReplayDecision::Fresh);
+  size_t afterOverflowBytes = 0U;
+  const uint8_t* afterOverflow = cache.serialized(afterOverflowBytes);
+  assert(afterOverflowBytes == beforeOverflowSnapshot.size());
+  assert(memcmp(afterOverflow, beforeOverflowSnapshot.data(),
+                afterOverflowBytes) == 0);
   for (unsigned ordinal = 1U;
        ordinal <= kitsu868::connectivity::kBleActionReplayCapacity;
        ++ordinal) {
@@ -495,7 +504,9 @@ void testCapacityFailsClosedAndReclaimsOnlyExpired() {
   }
 
   // Exactly at expiry the first reservation may be reclaimed, while every
-  // still-protected reservation remains present.
+  // still-protected reservation remains present. This models the retry after
+  // the transient idempotency_busy receipt: it succeeds without resetting or
+  // degrading the durable replay ledger.
   assert(cache.remember(overflow, kNow + 5U));
   assert(cache.inspect(overflow, kNow + 5U) ==
          BleActionReplayDecision::DuplicateIndeterminate);
