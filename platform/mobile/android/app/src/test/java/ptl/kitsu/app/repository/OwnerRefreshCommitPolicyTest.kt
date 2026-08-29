@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import ptl.kitsu.app.connection.ConnectionState
 import ptl.kitsu.app.model.ExpeditionFunState
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
 import ptl.kitsu.app.model.ExpeditionStatus
 import ptl.kitsu.app.model.FUN_STATE_SCHEMA
 import ptl.kitsu.app.model.FunState
@@ -41,6 +42,11 @@ class OwnerRefreshCommitPolicyTest {
             channels = emptyList(),
             encounterCatalog = PUBLIC_ENCOUNTER_CATALOG,
             encounterCatalogSupported = true,
+            encounterDiscovery = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+                EncounterDiscoveryRecord(creature.packId, 0, null)
+            },
+            encounterDiscoveryDeviceId = "KT0001",
+            encounterDiscoverySupported = true,
             nearbyInteractionKinds = setOf(
                 NeighborInteractionKind.PET,
                 NeighborInteractionKind.GREET,
@@ -56,6 +62,9 @@ class OwnerRefreshCommitPolicyTest {
         assertEquals("KT0001", committed.status?.deviceId)
         assertEquals(PUBLIC_ENCOUNTER_CATALOG, committed.encounterCatalog)
         assertEquals(true, committed.encounterCatalogSupported)
+        assertEquals(21, committed.encounterDiscovery.size)
+        assertEquals("KT0001", committed.encounterDiscoveryDeviceId)
+        assertTrue(committed.encounterDiscoverySupported)
         assertEquals(broadReadStartedEarlier.nearbyInteractionKinds, committed.nearbyInteractionKinds)
         assertNull(committed.errorCode)
     }
@@ -73,6 +82,27 @@ class OwnerRefreshCommitPolicyTest {
         assertEquals(listOf(received), failed.messages)
         assertNull(failed.messagesErrorCode)
         assertEquals("malformed_history", failed.errorCode)
+    }
+
+    @Test fun lateRefreshCannotResurrectTheCapturedConnectedStateAfterGattLoss() {
+        val capturedConnected = ConnectionState(connected = true, detail = "connected")
+        val currentOffline = ConnectionState(connected = false, detail = "gatt_disconnected")
+        val snapshot = OwnerNonMessageSnapshot(
+            connection = capturedConnected,
+            status = KitsuStatus(deviceId = "KT0001", companionName = "Kitsu", updatedAt = 2),
+            history = emptyList(),
+            peers = emptyList(),
+            channels = emptyList(),
+        )
+
+        val committed = OwnerRefreshCommitPolicy.apply(
+            current = OwnerState(connection = currentOffline),
+            snapshot = snapshot,
+            connection = currentOffline,
+        )
+
+        assertFalse(committed.connection.connected)
+        assertEquals("gatt_disconnected", committed.connection.detail)
     }
 
     @Test fun broadRefreshCommitsTheAuthenticatedFunSnapshotWithoutClearingMutationState() {

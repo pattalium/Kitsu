@@ -4,7 +4,17 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
+import ptl.kitsu.app.model.ENCOUNTER_CATALOG_SCHEMA
+import ptl.kitsu.app.model.ENCOUNTER_NEIGHBORS_SCHEMA
 import ptl.kitsu.app.model.EventEnvelope
+import ptl.kitsu.app.model.EncounterCatalogPage
+import ptl.kitsu.app.model.EncounterDiscoveryPage
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
+import ptl.kitsu.app.model.ExpeditionDuration
+import ptl.kitsu.app.model.ExpeditionFunState
+import ptl.kitsu.app.model.ExpeditionStatus
+import ptl.kitsu.app.model.FUN_STATE_SCHEMA
+import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
@@ -13,8 +23,20 @@ import ptl.kitsu.app.model.MessagePage
 import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.MeshConfigurationReceipt
 import ptl.kitsu.app.model.NeedLevels
+import ptl.kitsu.app.model.NeighborInteractionCommand
+import ptl.kitsu.app.model.NeighborInteractionReceipt
+import ptl.kitsu.app.model.NearbyKitsuPage
+import ptl.kitsu.app.model.PartyFunState
+import ptl.kitsu.app.model.PartyPhase
+import ptl.kitsu.app.model.PartyReward
+import ptl.kitsu.app.model.PartyRewardTier
+import ptl.kitsu.app.model.PartyRole
+import ptl.kitsu.app.model.PartySignalChoice
 import ptl.kitsu.app.model.Peer
 import ptl.kitsu.app.model.PeerPage
+import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
+import ptl.kitsu.app.model.StoryFunState
+import ptl.kitsu.app.model.StoryStatus
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -34,8 +56,19 @@ class MockKitsuTransport(
     var connectedAddress: String? = null
     var meshConfigurationCount = 0
     var messagesCallCount = 0
+    var encounterDiscoveryCallCount = 0
     var mockChannels = listOf(MeshChannel(0, true, "Public"))
     var mockMessagePage: MessagePage? = null
+    var beforeStatus: (suspend () -> Unit)? = null
+    var beforeMessages: (suspend () -> Unit)? = null
+    var beforeNeighborInteraction: (suspend () -> Unit)? = null
+    var beforeFunMutation: (suspend () -> Unit)? = null
+    var mockEncounterDiscoveryPage = EncounterDiscoveryPage(
+        schema = "kitsu.encounter-discovery.v1",
+        items = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+            EncounterDiscoveryRecord(creature.packId, 0, null)
+        },
+    )
 
     override fun isConnectedTo(deviceAddress: String): Boolean =
         connectedAddress?.equals(deviceAddress, ignoreCase = true) == true
@@ -63,14 +96,64 @@ class MockKitsuTransport(
 
     override suspend fun disconnect() { disconnectCount++ }
     override suspend fun synchronizeClock() { clockSyncCount++ }
-    override suspend fun status(): KitsuStatus = mockStatus
+    override suspend fun status(): KitsuStatus {
+        beforeStatus?.invoke()
+        return mockStatus
+    }
     override suspend fun history(after: String?, limit: Int) = HistoryPage(mockHistory.takeLast(boundedLimit(limit)))
     override suspend fun peers() = PeerPage(mockPeers)
     override suspend fun messages(after: String?, limit: Int): MessagePage {
+        beforeMessages?.invoke()
         messagesCallCount += 1
         return mockMessagePage ?: MessagePage(mockMessages.takeLast(boundedLimit(limit)))
     }
     override suspend fun channels(firmwareVersion: String?): List<MeshChannel> = mockChannels
+    override suspend fun encounterCatalog() = EncounterCatalogPage(
+        ENCOUNTER_CATALOG_SCHEMA,
+        PUBLIC_ENCOUNTER_CATALOG,
+    )
+    override suspend fun encounterDiscovery(): EncounterDiscoveryPage {
+        encounterDiscoveryCallCount += 1
+        return mockEncounterDiscoveryPage
+    }
+    var mockNearbyKitsuPage = NearbyKitsuPage(ENCOUNTER_NEIGHBORS_SCHEMA)
+    var mockFunState = FunState(
+        schema = FUN_STATE_SCHEMA,
+        expedition = ExpeditionFunState(ExpeditionStatus.IDLE, null, null, 0, 0, 0, null),
+        story = StoryFunState(StoryStatus.IDLE, null, null),
+        party = PartyFunState(
+            role = PartyRole.NONE,
+            phase = PartyPhase.IDLE,
+            hostDeviceId = null,
+            sessionNonce = null,
+            discoveredHosts = emptyList(),
+            participantCount = 0,
+            participants = emptyList(),
+            round = 0,
+            localChoice = PartySignalChoice.NONE,
+            reward = PartyReward(PartyRewardTier.NONE, 0, 0, 0, 0, 0, 0, 0),
+        ),
+    )
+    var mockFunMutationResult: FunState? = null
+
+    override suspend fun nearbyKitsu() = mockNearbyKitsuPage
+    override suspend fun neighborInteraction(
+        command: NeighborInteractionCommand,
+    ): NeighborInteractionReceipt {
+        beforeNeighborInteraction?.invoke()
+        return NeighborInteractionReceipt(
+            schema = "kitsu.neighbor-action.v1",
+            actionId = command.actionId,
+            accepted = true,
+            state = "applied",
+        )
+    }
+    override suspend fun funState() = mockFunState
+    override suspend fun startExpedition(duration: ExpeditionDuration): FunState {
+        val result = mockFunMutationResult ?: mockFunState
+        beforeFunMutation?.invoke()
+        return result
+    }
     override suspend fun configureMesh(enabled: Boolean): MeshConfigurationReceipt {
         meshConfigurationCount++
         mockStatus = mockStatus.copy(mesh = mockStatus.mesh.copy(enabled = enabled))

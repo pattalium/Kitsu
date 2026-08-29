@@ -1,9 +1,12 @@
 package ptl.kitsu.app.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import ptl.kitsu.app.R
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
+import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 
 class FieldGuidePortraitsTest {
     @Test
@@ -39,5 +42,50 @@ class FieldGuidePortraitsTest {
     @Test
     fun unknownPackFallsBackToTheCompactCatalogPortrait() {
         assertNull(fieldGuidePortraitResource(0x12345678L))
+    }
+
+    @Test
+    fun liveNoCodeDiscoveriesBecomeSeenThroughTheHighQualityPortraitMap() {
+        val liveDiscovery = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+            when (creature.packId) {
+                0x5CAC86A3L -> EncounterDiscoveryRecord(
+                    packId = creature.packId,
+                    encounterCount = 1,
+                    lastSource = "mesh_advert_rx",
+                )
+                0x91A2DE7BL -> EncounterDiscoveryRecord(
+                    packId = creature.packId,
+                    encounterCount = 1,
+                    lastSource = "mesh_advert_tx",
+                )
+                else -> EncounterDiscoveryRecord(creature.packId, 0, null)
+            }
+        }
+
+        val entries = EncounterFieldGuidePolicy.build(
+            records = emptyList(),
+            activePackId = null,
+            discoveryRecords = liveDiscovery,
+        ).associateBy { it.creature.packId }
+
+        val frog = entries.getValue(0x5CAC86A3L)
+        assertEquals(FieldGuideDiscovery.SEEN, frog.discovery)
+        assertEquals(1, frog.encounterCount)
+        assertEquals("mesh_advert_rx", frog.lastSource)
+        assertEquals(R.drawable.guide_frog_idle, fieldGuidePortraitResource(frog.creature.packId))
+
+        val redPanda = entries.getValue(0x91A2DE7BL)
+        assertEquals(FieldGuideDiscovery.SEEN, redPanda.discovery)
+        assertEquals(1, redPanda.encounterCount)
+        assertEquals("mesh_advert_tx", redPanda.lastSource)
+        assertEquals(R.drawable.guide_red_panda_idle, fieldGuidePortraitResource(redPanda.creature.packId))
+
+        assertEquals(21, entries.size)
+        entries.values.forEach { entry ->
+            assertNotNull(
+                "${entry.creature.name} must not use the compact 16x18 fallback",
+                fieldGuidePortraitResource(entry.creature.packId),
+            )
+        }
     }
 }

@@ -9,11 +9,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import ptl.kitsu.app.model.EncounterRarity
 import ptl.kitsu.app.model.EncounterCatalogPage
+import ptl.kitsu.app.model.EncounterDiscoveryPage
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
 import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 
 class EncounterWireCodecTest {
+    private val exactJson = Json { encodeDefaults = true; explicitNulls = true }
+
     @Test
     fun catalogAcceptsOnlyTheExactTwentyOneCreaturePublicRoster() {
         val encoded = Json.encodeToString(
@@ -71,6 +75,92 @@ class EncounterWireCodecTest {
         assertEquals(4_294_967_295L, code.packId)
         assertTrue(code.installed)
         assertTrue(code.redeemed)
+    }
+
+    @Test
+    fun discoveryAcceptsExactTwentyOnePackUnsignedCountsAndSources() {
+        val records = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+            EncounterDiscoveryRecord(creature.packId, 0, null)
+        }.map { record ->
+            if (record.packId == 0xF0F750BDL) record.copy(
+                encounterCount = 65_535,
+                lastSource = "mesh_advert_rx",
+            ) else record
+        }
+        val encoded = exactJson.encodeToString(
+            EncounterDiscoveryPage("kitsu.encounter-discovery.v1", records),
+        )
+
+        val decoded = EncounterWireCodec.discovery(encoded.toByteArray())
+
+        assertEquals(21, decoded.items.size)
+        assertEquals(0xF0F750BDL, decoded.items.single { it.encounterCount > 0 }.packId)
+        assertEquals(65_535, decoded.items.single { it.encounterCount > 0 }.encounterCount)
+        assertEquals("mesh_advert_rx", decoded.items.single { it.encounterCount > 0 }.lastSource)
+    }
+
+    @Test
+    fun discoveryRejectsMalformedDuplicateOutOfRangeSourceAndNonExactKeys() {
+        val valid = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+            EncounterDiscoveryRecord(creature.packId, 0, null)
+        }
+        val invalidPages = listOf(
+            EncounterDiscoveryPage("wrong", valid),
+            EncounterDiscoveryPage("kitsu.encounter-discovery.v1", valid.dropLast(1)),
+            EncounterDiscoveryPage(
+                "kitsu.encounter-discovery.v1",
+                valid.dropLast(1) + valid.first(),
+            ),
+            EncounterDiscoveryPage(
+                "kitsu.encounter-discovery.v1",
+                valid.mapIndexed { index, item ->
+                    if (index == 0) item.copy(packId = 4_294_967_296L) else item
+                },
+            ),
+            EncounterDiscoveryPage(
+                "kitsu.encounter-discovery.v1",
+                valid.mapIndexed { index, item ->
+                    if (index == 0) item.copy(encounterCount = 65_536, lastSource = "mesh_peer") else item
+                },
+            ),
+            EncounterDiscoveryPage(
+                "kitsu.encounter-discovery.v1",
+                valid.mapIndexed { index, item ->
+                    if (index == 0) item.copy(encounterCount = 0, lastSource = "mesh_peer") else item
+                },
+            ),
+            EncounterDiscoveryPage(
+                "kitsu.encounter-discovery.v1",
+                valid.mapIndexed { index, item ->
+                    if (index == 0) item.copy(encounterCount = 1, lastSource = null) else item
+                },
+            ),
+            EncounterDiscoveryPage(
+                "kitsu.encounter-discovery.v1",
+                valid.mapIndexed { index, item ->
+                    if (index == 0) item.copy(encounterCount = 1, lastSource = "direct_encounter") else item
+                },
+            ),
+        )
+        invalidPages.forEach { page ->
+            val failure = runCatching {
+                EncounterWireCodec.discovery(exactJson.encodeToString(page).toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_encounter_discovery", failure.code)
+        }
+
+        val validJson = exactJson.encodeToString(
+            EncounterDiscoveryPage("kitsu.encounter-discovery.v1", valid),
+        )
+        listOf(
+            validJson.replaceFirst("{\"schema\"", "{\"extra\":1,\"schema\""),
+            validJson.replaceFirst("\"last_source\":null", "\"last_source\":null,\"extra\":1"),
+        ).forEach { payload ->
+            val failure = runCatching {
+                EncounterWireCodec.discovery(payload.toByteArray())
+            }.exceptionOrNull() as TransportException
+            assertEquals("malformed_encounter_discovery", failure.code)
+        }
     }
 
     @Test

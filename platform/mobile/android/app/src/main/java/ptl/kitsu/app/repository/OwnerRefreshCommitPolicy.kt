@@ -3,6 +3,7 @@ package ptl.kitsu.app.repository
 import ptl.kitsu.app.connection.ConnectionState
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.EncounterCatalogCreature
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
 import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.MeshChannel
@@ -19,6 +20,10 @@ internal data class OwnerNonMessageSnapshot(
     val encounterCatalog: List<EncounterCatalogCreature> = emptyList(),
     val encounterCatalogSupported: Boolean = false,
     val encounterCatalogErrorCode: String? = null,
+    val encounterDiscovery: List<EncounterDiscoveryRecord> = emptyList(),
+    val encounterDiscoveryDeviceId: String? = null,
+    val encounterDiscoverySupported: Boolean = false,
+    val encounterDiscoveryErrorCode: String? = null,
     val nearbyKitsu: List<NearbyKitsu> = emptyList(),
     val nearbyKitsuSupported: Boolean = false,
     val nearbyInteractionKinds: Set<NeighborInteractionKind> = emptySet(),
@@ -31,8 +36,14 @@ internal data class OwnerNonMessageSnapshot(
 
 /** Applies slow endpoint results without overwriting a newer messages-only commit. */
 internal object OwnerRefreshCommitPolicy {
-    fun apply(current: OwnerState, snapshot: OwnerNonMessageSnapshot): OwnerState = current.copy(
-        connection = snapshot.connection,
+    fun apply(
+        current: OwnerState,
+        snapshot: OwnerNonMessageSnapshot,
+        connection: ConnectionState = snapshot.connection,
+    ): OwnerState = current.copy(
+        // Connection is sampled at commit time by the repository. A slow refresh
+        // must never resurrect the captured pre-disconnect link state.
+        connection = connection,
         status = snapshot.status,
         history = snapshot.history,
         peers = snapshot.peers,
@@ -40,6 +51,10 @@ internal object OwnerRefreshCommitPolicy {
         encounterCatalog = snapshot.encounterCatalog,
         encounterCatalogSupported = snapshot.encounterCatalogSupported,
         encounterCatalogErrorCode = snapshot.encounterCatalogErrorCode,
+        encounterDiscovery = snapshot.encounterDiscovery,
+        encounterDiscoveryDeviceId = snapshot.encounterDiscoveryDeviceId,
+        encounterDiscoverySupported = snapshot.encounterDiscoverySupported,
+        encounterDiscoveryErrorCode = snapshot.encounterDiscoveryErrorCode,
         nearbyKitsu = snapshot.nearbyKitsu,
         nearbyKitsuSupported = snapshot.nearbyKitsuSupported,
         nearbyInteractionKinds = snapshot.nearbyInteractionKinds,

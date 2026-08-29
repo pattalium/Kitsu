@@ -1,8 +1,10 @@
 package ptl.kitsu.app.transport
 
 import java.util.UUID
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -24,6 +26,53 @@ class GattCallbackBindingPolicyTest {
         assertFalse(GattCallbackBindingPolicy.accepts(activeGatt, staleGatt))
         assertFalse(GattCallbackBindingPolicy.accepts(null, staleGatt))
         assertTrue(GattCallbackBindingPolicy.accepts(activeGatt, activeGatt))
+    }
+
+    @Test fun postHandshakeSessionCannotPublishOntoAClosedOrReplacedGeneration() {
+        val negotiatedGatt = Any()
+        val replacementGatt = Any()
+
+        assertTrue(GattSessionPublicationPolicy.accepts(negotiatedGatt, negotiatedGatt, 8, 8))
+        assertFalse(GattSessionPublicationPolicy.accepts(replacementGatt, negotiatedGatt, 8, 8))
+        assertFalse(GattSessionPublicationPolicy.accepts(negotiatedGatt, negotiatedGatt, 9, 8))
+        assertFalse(GattSessionPublicationPolicy.accepts(null, negotiatedGatt, 9, 8))
+    }
+
+    @Test fun clockSyncRetainsAuthenticatedFirmwareAndTransportFailureCodes() {
+        assertEquals(
+            "system_clock_failed",
+            ClockSyncFailurePolicy.code(TransportException("system_clock_failed")),
+        )
+        assertEquals(
+            "sequence_violation",
+            ClockSyncFailurePolicy.code(TransportException("sequence_violation")),
+        )
+        assertEquals("clock_sync_failed", ClockSyncFailurePolicy.code(IllegalStateException("boom")))
+    }
+
+    @Test fun controllerRootIsZeroizedOnSuccessAndExceptionalExit() {
+        val successfulRoot = byteArrayOf(1, 2, 3, 4)
+        assertEquals("derived", ControllerRootUsePolicy.withZeroized(successfulRoot) { "derived" })
+        assertArrayEquals(ByteArray(successfulRoot.size), successfulRoot)
+
+        val failedRoot = byteArrayOf(5, 6, 7, 8)
+        assertThrows(IllegalStateException::class.java) {
+            ControllerRootUsePolicy.withZeroized(failedRoot) { error("handshake_stopped") }
+        }
+        assertArrayEquals(ByteArray(failedRoot.size), failedRoot)
+
+        val malformedLengthRoot = byteArrayOf(9, 10, 11)
+        assertThrows(IllegalArgumentException::class.java) {
+            ControllerRootUsePolicy.withZeroized(malformedLengthRoot) {
+                require(malformedLengthRoot.size == 32) { "invalid_controller_root_length" }
+            }
+        }
+        assertArrayEquals(ByteArray(malformedLengthRoot.size), malformedLengthRoot)
+    }
+
+    @Test fun detachedGattTimeoutGenerationCannotExpireItsReplacement() {
+        assertTrue(GattFrameTimeoutGenerationPolicy.accepts(12, 12))
+        assertFalse(GattFrameTimeoutGenerationPolicy.accepts(13, 12))
     }
 
     @Test fun peerSecurityTerminationBecomesAnActionableRepairCode() {

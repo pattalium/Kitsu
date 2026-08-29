@@ -4,6 +4,8 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import ptl.kitsu.app.model.HistoryEntry
+import ptl.kitsu.app.model.EncounterDiscoveryPolicy
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.Message
 import ptl.kitsu.app.model.MeshChannel
@@ -30,7 +32,42 @@ data class CacheSnapshot(
     val historyCursor: String? = null,
     val messageCursor: String? = null,
     val writtenAt: Long,
+    val deviceAddress: String? = null,
+    val encounterDiscoveryDeviceId: String? = null,
+    val encounterDiscovery: List<EncounterDiscoveryRecord> = emptyList(),
 )
+
+internal data class CachedEncounterDiscovery(
+    val deviceId: String,
+    val records: List<EncounterDiscoveryRecord>,
+)
+
+/** Device-derived rows are usable only for the credential that wrote the snapshot. */
+internal object OwnerCacheBindingPolicy {
+    fun restore(snapshot: CacheSnapshot?, activeDeviceAddress: String?): CacheSnapshot? {
+        val address = activeDeviceAddress ?: return null
+        return snapshot?.takeIf { cached ->
+            cached.deviceAddress?.equals(address, ignoreCase = true) == true
+        }
+    }
+}
+
+/** Prevents an encrypted snapshot for one saved Kitsu from populating another's Guide. */
+internal object EncounterDiscoveryCachePolicy {
+    fun restore(
+        snapshot: CacheSnapshot?,
+        activeDeviceAddress: String?,
+    ): CachedEncounterDiscovery? {
+        snapshot ?: return null
+        val address = activeDeviceAddress ?: return null
+        if (!snapshot.deviceAddress.equals(address, ignoreCase = true)) return null
+        val deviceId = snapshot.encounterDiscoveryDeviceId ?: return null
+        if (snapshot.status?.deviceId != deviceId ||
+            !EncounterDiscoveryPolicy.isExactPublicDiscovery(snapshot.encounterDiscovery)
+        ) return null
+        return CachedEncounterDiscovery(deviceId, snapshot.encounterDiscovery)
+    }
+}
 
 object CachePolicy {
     const val MAX_HISTORY = 256

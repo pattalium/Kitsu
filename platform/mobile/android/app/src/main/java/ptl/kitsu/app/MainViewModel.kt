@@ -269,6 +269,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun syncEncounterCodes() = viewModelScope.launch {
         if (rejectWhileFirmwareBusy()) return@launch
+        // The Guide combines the encrypted code vault with the device's full
+        // discovery ledger, including encounters that did not reveal a code.
+        repository.refresh()
         syncEncounterCodesInternal(silent = false)
     }
 

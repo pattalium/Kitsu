@@ -38,7 +38,46 @@ class GattFrameCodecTest {
     @Test fun productionDeadlineMatchesFirmwareBoundary() {
         val decoder = GattFrameDecoder()
         decoder.accept(byteArrayOf(0, 0, 0, 2, 1), 0)
-        assertFalse(decoder.expire(9_999))
-        assertTrue(decoder.expire(10_000))
+        assertEquals(30_000L, decoder.deadlineRemainingMillis(0))
+        assertFalse(decoder.expire(29_999))
+        assertEquals(1L, decoder.deadlineRemainingMillis(29_999))
+        assertTrue(decoder.expire(30_000))
+    }
+
+    @Test fun maximumMtu23ResponseMaySpanMoreThanTenSecondsWithinTheRealBound() {
+        val payload = ByteArray(MAX_GATT_JSON_BYTES) { (it and 0xff).toByte() }
+        val frame = encodeGattFrame(payload)
+        val decoder = GattFrameDecoder()
+        var offset = 0
+        var now = 0L
+        var complete = FrameDecodeResult()
+        while (offset < frame.size) {
+            val end = minOf(offset + 20, frame.size)
+            complete = decoder.accept(frame.copyOfRange(offset, end), now)
+            assertEquals(null, complete.error)
+            offset = end
+            now += 15L
+        }
+
+        assertTrue(now > 10_000L)
+        assertTrue(now < GATT_FRAME_TIMEOUT_MILLIS)
+        assertArrayEquals(payload, complete.frames.single())
+        assertFalse(decoder.hasPartialFrame())
+    }
+
+    @Test fun disconnectClearPreventsOldFragmentsFromPoisoningAReplacementLink() {
+        val decoder = GattFrameDecoder(timeoutMillis = 30_000)
+        val oldFrame = encodeGattFrame("old-link".toByteArray())
+        decoder.accept(oldFrame.copyOfRange(0, 6), nowMillis = 1)
+        assertTrue(decoder.hasPartialFrame())
+
+        decoder.clear()
+        assertFalse(decoder.hasPartialFrame())
+        assertFalse(decoder.expire(nowMillis = 30_001))
+
+        val replacementPayload = "replacement-link".toByteArray()
+        val replacement = decoder.accept(encodeGattFrame(replacementPayload), nowMillis = 30_002)
+        assertEquals(null, replacement.error)
+        assertArrayEquals(replacementPayload, replacement.frames.single())
     }
 }

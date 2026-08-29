@@ -4,12 +4,16 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import ptl.kitsu.app.model.ENCOUNTER_CODES_SCHEMA
 import ptl.kitsu.app.model.ENCOUNTER_CATALOG_SCHEMA
+import ptl.kitsu.app.model.ENCOUNTER_DISCOVERY_SCHEMA
 import ptl.kitsu.app.model.ENCOUNTER_NEIGHBORS_SCHEMA
 import ptl.kitsu.app.model.EncounterCatalogPage
 import ptl.kitsu.app.model.EncounterCatalogPolicy
+import ptl.kitsu.app.model.EncounterDiscoveryPage
+import ptl.kitsu.app.model.EncounterDiscoveryPolicy
 import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.NearbyKitsuPage
@@ -65,6 +69,29 @@ internal object EncounterWireCodec {
         return page.copy(items = PUBLIC_ENCOUNTER_CATALOG)
     }
 
+    fun discovery(payload: ByteArray): EncounterDiscoveryPage {
+        val encoded = payload.toString(Charsets.UTF_8)
+        val page = try {
+            val root = json.parseToJsonElement(encoded).jsonObject
+            if (root.keys != DISCOVERY_PAGE_KEYS) throw IllegalArgumentException("page_keys")
+            root.getValue("items").jsonArray.forEach { item ->
+                if (item.jsonObject.keys != DISCOVERY_ITEM_KEYS) {
+                    throw IllegalArgumentException("item_keys")
+                }
+            }
+            json.decodeFromString<EncounterDiscoveryPage>(encoded)
+        } catch (failure: Throwable) {
+            throw TransportException("malformed_encounter_discovery", failure)
+        }
+        if (
+            page.schema != ENCOUNTER_DISCOVERY_SCHEMA ||
+            !EncounterDiscoveryPolicy.isExactPublicDiscovery(page.items)
+        ) {
+            throw TransportException("malformed_encounter_discovery")
+        }
+        return page
+    }
+
     fun neighborActionBody(command: NeighborInteractionCommand): JsonObject {
         NeighborInteractionPolicy.validationError(command)?.let { code ->
             throw TransportException(code)
@@ -91,6 +118,9 @@ internal object EncounterWireCodec {
         }
         return page.copy(items = page.items.sortedBy { it.lastSeenAgeMs })
     }
+
+    private val DISCOVERY_PAGE_KEYS = setOf("schema", "items")
+    private val DISCOVERY_ITEM_KEYS = setOf("pack_id", "encounter_count", "last_source")
 
     fun neighborActionReceipt(
         payload: ByteArray,

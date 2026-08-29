@@ -301,8 +301,11 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         )[1].split("fun cancelBluetoothPairingRepair", 1)[0]
         self.assertEqual(
             repair_repository.count("coordinator.connect(userInitiated = true)"),
-            1,
+            2,
         )
+        self.assertIn("postBondRetries = 0", repair_repository)
+        self.assertIn("BluetoothPairingRepairPolicy.shouldRetryPostBondGatt", repair_repository)
+        self.assertIn("postBondRetries += 1", repair_repository)
         self.assertNotIn("pairController(", repair_repository)
         self.assertNotIn("saveBondedCompanion", repair_repository)
         self.assertNotIn("removeBondedCompanion", repair_repository)

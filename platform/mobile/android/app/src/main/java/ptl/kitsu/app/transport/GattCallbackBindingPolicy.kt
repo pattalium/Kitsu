@@ -10,6 +10,37 @@ internal object GattCallbackBindingPolicy {
         accepts(activeGatt, callbackGatt) && expected == actual
 }
 
+/** A derived envelope session may only be published onto the GATT that negotiated it. */
+internal object GattSessionPublicationPolicy {
+    fun accepts(
+        activeGatt: Any?,
+        expectedGatt: Any,
+        activeGeneration: Long,
+        expectedGeneration: Long,
+    ): Boolean = activeGatt === expectedGatt && activeGeneration == expectedGeneration
+}
+
+/** Keeps an authenticated firmware clock rejection distinguishable from transport loss. */
+internal object ClockSyncFailurePolicy {
+    fun code(failure: Throwable): String =
+        (failure as? TransportException)?.code ?: "clock_sync_failed"
+}
+
+/** Guarantees decoded controller-root material is erased on success, failure, or early return. */
+internal object ControllerRootUsePolicy {
+    inline fun <T> withZeroized(root: ByteArray, block: () -> T): T = try {
+        block()
+    } finally {
+        root.fill(0)
+    }
+}
+
+/** A timer posted by a detached link may never expire a replacement link's decoder. */
+internal object GattFrameTimeoutGenerationPolicy {
+    fun accepts(activeGeneration: Long, scheduledGeneration: Long): Boolean =
+        activeGeneration == scheduledGeneration
+}
+
 /** Maps Android's numeric GATT failures to stable, actionable app diagnostics. */
 internal object GattStatusPolicy {
     fun connectionFailure(status: Int): String = when (status) {

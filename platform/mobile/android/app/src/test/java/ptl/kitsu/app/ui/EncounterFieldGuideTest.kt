@@ -5,6 +5,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ptl.kitsu.app.model.EncounterRarity
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
+import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 import ptl.kitsu.app.model.EncounterUnlockCode
 
 class EncounterFieldGuideTest {
@@ -88,6 +90,72 @@ class EncounterFieldGuideTest {
         )
 
         assertEquals(FieldGuideDiscovery.OWNED, guide.named("Okapi").discovery)
+    }
+
+    @Test
+    fun noCodeDiscoveryBecomesSeenAndFirmwareCountDoesNotDoubleCountCodeRecords() {
+        val discovery = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+            when (creature.name) {
+                "Frog" -> EncounterDiscoveryRecord(creature.packId, 2, "mesh_peer")
+                "Turtle" -> EncounterDiscoveryRecord(creature.packId, 1, "mesh_message_rx")
+                else -> EncounterDiscoveryRecord(creature.packId, 0, null)
+            }
+        }
+        val guide = EncounterFieldGuidePolicy.build(
+            records = listOf(
+                encounter(
+                    codeId = "frog:code-for-one-of-two",
+                    packId = 0x5CAC86A3L,
+                    source = "mesh_repeater",
+                    acquiredAt = 100,
+                ),
+            ),
+            activePackId = null,
+            discoveryRecords = discovery,
+        )
+
+        val frog = guide.named("Frog")
+        assertEquals(FieldGuideDiscovery.SEEN, frog.discovery)
+        assertEquals(2, frog.encounterCount)
+        assertEquals("mesh_peer", frog.lastSource)
+
+        val noCodeTurtle = guide.named("Turtle")
+        assertEquals(FieldGuideDiscovery.SEEN, noCodeTurtle.discovery)
+        assertEquals(1, noCodeTurtle.encounterCount)
+        assertEquals("mesh_message_rx", noCodeTurtle.lastSource)
+    }
+
+    @Test
+    fun codeCountIsOnlyTheFallbackWhenNoAuthoritativeDiscoveryPageExists() {
+        val codes = listOf(
+            encounter("ferret:1", 0xE59408E0L, acquiredAt = 1),
+            encounter("ferret:2", 0xE59408E0L, acquiredAt = 2),
+        )
+
+        assertEquals(2, EncounterFieldGuidePolicy.build(codes, null).named("Ferret").encounterCount)
+
+        val authoritativeZero = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+            EncounterDiscoveryRecord(creature.packId, 0, null)
+        }
+        val withDeviceLedger = EncounterFieldGuidePolicy.build(
+            records = codes,
+            activePackId = null,
+            discoveryRecords = authoritativeZero,
+        ).named("Ferret")
+        assertEquals(FieldGuideDiscovery.SEEN, withDeviceLedger.discovery)
+        assertEquals(0, withDeviceLedger.encounterCount)
+    }
+
+    @Test
+    fun discoveryRefreshErrorOnlyClaimsLastCountsWhenADevicePageExists() {
+        assertEquals(
+            "Live encounter notes could not refresh; no verified device counts are available yet.",
+            encounterDiscoveryRefreshErrorCopy(hasVerifiedCounts = false),
+        )
+        assertEquals(
+            "Live encounter notes could not refresh; showing the last verified device counts.",
+            encounterDiscoveryRefreshErrorCopy(hasVerifiedCounts = true),
+        )
     }
 
     private fun List<FieldGuideEntry>.named(name: String): FieldGuideEntry = single {

@@ -2,11 +2,15 @@ package ptl.kitsu.app
 
 import ptl.kitsu.app.cache.CachePolicy
 import ptl.kitsu.app.cache.CacheSnapshot
+import ptl.kitsu.app.cache.EncounterDiscoveryCachePolicy
+import ptl.kitsu.app.cache.OwnerCacheBindingPolicy
 import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.ActionPolicy
 import ptl.kitsu.app.model.ChannelRegionScope
 import ptl.kitsu.app.model.HistoryEntry
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
+import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.LastFloodAdvert
 import ptl.kitsu.app.model.LastNearbyAdvert
@@ -82,6 +86,69 @@ class PolicyAndStorageTest {
         val bounded = CachePolicy.bounded(CacheSnapshot(history = entries, writtenAt = 1))
         assertEquals(CachePolicy.MAX_HISTORY, bounded.history.size)
         assertEquals("45", bounded.history.first().id)
+    }
+
+    @Test fun discoveryCacheRestoresOnlyForTheExactSavedDeviceAndAuthenticatedDeviceId() {
+        val records = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
+            EncounterDiscoveryRecord(creature.packId, 0, null)
+        }
+        val snapshot = CacheSnapshot(
+            status = KitsuStatus(deviceId = "KT0001", companionName = "Fox", updatedAt = 1),
+            writtenAt = 1,
+            deviceAddress = "00:11:22:33:44:55",
+            encounterDiscoveryDeviceId = "KT0001",
+            encounterDiscovery = records,
+        )
+
+        assertEquals(
+            records,
+            EncounterDiscoveryCachePolicy.restore(snapshot, "00:11:22:33:44:55")?.records,
+        )
+        assertNull(EncounterDiscoveryCachePolicy.restore(snapshot, "AA:BB:CC:DD:EE:FF"))
+        assertNull(
+            EncounterDiscoveryCachePolicy.restore(
+                snapshot.copy(encounterDiscoveryDeviceId = "KT0002"),
+                "00:11:22:33:44:55",
+            ),
+        )
+        assertNull(
+            EncounterDiscoveryCachePolicy.restore(
+                snapshot.copy(encounterDiscovery = records.dropLast(1)),
+                "00:11:22:33:44:55",
+            ),
+        )
+    }
+
+    @Test fun entireCachedOwnerSnapshotRequiresTheExactSavedDeviceAddress() {
+        val snapshot = CacheSnapshot(
+            status = KitsuStatus(deviceId = "KT-A", companionName = "A", updatedAt = 1),
+            history = listOf(HistoryEntry("A:1", "1", "mesh", "heard", 1)),
+            messages = listOf(
+                Message(
+                    id = "A:1",
+                    cursor = "1",
+                    direction = "inbound",
+                    text = "hello",
+                    state = "received",
+                    occurredAt = 1,
+                ),
+            ),
+            writtenAt = 1,
+            deviceAddress = "AA:BB:CC:DD:EE:FF",
+        )
+
+        val restored = OwnerCacheBindingPolicy.restore(snapshot, "aa:bb:cc:dd:ee:ff")
+        assertEquals("KT-A", restored?.status?.deviceId)
+        assertEquals(listOf("A:1"), restored?.history?.map(HistoryEntry::id))
+        assertEquals(listOf("A:1"), restored?.messages?.map(Message::id))
+        assertNull(OwnerCacheBindingPolicy.restore(snapshot, "00:11:22:33:44:55"))
+        assertNull(OwnerCacheBindingPolicy.restore(snapshot, null))
+        assertNull(
+            OwnerCacheBindingPolicy.restore(
+                snapshot.copy(deviceAddress = null),
+                "AA:BB:CC:DD:EE:FF",
+            ),
+        )
     }
 
     @Test fun cacheKeepsRepeatCountAndReadsRowsWrittenBeforeTheFieldExisted() {

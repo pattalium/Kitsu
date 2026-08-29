@@ -18,6 +18,7 @@ import ptl.kitsu.app.model.FUN_STATE_GET_OPERATION
 import ptl.kitsu.app.model.FUN_STORY_ADVANCE_OPERATION
 import ptl.kitsu.app.model.FUN_STORY_CHOOSE_OPERATION
 import ptl.kitsu.app.model.FUN_STORY_START_OPERATION
+import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.FunStatePolicy
 import ptl.kitsu.app.model.PartyJoinCommand
 import ptl.kitsu.app.model.PartyRoundCommand
@@ -195,7 +196,9 @@ class FunWireCodecTest {
 
     @Test
     fun transportDefaultsKeepExistingMocksSourceCompatible() = runBlocking {
-        val transport = MockKitsuTransport()
+        val transport = object : KitsuTransport by MockKitsuTransport() {
+            override suspend fun funState(): FunState = super<KitsuTransport>.funState()
+        }
         val failure = runCatching { transport.funState() }.exceptionOrNull() as TransportException
         assertEquals("firmware_operation_unavailable", failure.code)
     }

@@ -6,10 +6,12 @@ import java.util.UUID
 
 const val ENCOUNTER_CODES_OPERATION = "encounter.codes.get.v1"
 const val ENCOUNTER_CATALOG_OPERATION = "encounter.catalog.get.v1"
+const val ENCOUNTER_DISCOVERY_OPERATION = "encounter.discovery.get.v1"
 const val ENCOUNTER_NEIGHBORS_OPERATION = "encounter.neighbors.get.v1"
 const val NEIGHBOR_ACTION_OPERATION = "encounter.neighbor.action.v1"
 const val ENCOUNTER_CODES_SCHEMA = "kitsu.encounter-codes.v1"
 const val ENCOUNTER_CATALOG_SCHEMA = "kitsu.encounter-catalog.v1"
+const val ENCOUNTER_DISCOVERY_SCHEMA = "kitsu.encounter-discovery.v1"
 const val ENCOUNTER_NEIGHBORS_SCHEMA = "kitsu.encounter-neighbors.v1"
 const val NEIGHBOR_ACTION_RECEIPT_SCHEMA = "kitsu.neighbor-action-receipt.v1"
 
@@ -35,6 +37,19 @@ data class EncounterCatalogCreature(
 data class EncounterCatalogPage(
     val schema: String,
     val items: List<EncounterCatalogCreature> = emptyList(),
+)
+
+@Serializable
+data class EncounterDiscoveryRecord(
+    @SerialName("pack_id") val packId: Long,
+    @SerialName("encounter_count") val encounterCount: Int,
+    @SerialName("last_source") val lastSource: String? = null,
+)
+
+@Serializable
+data class EncounterDiscoveryPage(
+    val schema: String,
+    val items: List<EncounterDiscoveryRecord> = emptyList(),
 )
 
 /** Public 21-creature roster; also provides an offline guide when Kitsu is disconnected. */
@@ -67,6 +82,34 @@ object EncounterCatalogPolicy {
 
     fun isExactPublicCatalog(items: List<EncounterCatalogCreature>): Boolean =
         items.size == ITEM_COUNT && items.toSet() == PUBLIC_ENCOUNTER_CATALOG.toSet()
+}
+
+object EncounterDiscoveryPolicy {
+    const val MAX_ENCOUNTER_COUNT = 65_535
+    val LAST_SOURCES: Set<String> = setOf(
+        "mesh_repeater",
+        "mesh_peer",
+        "mesh_message_tx",
+        "mesh_message_rx",
+        "mesh_advert_tx",
+        "mesh_advert_rx",
+        "mesh_other",
+        "kitsu_neighbor",
+    )
+
+    fun isExactPublicDiscovery(items: List<EncounterDiscoveryRecord>): Boolean =
+        items.size == EncounterCatalogPolicy.ITEM_COUNT &&
+            items.map(EncounterDiscoveryRecord::packId) ==
+            PUBLIC_ENCOUNTER_CATALOG.map(EncounterCatalogCreature::packId) &&
+            items.all { item ->
+                item.packId in 0L..EncounterCodePolicy.UINT32_MAX &&
+                    item.encounterCount in 0..MAX_ENCOUNTER_COUNT &&
+                    if (item.encounterCount == 0) {
+                        item.lastSource == null
+                    } else {
+                        item.lastSource in LAST_SOURCES
+                    }
+            }
 }
 
 @Serializable

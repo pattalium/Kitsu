@@ -29,10 +29,12 @@ import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
 import ptl.kitsu.app.model.ENCOUNTER_CODES_OPERATION
 import ptl.kitsu.app.model.ENCOUNTER_CATALOG_OPERATION
+import ptl.kitsu.app.model.ENCOUNTER_DISCOVERY_OPERATION
 import ptl.kitsu.app.model.ENCOUNTER_NEIGHBORS_OPERATION
 import ptl.kitsu.app.model.EncounterCatalogPage
 import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EncounterCodePolicy
+import ptl.kitsu.app.model.EncounterDiscoveryPage
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.ExpeditionDuration
 import ptl.kitsu.app.model.FUN_EXPEDITION_CLAIM_OPERATION
@@ -136,6 +138,12 @@ class BleKitsuTransport(
         val deferred: CompletableDeferred<ByteArray>,
     )
 
+    private data class HandshakeAttempt(
+        val gatt: BluetoothGatt,
+        val generation: Long,
+        val result: Result<SecureEnvelopeSession>?,
+    )
+
     private sealed interface DeviceScan {
         data class Found(val device: BluetoothDevice) : DeviceScan
         data object Absent : DeviceScan
@@ -154,8 +162,10 @@ class BleKitsuTransport(
     )
     private val frameTimeoutHandler = android.os.Handler(context.mainLooper)
     private var frameTimeoutGeneration = 0L
+    private val handshakeTransition = HandshakeEnvelopeTransition()
 
     @Volatile private var gatt: BluetoothGatt? = null
+    @Volatile private var activeGattGeneration = 0L
     @Volatile private var writeCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var notifyCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var negotiatedMtu: Int = 23
@@ -191,9 +201,10 @@ class BleKitsuTransport(
                 disconnect()
                 throw cancelled
             } catch (failure: Throwable) {
-                SafeLog.warn("ble_clock", "clock_sync_failed", failure)
+                val code = ClockSyncFailurePolicy.code(failure)
+                SafeLog.warn("ble_clock", code, failure)
                 disconnect()
-                ConnectResult.Failed("clock_sync_failed")
+                ConnectResult.Failed(code)
             }
         }
 
@@ -538,11 +549,17 @@ class BleKitsuTransport(
     @SuppressLint("MissingPermission")
     private suspend fun openPairingGatt(device: BluetoothDevice): ConnectResult {
         disconnect()
-        lastGattFailureCode = null
         val ready = CompletableDeferred<ConnectResult>()
-        connectionReady = ready
-        negotiatedMtu = 23
-        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        synchronized(this) {
+            lastGattFailureCode = null
+            connectionReady = ready
+            negotiatedMtu = 23
+            activeGattGeneration += 1L
+            frameDecoder.clear()
+            pairingFrameDecoder.clear()
+            frameTimeoutGeneration += 1L
+            gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        }
         return withTimeoutOrNull(CONNECT_TIMEOUT_MILLIS) { ready.await() }
             ?: ConnectResult.Failed("gatt_timeout")
     }
@@ -624,9 +641,15 @@ class BleKitsuTransport(
             is DeviceScan.Failed -> return ConnectResult.Failed(scan.code)
         }
         val ready = CompletableDeferred<ConnectResult>()
-        connectionReady = ready
-        negotiatedMtu = 23
-        gatt = seen.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        synchronized(this) {
+            connectionReady = ready
+            negotiatedMtu = 23
+            activeGattGeneration += 1L
+            frameDecoder.clear()
+            pairingFrameDecoder.clear()
+            frameTimeoutGeneration += 1L
+            gatt = seen.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        }
         val result = withTimeoutOrNull(CONNECT_TIMEOUT_MILLIS) { ready.await() }
             ?: ConnectResult.Failed("gatt_timeout")
         if (result != ConnectResult.Connected) {
@@ -643,20 +666,37 @@ class BleKitsuTransport(
         }
         val controllerRoot = runCatching {
             SecureEnvelopeSession.decodeUrl(profile.controllerRootB64, "invalid_controller_root")
-                .also { require(it.size == 32) }
         }.getOrElse {
             disconnect()
             return ConnectResult.Failed("invalid_controller_capability")
         }
-        val handshake = withTimeoutOrNull(CapabilityHandshake.HANDSHAKE_TIMEOUT_MILLIS) {
-            runCatching {
-                CapabilityHandshake().perform(controllerId, controllerRoot, ::exchangeHandshake)
+        val attempt = ControllerRootUsePolicy.withZeroized(controllerRoot) {
+            if (controllerRoot.size != 32) {
+                disconnect()
+                return ConnectResult.Failed("invalid_controller_capability")
             }
+            val binding = synchronized(this) {
+                val activeGatt = gatt ?: return ConnectResult.Failed("gatt_disconnected")
+                activeGatt to activeGattGeneration
+            }
+            handshakeTransition.begin(binding.second)
+            HandshakeAttempt(
+                gatt = binding.first,
+                generation = binding.second,
+                result = withTimeoutOrNull(CapabilityHandshake.HANDSHAKE_TIMEOUT_MILLIS) {
+                    runCatching {
+                        CapabilityHandshake().perform(controllerId, controllerRoot, ::exchangeHandshake)
+                    }
+                },
+            )
         }
+        val handshakeGatt = attempt.gatt
+        val handshakeGeneration = attempt.generation
+        val handshake = attempt.result
         val session = handshake?.getOrNull()
         val handshakeCode = (handshake?.exceptionOrNull() as? HandshakeException)?.code
-        controllerRoot.fill(0)
         if (session == null) {
+            handshakeTransition.clear()
             failedProofs++
             if (failedProofs >= MAX_FAILED_PROOFS) {
                 proofBackoffUntilMillis = android.os.SystemClock.elapsedRealtime() + PROOF_BACKOFF_MILLIS
@@ -672,17 +712,55 @@ class BleKitsuTransport(
             )
         }
         failedProofs = 0
-        envelopeSession = session
-        connectedDeviceAddress = profile.deviceAddress
+        val sessionPublished = synchronized(this) {
+            if (!GattSessionPublicationPolicy.accepts(
+                    activeGatt = gatt,
+                    expectedGatt = handshakeGatt,
+                    activeGeneration = activeGattGeneration,
+                    expectedGeneration = handshakeGeneration,
+                ) || !handshakeTransition.isActive(handshakeGeneration)
+            ) {
+                false
+            } else {
+                envelopeSession = session
+                true
+            }
+        }
+        if (!sessionPublished || !drainHandshakeTransition(handshakeGatt, handshakeGeneration)) {
+            val code = lastGattFailureCode ?: "gatt_disconnected"
+            handshakeTransition.clear()
+            disconnect()
+            return ConnectResult.Failed(code)
+        }
+        val addressPublished = synchronized(this) {
+            if (!GattSessionPublicationPolicy.accepts(
+                    activeGatt = gatt,
+                    expectedGatt = handshakeGatt,
+                    activeGeneration = activeGattGeneration,
+                    expectedGeneration = handshakeGeneration,
+                ) || envelopeSession !== session
+            ) {
+                false
+            } else {
+                connectedDeviceAddress = profile.deviceAddress
+                true
+            }
+        }
+        if (!addressPublished) {
+            val code = lastGattFailureCode ?: "gatt_disconnected"
+            disconnect()
+            return ConnectResult.Failed(code)
+        }
         try {
             synchronizeClock()
         } catch (cancelled: CancellationException) {
             disconnect()
             throw cancelled
         } catch (failure: Throwable) {
-            SafeLog.warn("ble_clock", "clock_sync_failed", failure)
+            val code = ClockSyncFailurePolicy.code(failure)
+            SafeLog.warn("ble_clock", code, failure)
             disconnect()
-            return ConnectResult.Failed("clock_sync_failed")
+            return ConnectResult.Failed(code)
         }
         SafeLog.info("ble_connected", mapOf("device" to profile.displayName))
         return ConnectResult.Connected
@@ -922,41 +1000,74 @@ class BleKitsuTransport(
 
     private val callback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) {
-                runCatching { gatt.close() }
+        override fun onConnectionStateChange(callbackGatt: BluetoothGatt, status: Int, newState: Int) {
+            val failureCode = GattStatusPolicy.connectionFailure(status)
+            var disconnected = false
+            var interruptedWrite: CompletableDeferred<Int>? = null
+            var interruptedHandshake: CompletableDeferred<ByteArray>? = null
+            var interruptedConnection: CompletableDeferred<ConnectResult>? = null
+            var interruptedPairing: Channel<ByteArray>? = null
+            val ownsActiveGatt = synchronized(this@BleKitsuTransport) {
+                if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, callbackGatt)) {
+                    false
+                } else {
+                    when {
+                        newState == BluetoothProfile.STATE_DISCONNECTED -> {
+                            disconnected = true
+                            lastGattFailureCode = failureCode
+                            interruptedWrite = writeCompletion.also { writeCompletion = null }
+                            interruptedHandshake = handshakeResponse.also { handshakeResponse = null }
+                            interruptedConnection = connectionReady.also { connectionReady = null }
+                            interruptedPairing = pairingInbox.also { pairingInbox = null }
+                            this@BleKitsuTransport.gatt = null
+                            activeGattGeneration += 1L
+                            handshakeTransition.clear()
+                            negotiatedMtu = 23
+                            writeCharacteristic = null
+                            notifyCharacteristic = null
+                            envelopeSession = null
+                            connectedDeviceAddress = null
+                            meshOneShotReady = false
+                            messageProtocolVersion = 1
+                            messageMarkReadAvailable = false
+                            frameDecoder.clear()
+                            pairingFrameDecoder.clear()
+                            frameTimeoutGeneration += 1L
+                        }
+                        status != BluetoothGatt.GATT_SUCCESS ->
+                            connectionReady?.complete(ConnectResult.Failed(failureCode))
+                    }
+                    true
+                }
+            }
+            if (!ownsActiveGatt) {
+                runCatching { callbackGatt.close() }
                 return
             }
-            val failureCode = GattStatusPolicy.connectionFailure(status)
-            when {
-                newState == BluetoothProfile.STATE_DISCONNECTED -> {
-                    lastGattFailureCode = failureCode
-                    // A disconnect can race a chunk write. Resolve it now so the
-                    // pairing path can retain status 22 and apply its sole bounded
-                    // recovery instead of waiting five seconds for a generic timeout.
-                    writeCompletion?.complete(
-                        GattWriteFailurePolicy.completionStatus(status),
-                    )
-                    this@BleKitsuTransport.gatt = null
-                    negotiatedMtu = 23
-                    writeCharacteristic = null
-                    notifyCharacteristic = null
-                    envelopeSession = null
-                    connectedDeviceAddress = null
-                    messageProtocolVersion = 1
-                    messageMarkReadAvailable = false
-                    connectionReady?.complete(ConnectResult.Failed(failureCode))
-                    pairingInbox?.close(PairingException(failureCode))
-                    failPending(failureCode)
-                    disconnectObserver?.invoke(failureCode)
-                    runCatching { gatt.close() }
-                }
-                status != BluetoothGatt.GATT_SUCCESS ->
-                    connectionReady?.complete(ConnectResult.Failed(failureCode))
-                newState == BluetoothProfile.STATE_CONNECTED -> {
-                    val mtuStarted = runCatching { gatt.requestMtu(517) }.getOrDefault(false)
-                    if (!mtuStarted && !gatt.discoverServices()) {
-                        connectionReady?.complete(ConnectResult.Failed("service_discovery_start_failed"))
+            if (disconnected) {
+                // Resolve every waiter only after the generation-bound state was
+                // detached, so resumed coroutines cannot publish onto a replacement.
+                interruptedWrite?.complete(GattWriteFailurePolicy.completionStatus(status))
+                interruptedHandshake?.completeExceptionally(HandshakeException(failureCode))
+                interruptedConnection?.complete(ConnectResult.Failed(failureCode))
+                interruptedPairing?.close(PairingException(failureCode))
+                failPending(failureCode)
+                disconnectObserver?.invoke(failureCode)
+                runCatching { callbackGatt.close() }
+                return
+            }
+            if (status != BluetoothGatt.GATT_SUCCESS) return
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                val mtuStarted = runCatching { callbackGatt.requestMtu(517) }.getOrDefault(false)
+                if (!mtuStarted && !callbackGatt.discoverServices()) {
+                    synchronized(this@BleKitsuTransport) {
+                        if (GattCallbackBindingPolicy.accepts(
+                                this@BleKitsuTransport.gatt,
+                                callbackGatt,
+                            )
+                        ) {
+                            connectionReady?.complete(ConnectResult.Failed("service_discovery_start_failed"))
+                        }
                     }
                 }
             }
@@ -964,71 +1075,77 @@ class BleKitsuTransport(
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) return
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                connectionReady?.complete(ConnectResult.Failed("service_discovery_failed"))
-                return
-            }
-            val service: BluetoothGattService? = gatt.getService(configuration.service)
-            if (service == null) {
-                connectionReady?.complete(ConnectResult.Failed("service_missing"))
-                return
-            }
-            val writer = service.getCharacteristic(configuration.write)
-            if (writer == null) {
-                connectionReady?.complete(ConnectResult.Failed("write_characteristic_missing"))
-                return
-            }
-            val notifier = service.getCharacteristic(configuration.notify)
-            if (notifier == null) {
-                connectionReady?.complete(ConnectResult.Failed("notify_characteristic_missing"))
-                return
-            }
-            if (!gatt.setCharacteristicNotification(notifier, true)) {
-                connectionReady?.complete(ConnectResult.Failed("notify_enable_failed"))
-                return
-            }
-            notifyCharacteristic = notifier
-            val descriptor = notifier.getDescriptor(CLIENT_CONFIGURATION_UUID)
-            if (descriptor == null) {
-                connectionReady?.complete(ConnectResult.Failed("notify_descriptor_missing"))
-                return
-            }
-            writeCharacteristic = writer
-            val started = if (Build.VERSION.SDK_INT >= 33) {
-                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
-                    BluetoothStatusCodes.SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
-                run {
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
+            synchronized(this@BleKitsuTransport) {
+                if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) return
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    connectionReady?.complete(ConnectResult.Failed("service_discovery_failed"))
+                    return
                 }
+                val service: BluetoothGattService? = gatt.getService(configuration.service)
+                if (service == null) {
+                    connectionReady?.complete(ConnectResult.Failed("service_missing"))
+                    return
+                }
+                val writer = service.getCharacteristic(configuration.write)
+                if (writer == null) {
+                    connectionReady?.complete(ConnectResult.Failed("write_characteristic_missing"))
+                    return
+                }
+                val notifier = service.getCharacteristic(configuration.notify)
+                if (notifier == null) {
+                    connectionReady?.complete(ConnectResult.Failed("notify_characteristic_missing"))
+                    return
+                }
+                if (!gatt.setCharacteristicNotification(notifier, true)) {
+                    connectionReady?.complete(ConnectResult.Failed("notify_enable_failed"))
+                    return
+                }
+                notifyCharacteristic = notifier
+                val descriptor = notifier.getDescriptor(CLIENT_CONFIGURATION_UUID)
+                if (descriptor == null) {
+                    connectionReady?.complete(ConnectResult.Failed("notify_descriptor_missing"))
+                    return
+                }
+                writeCharacteristic = writer
+                val started = if (Build.VERSION.SDK_INT >= 33) {
+                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                        BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    run {
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(descriptor)
+                    }
+                }
+                if (!started) connectionReady?.complete(ConnectResult.Failed("notify_descriptor_write_failed"))
             }
-            if (!started) connectionReady?.complete(ConnectResult.Failed("notify_descriptor_write_failed"))
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt) ||
-                descriptor.uuid != CLIENT_CONFIGURATION_UUID
-            ) return
-            connectionReady?.complete(
-                if (status == BluetoothGatt.GATT_SUCCESS) ConnectResult.Connected
-                else ConnectResult.Failed(GattStatusPolicy.notificationSubscriptionFailure(status)),
-            )
+            synchronized(this@BleKitsuTransport) {
+                if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt) ||
+                    descriptor.uuid != CLIENT_CONFIGURATION_UUID
+                ) return
+                connectionReady?.complete(
+                    if (status == BluetoothGatt.GATT_SUCCESS) ConnectResult.Connected
+                    else ConnectResult.Failed(GattStatusPolicy.notificationSubscriptionFailure(status)),
+                )
+            }
         }
 
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) return
-            if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu.coerceAtLeast(23)
-            val started = try {
-                gatt.discoverServices()
-            } catch (_: SecurityException) {
-                false
-            }
-            if (!started) {
-                connectionReady?.complete(ConnectResult.Failed("service_discovery_start_failed"))
+            synchronized(this@BleKitsuTransport) {
+                if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt)) return
+                if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu.coerceAtLeast(23)
+                val started = try {
+                    gatt.discoverServices()
+                } catch (_: SecurityException) {
+                    false
+                }
+                if (!started) {
+                    connectionReady?.complete(ConnectResult.Failed("service_discovery_start_failed"))
+                }
             }
         }
 
@@ -1037,10 +1154,12 @@ class BleKitsuTransport(
             characteristic: BluetoothGattCharacteristic,
             status: Int,
         ) {
-            if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt) ||
-                characteristic.uuid != configuration.write
-            ) return
-            writeCompletion?.complete(status)
+            synchronized(this@BleKitsuTransport) {
+                if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, gatt) ||
+                    characteristic.uuid != configuration.write
+                ) return
+                writeCompletion?.complete(status)
+            }
         }
 
         @Deprecated("Deprecated by Android")
@@ -1050,7 +1169,7 @@ class BleKitsuTransport(
                 )
             ) return
             @Suppress("DEPRECATION")
-            acceptBytes(characteristic.value ?: return)
+            acceptBytes(gatt, characteristic.value ?: return)
         }
 
         override fun onCharacteristicChanged(
@@ -1062,11 +1181,14 @@ class BleKitsuTransport(
                     this@BleKitsuTransport.gatt, gatt, configuration.notify, characteristic.uuid,
                 )
             ) return
-            acceptBytes(value)
+            acceptBytes(gatt, value)
         }
     }
 
-    private fun acceptBytes(bytes: ByteArray) {
+    @Synchronized
+    private fun acceptBytes(callbackGatt: BluetoothGatt, bytes: ByteArray) {
+        if (!GattCallbackBindingPolicy.accepts(gatt, callbackGatt)) return
+        val callbackGeneration = activeGattGeneration
         val activeDecoder = if (pairingInbox != null) pairingFrameDecoder else frameDecoder
         val result = activeDecoder.accept(bytes, android.os.SystemClock.elapsedRealtime())
         result.error?.let { code ->
@@ -1074,11 +1196,11 @@ class BleKitsuTransport(
             closeMalformedGatt(code)
             return
         }
-        result.frames.forEach { payload -> acceptPayload(payload) }
+        result.frames.forEach { payload -> acceptPayload(payload, callbackGeneration) }
         scheduleFrameExpiryIfNeeded(activeDecoder)
     }
 
-    private fun acceptPayload(payload: ByteArray) {
+    private fun acceptPayload(payload: ByteArray, callbackGeneration: Long) {
         pairingInbox?.let { inbox ->
             if (payload.isEmpty() || payload.size > ControllerPairingProtocol.MAX_FRAME_BYTES ||
                 !inbox.trySend(payload).isSuccess
@@ -1088,21 +1210,27 @@ class BleKitsuTransport(
             }
             return
         }
-        handshakeResponse?.let { waiting ->
-            if (payload.size > CapabilityHandshake.MAX_HANDSHAKE_BYTES) {
-                waiting.completeExceptionally(HandshakeException("invalid_handshake_frame"))
-            } else {
-                waiting.complete(payload)
+        when (handshakeTransition.accept(handshakeResponse, callbackGeneration, payload)) {
+            HandshakeEnvelopeTransition.AcceptResult.HANDSHAKE_COMPLETED,
+            HandshakeEnvelopeTransition.AcceptResult.BUFFERED -> return
+            HandshakeEnvelopeTransition.AcceptResult.STALE_GENERATION -> return
+            HandshakeEnvelopeTransition.AcceptResult.OVERFLOW -> {
+                failPending("handshake_transition_overflow")
+                closeMalformedGatt("handshake_transition_overflow")
+                return
             }
-            return
+            HandshakeEnvelopeTransition.AcceptResult.INACTIVE -> Unit
         }
+        acceptAuthenticatedPayload(payload)
+    }
 
+    private fun acceptAuthenticatedPayload(payload: ByteArray): Boolean {
         val verified = try {
             envelopeSession?.decodeIncoming(payload) ?: throw EnvelopeException("session_not_authenticated")
         } catch (failure: EnvelopeException) {
             failPending(failure.code)
             closeMalformedGatt(failure.code)
-            return
+            return false
         }
         if (verified.channel == SecureEnvelopeSession.CHANNEL_RESPONSE) {
             try {
@@ -1114,12 +1242,12 @@ class BleKitsuTransport(
                     throw EnvelopeException("response_binding_failed")
                 }
                 pendingResponse.deferred.complete(verified.payload)
-                return
+                return true
             } catch (failure: Throwable) {
                 val code = (failure as? EnvelopeException)?.code ?: "malformed_response"
                 failPending(code)
                 closeMalformedGatt(code)
-                return
+                return false
             }
         }
         try {
@@ -1130,22 +1258,29 @@ class BleKitsuTransport(
         } catch (failure: Throwable) {
             failPending("malformed_event")
             closeMalformedGatt("malformed_event")
+            return false
         }
+        return true
     }
 
     @Synchronized
     private fun scheduleFrameExpiryIfNeeded(activeDecoder: GattFrameDecoder) {
         val generation = ++frameTimeoutGeneration
-        if (!activeDecoder.hasPartialFrame()) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val remaining = activeDecoder.deadlineRemainingMillis(now) ?: return
         frameTimeoutHandler.postDelayed({
             synchronized(this) {
-                if (generation != frameTimeoutGeneration) return@synchronized
+                if (!GattFrameTimeoutGenerationPolicy.accepts(
+                        activeGeneration = frameTimeoutGeneration,
+                        scheduledGeneration = generation,
+                    )
+                ) return@synchronized
                 if (activeDecoder.expire(android.os.SystemClock.elapsedRealtime())) {
                     failPending("frame_timeout")
                     closeMalformedGatt("frame_timeout")
                 }
             }
-        }, GATT_FRAME_TIMEOUT_MILLIS)
+        }, remaining.coerceAtLeast(1L))
     }
 
     @Synchronized
@@ -1155,6 +1290,8 @@ class BleKitsuTransport(
         val active = gatt
         val hadActiveLink = active != null || connectedDeviceAddress != null
         gatt = null
+        activeGattGeneration += 1L
+        handshakeTransition.clear()
         connectedDeviceAddress = null
         lastGattFailureCode = code
         writeCharacteristic = null
@@ -1241,6 +1378,43 @@ class BleKitsuTransport(
                 ?: throw HandshakeException("handshake_timeout")
         } finally {
             handshakeResponse = null
+        }
+    }
+
+    private fun drainHandshakeTransition(
+        expectedGatt: BluetoothGatt,
+        expectedGeneration: Long,
+    ): Boolean {
+        while (true) {
+            if (!GattSessionPublicationPolicy.accepts(
+                    activeGatt = gatt,
+                    expectedGatt = expectedGatt,
+                    activeGeneration = activeGattGeneration,
+                    expectedGeneration = expectedGeneration,
+                ) || envelopeSession == null
+            ) return false
+            when (val drained = handshakeTransition.drainOrFinish(expectedGeneration)) {
+                is HandshakeEnvelopeTransition.DrainResult.Batch -> {
+                    for (payload in drained.payloads) {
+                        if (!GattSessionPublicationPolicy.accepts(
+                                activeGatt = gatt,
+                                expectedGatt = expectedGatt,
+                                activeGeneration = activeGattGeneration,
+                                expectedGeneration = expectedGeneration,
+                            ) || !acceptAuthenticatedPayload(payload)
+                        ) return false
+                    }
+                }
+                HandshakeEnvelopeTransition.DrainResult.Finished -> {
+                    return GattSessionPublicationPolicy.accepts(
+                        activeGatt = gatt,
+                        expectedGatt = expectedGatt,
+                        activeGeneration = activeGattGeneration,
+                        expectedGeneration = expectedGeneration,
+                    ) && envelopeSession != null
+                }
+                HandshakeEnvelopeTransition.DrainResult.StaleGeneration -> return false
+            }
         }
     }
 
@@ -1394,6 +1568,10 @@ class BleKitsuTransport(
 
     override suspend fun encounterCatalog(): EncounterCatalogPage = EncounterWireCodec.catalog(
         successfulPayload(ENCOUNTER_CATALOG_OPERATION, buildJsonObject {}),
+    )
+
+    override suspend fun encounterDiscovery(): EncounterDiscoveryPage = EncounterWireCodec.discovery(
+        successfulPayload(ENCOUNTER_DISCOVERY_OPERATION, buildJsonObject {}),
     )
 
     override suspend fun neighborInteraction(
@@ -1567,28 +1745,34 @@ class BleKitsuTransport(
 
     @SuppressLint("MissingPermission")
     override suspend fun disconnect() {
-        val active = gatt
-        val notifier = notifyCharacteristic
-        gatt = null
-        writeCharacteristic = null
-        notifyCharacteristic = null
-        negotiatedMtu = 23
-        envelopeSession = null
-        connectedDeviceAddress = null
-        lastGattFailureCode = null
-        meshOneShotReady = false
-        messageProtocolVersion = 1
-        messageMarkReadAvailable = false
-        handshakeResponse?.completeExceptionally(HandshakeException("disconnected"))
-        handshakeResponse = null
-        pairingInbox?.close(PairingException("disconnected"))
-        pairingInbox = null
-        frameDecoder.clear()
-        pairingFrameDecoder.clear()
-        writeCompletion?.completeExceptionally(TransportException("disconnected"))
-        writeCompletion = null
-        connectionReady = null
-        failPending("disconnected")
+        val (active, notifier) = synchronized(this) {
+            val detached = gatt to notifyCharacteristic
+            gatt = null
+            activeGattGeneration += 1L
+            handshakeTransition.clear()
+            writeCharacteristic = null
+            notifyCharacteristic = null
+            negotiatedMtu = 23
+            envelopeSession = null
+            connectedDeviceAddress = null
+            lastGattFailureCode = null
+            meshOneShotReady = false
+            messageProtocolVersion = 1
+            messageMarkReadAvailable = false
+            handshakeResponse?.completeExceptionally(HandshakeException("disconnected"))
+            handshakeResponse = null
+            pairingInbox?.close(PairingException("disconnected"))
+            pairingInbox = null
+            frameDecoder.clear()
+            pairingFrameDecoder.clear()
+            frameTimeoutGeneration += 1L
+            writeCompletion?.completeExceptionally(TransportException("disconnected"))
+            writeCompletion = null
+            connectionReady?.complete(ConnectResult.Failed("disconnected"))
+            connectionReady = null
+            failPending("disconnected")
+            detached
+        }
         runCatching {
             if (active != null && notifier != null) {
                 active.setCharacteristicNotification(notifier, false)
@@ -1633,7 +1817,7 @@ class BleKitsuTransport(
         // hundreds of 20-byte notification fragments when Android negotiates
         // the minimum MTU. Ten seconds falsely classified slow mesh snapshots
         // as a broken session and deliberately tore down GATT.
-        private const val REQUEST_TIMEOUT_MILLIS = 30_000L
+        private const val REQUEST_TIMEOUT_MILLIS = AUTHENTICATED_GATT_TIMEOUT_MILLIS
         private const val WRITE_TIMEOUT_MILLIS = 5_000L
         private const val PAIRING_INBOX_CAPACITY = 4
         private const val MAX_FAILED_PROOFS = 3

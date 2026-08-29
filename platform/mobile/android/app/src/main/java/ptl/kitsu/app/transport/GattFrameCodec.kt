@@ -70,6 +70,13 @@ class GattFrameDecoder(
     fun hasPartialFrame(): Boolean = headerCount > 0 || body != null
 
     @Synchronized
+    fun deadlineRemainingMillis(nowMillis: Long): Long? {
+        if (!hasPartialFrame()) return null
+        val started = startedAtMillis ?: return null
+        return (timeoutMillis - (nowMillis - started)).coerceAtLeast(0L)
+    }
+
+    @Synchronized
     fun clear() = reset()
 
     private fun isExpired(nowMillis: Long): Boolean =
@@ -97,6 +104,7 @@ fun encodeGattFrame(payload: ByteArray, maxPayloadBytes: Int = MAX_GATT_JSON_BYT
 }
 
 const val MAX_GATT_JSON_BYTES = 16 * 1024
-// Match the firmware's bounded assembly deadline. At the minimum BLE MTU a
-// full page can legitimately take several seconds to arrive.
-const val GATT_FRAME_TIMEOUT_MILLIS = 10_000L
+// Match the authenticated request bound. At the minimum BLE MTU a maximum
+// response can span hundreds of notifications while the radio is active.
+const val AUTHENTICATED_GATT_TIMEOUT_MILLIS = 30_000L
+const val GATT_FRAME_TIMEOUT_MILLIS = AUTHENTICATED_GATT_TIMEOUT_MILLIS

@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ptl.kitsu.app.EncounterUnlockUiState
 import ptl.kitsu.app.model.EncounterCatalogCreature
+import ptl.kitsu.app.model.EncounterDiscoveryRecord
 import ptl.kitsu.app.model.EncounterRarity
 import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
@@ -47,6 +48,13 @@ internal data class FieldGuideEntry(
     val lastEncounterEpoch: Long?,
 )
 
+internal fun encounterDiscoveryRefreshErrorCopy(hasVerifiedCounts: Boolean): String =
+    if (hasVerifiedCounts) {
+        "Live encounter notes could not refresh; showing the last verified device counts."
+    } else {
+        "Live encounter notes could not refresh; no verified device counts are available yet."
+    }
+
 /** Deterministic local projection of authenticated encounter records onto the public 21-pack roster. */
 internal object EncounterFieldGuidePolicy {
     val catalog: List<EncounterCatalogCreature> = PUBLIC_ENCOUNTER_CATALOG
@@ -55,14 +63,21 @@ internal object EncounterFieldGuidePolicy {
         records: List<EncounterUnlockCode>,
         activePackId: Long?,
         catalog: List<EncounterCatalogCreature> = PUBLIC_ENCOUNTER_CATALOG,
-    ): List<FieldGuideEntry> = catalog.map { creature ->
+        discoveryRecords: List<EncounterDiscoveryRecord> = emptyList(),
+    ): List<FieldGuideEntry> {
+        val discoveryByPack = discoveryRecords.takeIf { records ->
+            records.map(EncounterDiscoveryRecord::packId) ==
+                catalog.map(EncounterCatalogCreature::packId)
+        }?.associateBy(EncounterDiscoveryRecord::packId).orEmpty()
+        return catalog.map { creature ->
         val matching = records.filter { record ->
             record.packId == creature.packId ||
                 (record.packId == null && record.creatureName.normalizedName() == creature.name.normalizedName())
         }
+        val discovery = discoveryByPack[creature.packId]
         val owned = activePackId == creature.packId || matching.any { it.redeemed || it.installed }
         val lastEncounter = matching.maxByOrNull(EncounterUnlockCode::acquiredAtEpoch)
-        val lastSource = matching.asSequence()
+        val codeLastSource = matching.asSequence()
             .filter { !it.source.isNullOrBlank() }
             .maxByOrNull(EncounterUnlockCode::acquiredAtEpoch)
             ?.source
@@ -70,13 +85,17 @@ internal object EncounterFieldGuidePolicy {
             creature = creature,
             discovery = when {
                 owned -> FieldGuideDiscovery.OWNED
-                matching.isNotEmpty() -> FieldGuideDiscovery.SEEN
+                discovery?.encounterCount?.let { it > 0 } == true || matching.isNotEmpty() ->
+                    FieldGuideDiscovery.SEEN
                 else -> FieldGuideDiscovery.UNSEEN
             },
-            encounterCount = matching.size,
-            lastSource = lastSource,
+            // An authenticated discovery page includes encounters both with and
+            // without codes, so its device count is authoritative when present.
+            encounterCount = discovery?.encounterCount ?: matching.size,
+            lastSource = discovery?.lastSource ?: codeLastSource,
             lastEncounterEpoch = lastEncounter?.acquiredAtEpoch,
         )
+        }
     }
 
     private fun String?.normalizedName(): String = this.orEmpty()
@@ -94,8 +113,13 @@ internal fun KitsuFieldGuideScreen(
 ) {
     val activePackId = owner.status?.takeIf { it.packReady }?.packId?.toLongOrNull()
     val catalog = owner.encounterCatalog.ifEmpty { PUBLIC_ENCOUNTER_CATALOG }
-    val entries = remember(encounterUnlocks.records, activePackId, catalog) {
-        EncounterFieldGuidePolicy.build(encounterUnlocks.records, activePackId, catalog)
+    val entries = remember(encounterUnlocks.records, activePackId, catalog, owner.encounterDiscovery) {
+        EncounterFieldGuidePolicy.build(
+            encounterUnlocks.records,
+            activePackId,
+            catalog,
+            owner.encounterDiscovery,
+        )
     }
     val owned = entries.count { it.discovery == FieldGuideDiscovery.OWNED }
     val seen = entries.count { it.discovery == FieldGuideDiscovery.SEEN }
@@ -158,20 +182,30 @@ internal fun KitsuFieldGuideScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
+                    !owner.connection.connected -> Text(
+                        "Offline notes are ready. Connect Kitsu to sync new encounters.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     owner.encounterCatalogErrorCode != null -> Text(
                         "Live catalog unavailable; showing the built-in field guide.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    owner.encounterDiscoveryErrorCode != null -> Text(
+                        encounterDiscoveryRefreshErrorCopy(owner.encounterDiscovery.isNotEmpty()),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    owner.encounterDiscovery.isNotEmpty() -> Text(
+                        "Encounter counts verified by your Kitsu, including finds without unlock codes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                     owner.encounterCatalog.isNotEmpty() -> Text(
                         "Live catalog verified by your connected Kitsu.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
-                    )
-                    !owner.connection.connected -> Text(
-                        "Offline notes are ready. Connect Kitsu to sync new encounters.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
