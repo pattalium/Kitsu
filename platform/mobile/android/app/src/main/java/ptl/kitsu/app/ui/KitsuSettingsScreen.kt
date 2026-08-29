@@ -1012,6 +1012,32 @@ private fun FirmwareCard(
     onOpenFirmwarePackage: () -> Unit,
     updateBusy: Boolean,
 ) {
+    var confirmReinstall by rememberSaveable { mutableStateOf(false) }
+    val installAction = firmwareInstallAction(firmware.progress.stage)
+    if (confirmReinstall) {
+        AlertDialog(
+            onDismissRequest = { confirmReinstall = false },
+            title = { Text("Install this firmware again?") },
+            text = {
+                Text(
+                    "This writes the same verified firmware to Kitsu's other OTA slot and reboots it. Continue only when you intend to validate both rollback slots.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmReinstall = false
+                        viewModel.installImportedFirmware(reinstallConfirmed = true)
+                    },
+                    enabled = owner.connection.connected && !updateBusy,
+                    modifier = Modifier.testTag("firmware-reinstall-confirm"),
+                ) { Text("Install again") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReinstall = false }) { Text("Cancel") }
+            },
+        )
+    }
     KitsuCard(title = "Offline firmware update", modifier = Modifier.testTag("firmware-card")) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
             Icon(Icons.Default.SystemUpdateAlt, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -1053,12 +1079,18 @@ private fun FirmwareCard(
         firmware.progress.errorCode?.let {
             Text(it.humanized(), color = MaterialTheme.colorScheme.error)
         }
-        if (firmware.progress.stage in setOf(FirmwareInstallStage.IMPORTED, FirmwareInstallStage.FAILED)) {
+        if (installAction != null) {
             Button(
-                onClick = viewModel::installImportedFirmware,
+                onClick = {
+                    if (installAction.requiresExplicitConfirmation) {
+                        confirmReinstall = true
+                    } else {
+                        viewModel.installImportedFirmware()
+                    }
+                },
                 enabled = firmware.updateId != null && owner.connection.connected && !updateBusy,
                 modifier = Modifier.fillMaxWidth().testTag("firmware-install"),
-            ) { Text("Install on selected Kitsu") }
+            ) { Text(installAction.label) }
         }
         if (firmware.progress.stage == FirmwareInstallStage.FAILED && firmware.updateId != null) {
             OutlinedButton(
@@ -1067,11 +1099,7 @@ private fun FirmwareCard(
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Reset interrupted update") }
         }
-        if (!owner.connection.connected && firmware.progress.stage in setOf(
-                FirmwareInstallStage.IMPORTED,
-                FirmwareInstallStage.FAILED,
-            )
-        ) {
+        if (!owner.connection.connected && installAction != null) {
             Text(
                 "Connect the selected Kitsu before installing.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -1079,6 +1107,24 @@ private fun FirmwareCard(
             )
         }
     }
+}
+
+internal data class FirmwareInstallAction(
+    val label: String,
+    val requiresExplicitConfirmation: Boolean,
+)
+
+internal fun firmwareInstallAction(stage: FirmwareInstallStage): FirmwareInstallAction? = when (stage) {
+    FirmwareInstallStage.IMPORTED,
+    FirmwareInstallStage.FAILED -> FirmwareInstallAction(
+        label = "Install on selected Kitsu",
+        requiresExplicitConfirmation = false,
+    )
+    FirmwareInstallStage.COMPLETE -> FirmwareInstallAction(
+        label = "Install again on other slot",
+        requiresExplicitConfirmation = true,
+    )
+    else -> null
 }
 
 @Composable

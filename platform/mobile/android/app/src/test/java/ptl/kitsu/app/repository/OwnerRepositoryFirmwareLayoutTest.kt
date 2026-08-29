@@ -67,6 +67,7 @@ class OwnerRepositoryFirmwareLayoutTest {
             val failure = try {
                 repository.installFirmware(
                     packageFile = firmwarePackage(packagePartitionBytes, imageFile),
+                    reinstallConfirmed = true,
                     onProgress = {},
                 )
                 fail("expected firmware_layout_mismatch")

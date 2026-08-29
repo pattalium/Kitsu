@@ -479,7 +479,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun installImportedFirmware() {
+    fun installImportedFirmware(reinstallConfirmed: Boolean = false) {
         val selected = importedPackage ?: run {
             mutableNotice.value = "Choose a signed .kitsu-fw file first."
             return
@@ -499,7 +499,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         firmwareJob?.cancel()
         firmwareJob = viewModelScope.launch {
             try {
-                repository.installFirmware(selected) { progress ->
+                repository.installFirmware(selected, reinstallConfirmed) { progress ->
                     mutableFirmware.value = mutableFirmware.value.copy(progress = progress)
                 }
             } catch (cancelled: CancellationException) {

@@ -46,6 +46,8 @@ interface KitsuTransport {
     val mode: ConnectionMode
 
     fun isConnectedTo(deviceAddress: String): Boolean = false
+    /** Retryable authenticated-session warning; null when the active session is healthy. */
+    fun connectionWarning(): String? = null
     suspend fun connect(): ConnectResult
     suspend fun disconnect()
     suspend fun synchronizeClock()

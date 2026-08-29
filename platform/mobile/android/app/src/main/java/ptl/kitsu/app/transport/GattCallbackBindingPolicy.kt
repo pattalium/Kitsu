@@ -24,6 +24,10 @@ internal object GattSessionPublicationPolicy {
 internal object ClockSyncFailurePolicy {
     fun code(failure: Throwable): String =
         (failure as? TransportException)?.code ?: "clock_sync_failed"
+
+    /** A clock rejection is a warning while the authenticated GATT session still exists. */
+    fun connectResult(code: String, authenticatedSessionActive: Boolean): ConnectResult =
+        if (authenticatedSessionActive) ConnectResult.Connected else ConnectResult.Failed(code)
 }
 
 /** Guarantees decoded controller-root material is erased on success, failure, or early return. */

@@ -177,6 +177,7 @@ class BleKitsuTransport(
     @Volatile private var envelopeSession: SecureEnvelopeSession? = null
     @Volatile private var connectedDeviceAddress: String? = null
     @Volatile private var lastGattFailureCode: String? = null
+    @Volatile private var clockSyncWarning: String? = null
     @Volatile private var disconnectObserver: ((String) -> Unit)? = null
     @Volatile private var meshOneShotReady = false
     @Volatile private var messageProtocolVersion = 1
@@ -203,8 +204,12 @@ class BleKitsuTransport(
             } catch (failure: Throwable) {
                 val code = ClockSyncFailurePolicy.code(failure)
                 SafeLog.warn("ble_clock", code, failure)
-                disconnect()
-                ConnectResult.Failed(code)
+                val result = ClockSyncFailurePolicy.connectResult(
+                    lastGattFailureCode ?: code,
+                    authenticatedSessionActive = isConnectedTo(profile.deviceAddress),
+                )
+                if (result != ConnectResult.Connected) disconnect()
+                result
             }
         }
 
@@ -759,8 +764,12 @@ class BleKitsuTransport(
         } catch (failure: Throwable) {
             val code = ClockSyncFailurePolicy.code(failure)
             SafeLog.warn("ble_clock", code, failure)
-            disconnect()
-            return ConnectResult.Failed(code)
+            val result = ClockSyncFailurePolicy.connectResult(
+                lastGattFailureCode ?: code,
+                authenticatedSessionActive = isConnectedTo(profile.deviceAddress),
+            )
+            if (result != ConnectResult.Connected) disconnect()
+            return result
         }
         SafeLog.info("ble_connected", mapOf("device" to profile.displayName))
         return ConnectResult.Connected
@@ -1739,6 +1748,11 @@ class BleKitsuTransport(
             gatt != null && writeCharacteristic != null && notifyCharacteristic != null &&
             envelopeSession != null
 
+    override fun connectionWarning(): String? = clockSyncWarning.takeIf {
+        connectedDeviceAddress != null && gatt != null && writeCharacteristic != null &&
+            notifyCharacteristic != null && envelopeSession != null
+    }
+
     internal fun setDisconnectObserver(observer: (String) -> Unit) {
         disconnectObserver = observer
     }
@@ -1759,6 +1773,7 @@ class BleKitsuTransport(
             meshOneShotReady = false
             messageProtocolVersion = 1
             messageMarkReadAvailable = false
+            clockSyncWarning = null
             handshakeResponse?.completeExceptionally(HandshakeException("disconnected"))
             handshakeResponse = null
             pairingInbox?.close(PairingException("disconnected"))
@@ -1783,9 +1798,20 @@ class BleKitsuTransport(
     }
 
     override suspend fun synchronizeClock() {
-        successfulPayload("clock.sync", buildJsonObject {
-            put("epoch", java.time.Instant.now().epochSecond)
-        })
+        try {
+            successfulPayload("clock.sync", buildJsonObject {
+                put("epoch", java.time.Instant.now().epochSecond)
+            })
+            clockSyncWarning = null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            clockSyncWarning = ClockSyncFailurePolicy.code(failure).takeIf {
+                connectedDeviceAddress != null && gatt != null && writeCharacteristic != null &&
+                    notifyCharacteristic != null && envelopeSession != null
+            }
+            throw failure
+        }
     }
 
     private fun failPending(code: String) {

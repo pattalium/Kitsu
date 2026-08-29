@@ -123,6 +123,12 @@ internal data class ConnectionPresentation(
 )
 
 internal fun connectionPresentation(owner: OwnerState): ConnectionPresentation = when {
+    owner.connection.connected && owner.connection.warning != null -> ConnectionPresentation(
+        label = "Connected",
+        detail = "${owner.connection.warning.humanized()}. Bluetooth stays connected; synchronize time and retry.",
+        tone = StatusTone.ACTIVE,
+        icon = Icons.Default.ErrorOutline,
+    )
     owner.connection.connected -> ConnectionPresentation(
         label = "Connected",
         detail = "Private, authenticated Bluetooth link",
@@ -269,6 +275,10 @@ internal fun String.humanized(): String = when (this) {
     "idempotency_busy" ->
         "Too many recent actions are still protected. Wait a moment and retry."
     "idempotency_unavailable" -> "Durable action storage is unavailable."
+    "clock_sync_failed" -> "Clock sync failed"
+    "system_clock_failed" -> "Kitsu rejected clock synchronization"
+    "firmware_reinstall_confirmation_stale" ->
+        "Kitsu's firmware state changed. Review the selected Kitsu, then confirm Install again once more."
     else -> replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 

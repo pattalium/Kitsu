@@ -50,6 +50,36 @@ class GattCallbackBindingPolicyTest {
         assertEquals("clock_sync_failed", ClockSyncFailurePolicy.code(IllegalStateException("boom")))
     }
 
+    @Test fun freshAuthenticatedClockFailureRemainsAConnectedWarning() {
+        assertEquals(
+            ConnectResult.Connected,
+            ClockSyncFailurePolicy.connectResult(
+                code = "system_clock_failed",
+                authenticatedSessionActive = true,
+            ),
+        )
+    }
+
+    @Test fun activeAuthenticatedClockFailureRemainsAConnectedWarning() {
+        assertEquals(
+            ConnectResult.Connected,
+            ClockSyncFailurePolicy.connectResult(
+                code = "sequence_violation",
+                authenticatedSessionActive = true,
+            ),
+        )
+    }
+
+    @Test fun clockFailureAfterActualSessionLossRemainsAConnectionFailure() {
+        assertEquals(
+            ConnectResult.Failed("gatt_disconnected"),
+            ClockSyncFailurePolicy.connectResult(
+                code = "gatt_disconnected",
+                authenticatedSessionActive = false,
+            ),
+        )
+    }
+
     @Test fun controllerRootIsZeroizedOnSuccessAndExceptionalExit() {
         val successfulRoot = byteArrayOf(1, 2, 3, 4)
         assertEquals("derived", ControllerRootUsePolicy.withZeroized(successfulRoot) { "derived" })

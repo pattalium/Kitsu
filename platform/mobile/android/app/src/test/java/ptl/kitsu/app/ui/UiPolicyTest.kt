@@ -5,6 +5,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ptl.kitsu.app.blePermissionErrorCode
+import ptl.kitsu.app.connection.ConnectionState
+import ptl.kitsu.app.repository.OwnerState
+import ptl.kitsu.app.transport.ConnectionMode
+import ptl.kitsu.app.update.FirmwareInstallStage
 
 class UiPolicyTest {
     @Test fun darkIsTheOnlyDefaultAndSystemIsExplicit() {
@@ -77,6 +81,49 @@ class UiPolicyTest {
         assertEquals(
             "repair_bluetooth_permission_required",
             blePermissionErrorCode(pairing = true, repair = true),
+        )
+    }
+
+    @Test fun connectedClockWarningIsRetryableAndNeverPresentedAsOffline() {
+        val presentation = connectionPresentation(
+            OwnerState(
+                connection = ConnectionState(
+                    mode = ConnectionMode.DIRECT_BLE,
+                    connected = true,
+                    detail = "selected_kitsu_reachable",
+                    warning = "system_clock_failed",
+                ),
+            ),
+        )
+
+        assertEquals("Connected", presentation.label)
+        assertEquals(StatusTone.ACTIVE, presentation.tone)
+        assertEquals(
+            "Kitsu rejected clock synchronization. Bluetooth stays connected; synchronize time and retry.",
+            presentation.detail,
+        )
+    }
+
+    @Test fun completedFirmwareRequiresAnExplicitOtherSlotConfirmation() {
+        assertEquals(
+            FirmwareInstallAction("Install on selected Kitsu", false),
+            firmwareInstallAction(FirmwareInstallStage.IMPORTED),
+        )
+        assertEquals(
+            FirmwareInstallAction("Install on selected Kitsu", false),
+            firmwareInstallAction(FirmwareInstallStage.FAILED),
+        )
+        assertEquals(
+            FirmwareInstallAction("Install again on other slot", true),
+            firmwareInstallAction(FirmwareInstallStage.COMPLETE),
+        )
+        assertEquals(null, firmwareInstallAction(FirmwareInstallStage.REBOOTING))
+    }
+
+    @Test fun staleOtherSlotConfirmationHasSafeReselectionCopy() {
+        assertEquals(
+            "Kitsu's firmware state changed. Review the selected Kitsu, then confirm Install again once more.",
+            "firmware_reinstall_confirmation_stale".humanized(),
         )
     }
 }

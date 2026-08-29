@@ -1255,6 +1255,7 @@ class OwnerRepository(
 
     suspend fun installFirmware(
         packageFile: VerifiedFirmwarePackage,
+        reinstallConfirmed: Boolean = false,
         onProgress: (FirmwareInstallProgress) -> Unit,
     ) {
         if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
@@ -1263,13 +1264,17 @@ class OwnerRepository(
         try {
         val total = packageFile.manifest.imageBytes
         onProgress(FirmwareInstallProgress(FirmwareInstallStage.PREPARING, packageFile.manifest.firmwareVersion, 0, total))
-        var status = coordinator.withTransport { it.firmwareUpdateStatus() }
+        val initialStatus = coordinator.withTransport { it.firmwareUpdateStatus() }
+        var status = initialStatus
         if (!FirmwareUpdatePackageReader.isLayoutCompatibleWithDevice(
                 status.firmwareVersion,
                 packageFile.manifest.partitionBytes,
             )
         ) {
             throw TransportException("firmware_layout_mismatch")
+        }
+        if (reinstallConfirmed) {
+            requireExplicitReinstallPrecondition(initialStatus, packageFile)
         }
         if (status.state == "pending_verify") {
             validateUpdateBinding(status, packageFile.updateId, total)
@@ -1281,10 +1286,12 @@ class OwnerRepository(
             if (status.state != "confirmed") throw TransportException("firmware_confirmation_pending")
         }
         if (status.state == "confirmed" && status.updateId == packageFile.updateId) {
-            validateUpdateBinding(status, packageFile.updateId, total)
-            onProgress(FirmwareInstallProgress(FirmwareInstallStage.COMPLETE, packageFile.manifest.firmwareVersion, total, total))
-            refresh()
-            return
+            validateConfirmedUpdateBinding(status, packageFile)
+            if (!reinstallConfirmed) {
+                onProgress(FirmwareInstallProgress(FirmwareInstallStage.COMPLETE, packageFile.manifest.firmwareVersion, total, total))
+                refresh()
+                return
+            }
         }
         if (status.state in setOf("failed", "rolled_back")) {
             if (status.updateId != null && status.updateId != packageFile.updateId) {
@@ -1376,6 +1383,7 @@ class OwnerRepository(
         }
         when (bootStatus.state) {
             "confirmed" -> {
+                validateConfirmedUpdateBinding(bootStatus, packageFile)
                 onProgress(FirmwareInstallProgress(
                     FirmwareInstallStage.COMPLETE,
                     packageFile.manifest.firmwareVersion,
@@ -1490,6 +1498,35 @@ class OwnerRepository(
     private fun validateUpdateBinding(receipt: FirmwareUpdateReceipt, updateId: String, total: Int) {
         if (receipt.updateId != updateId || receipt.imageBytes != total || receipt.nextOffset !in 0..total) {
             throw TransportException("firmware_update_binding_failed")
+        }
+    }
+
+    private fun validateConfirmedUpdateBinding(
+        receipt: FirmwareUpdateReceipt,
+        packageFile: VerifiedFirmwarePackage,
+    ) {
+        validateUpdateBinding(receipt, packageFile.updateId, packageFile.manifest.imageBytes)
+        if (receipt.nextOffset != packageFile.manifest.imageBytes ||
+            receipt.firmwareVersion != packageFile.manifest.firmwareVersion
+        ) {
+            throw TransportException("firmware_update_binding_failed")
+        }
+    }
+
+    private fun requireExplicitReinstallPrecondition(
+        receipt: FirmwareUpdateReceipt,
+        packageFile: VerifiedFirmwarePackage,
+    ) {
+        if (receipt.state != "confirmed" ||
+            receipt.updateId != packageFile.updateId ||
+            receipt.imageBytes != packageFile.manifest.imageBytes ||
+            receipt.nextOffset != packageFile.manifest.imageBytes ||
+            receipt.firmwareVersion != packageFile.manifest.firmwareVersion
+        ) {
+            // The confirmation belongs to one exact device/package state. It must
+            // never degrade into an ordinary begin/resume/reboot after state or
+            // selected-device changes.
+            throw TransportException("firmware_reinstall_confirmation_stale")
         }
     }
 
