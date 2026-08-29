@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f3efe5" />
-    <meta name="description" content="Live checks for the public K32 Kitsu download, documentation, installer, and signed-update surfaces." />
+    <meta name="description" content="Live checks for the public K32 Kitsu downloads, documentation, historical USB origin, and signed-update surfaces." />
     <link rel="icon" href="data:," />
     <script src="/theme.js?sha256=a2830b6e79c5373373e4147412fd08a237196d93ffcf29ee426c87e22411ebe6"></script>
     <link rel="stylesheet" href="/styles.css?sha256=5749d1ce78f53bff92cf557118ddc8445fa83f4c4bb6153b21df2b15f7a3575d" />
@@ -22,11 +22,11 @@
       <section class="services" aria-label="Kitsu public sites">
         <article data-static="loaded"><span class="dot ok"></span><div><h2>Status page</h2><p>This browser received the current status release. This is not an independent uptime check.</p></div><b>Loaded</b></article>
         <article data-url="/checks/public"><span class="dot pending"></span><div><h2>Project and Android download</h2><p>Reachability of the public product origin; Android eligibility is enforced separately by its signed manifest.</p></div><b>Checking</b></article>
-        <article data-url="/checks/flash"><span class="dot pending"></span><div><h2>Web Serial installer</h2><p>Reachability of the USB recovery installer origin.</p></div><b>Checking</b></article>
+        <article data-url="/checks/flash"><span class="dot pending"></span><div><h2>Historical Web Serial surface</h2><p>Reachability of the immutable pre-0.20.3 USB origin. It is not a current migration, update, or recovery path.</p></div><b>Checking</b></article>
         <article data-url="/checks/docs"><span class="dot pending"></span><div><h2>Documentation</h2><p>Reachability of the static manual origin.</p></div><b>Checking</b></article>
         <article data-url="/checks/updates"><span class="dot pending"></span><div><h2>Firmware release downloads</h2><p>Reachability only. This check does not claim that a new Bluetooth package passed physical acceptance or was promoted.</p></div><b>Checking</b></article>
       </section>
-      <aside><strong>Scope</strong><p>Your browser checks only the public sites used to download Android, recover firmware over USB, obtain signed Bluetooth packages, and read documentation. A green result means the named site returned its exact health response; it does not verify a release artifact. Nearby Kitsu control is local Bluetooth and is not represented as an online service.</p></aside>
+      <aside><strong>Scope</strong><p>Your browser checks only the public sites used to download Android, obtain signed Bluetooth packages, read documentation, and retain explicitly labeled pre-0.20.3 USB history. A green result means the named site returned its exact health response; it does not verify a release artifact. Nearby Kitsu control is local Bluetooth and is not represented as an online service.</p></aside>
     </main>
     <footer><span>K32 · Kitsu</span><button id="refresh" type="button">Refresh checks</button></footer>
   </body>

@@ -861,7 +861,7 @@ function initializeUnlockPage(windowObject, documentObject) {
       } catch {
         throw protocolError("download_unavailable", "This browser could not prepare the verified pack download.");
       }
-      packDetail.textContent = `${rarityLabel(publishedPack.rarity)} pet pack. This is an ordinary .k868 package for the web flasher.`;
+      packDetail.textContent = `${rarityLabel(publishedPack.rarity)} pet pack. Keep this verified .k868 file private; migrated-board installation is not offered from this page yet.`;
       packIntegrity.textContent = `SHA-256 ${publishedPack.sha256.toUpperCase()}`;
       packDownload.href = currentDownloadUrl;
       packDownload.download = redeemed.filename;

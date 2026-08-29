@@ -12,10 +12,11 @@ assert.equal(entries.some((entry) => /(?:^|[\\/])node_modules(?:[\\/]|$)/.test(e
 assert.equal(entries.some((entry) => /\.(?:map|bin|pem|key)$/i.test(entry)), false);
 assert.equal(entries.some((entry) => /\.(?:aab|idsig|jks|keystore|p12|pfx)$/i.test(entry)), false);
 
-const [html, appSource, releaseSource, packSource, packageJson] = await Promise.all([
+const [html, appSource, releaseSource, layoutGateSource, packSource, packageJson] = await Promise.all([
   readFile(path.join(dist, "index.html"), "utf8"),
   readFile(path.join(root, "src", "app.js"), "utf8"),
   readFile(path.join(root, "src", "release.js"), "utf8"),
+  readFile(path.join(root, "src", "layout-gate.js"), "utf8"),
   readFile(path.join(root, "src", "packs.js"), "utf8"),
   readFile(path.join(root, "package.json"), "utf8"),
 ]);
@@ -23,6 +24,23 @@ assert.doesNotMatch(html, /https?:\/\/(?:unpkg|cdn\.jsdelivr|esm\.sh|cdnjs)/i);
 assert.doesNotMatch(html, /managed site platform|workers\.dev|chat interface/i);
 assert.match(appSource, /new ESPLoader/);
 assert.match(appSource, /loader\.chip\?\.CHIP_NAME !== "ESP32-S3"/);
+assert.match(appSource, /requireLegacyFlashLayout\(loader\)/);
+const installStart = appSource.indexOf("async function install()");
+const finalLayoutGate = appSource.indexOf(
+  "const finalFlashLayout = await requireLegacyFlashLayout(loader)",
+  installStart,
+);
+const firstInstallWrite = appSource.indexOf("await loader.writeFlash({", installStart);
+const ordinaryConfirmation = appSource.indexOf("const confirmed = window.confirm(", installStart);
+const destructiveConfirmation = appSource.indexOf("const destructiveConfirmed = window.confirm(", installStart);
+assert(installStart >= 0 && finalLayoutGate > installStart, "install must contain a final physical layout gate");
+assert(finalLayoutGate > ordinaryConfirmation, "the final layout gate must follow ordinary owner confirmation");
+assert(finalLayoutGate > destructiveConfirmation, "the final layout gate must follow destructive owner confirmation");
+assert(firstInstallWrite > finalLayoutGate, "the final physical layout gate must precede every install write");
+assert.ok(
+  appSource.slice(installStart, finalLayoutGate).indexOf("await loader.writeFlash({") === -1,
+  "the exact physical partition table must be rechecked before the first write",
+);
 assert.match(appSource, /eraseAll: false/);
 assert.match(appSource, /Signed core phase complete/);
 assert.match(appSource, /packSelect\.value = "preserve"/);
@@ -66,6 +84,10 @@ assert.match(releaseSource, /app0JournalOffset: 0x33f000/);
 assert.match(releaseSource, /app1JournalOffset: 0x66f000/);
 assert.match(releaseSource, /legacyConnectivityOffset: 0x7b0000/);
 assert.match(releaseSource, /legacyConnectivityBytes: 0x040000/);
+assert.match(layoutGateSource, /PARTITION_TABLE_OFFSET = 0x008000/);
+assert.match(layoutGateSource, /PARTITION_TABLE_SECTOR_BYTES = 0x001000/);
+assert.match(layoutGateSource, /f9b22e16fcfb701520dd6c7e0791582ececbbd44c317c8d519e3d6b2b9ce8b7a|FLASH_PLAN\.partitionSha256/);
+assert.match(layoutGateSource, /3337f0ec25e653d8c0bf9534abeb147a7505f41b1c2e25b53bb6cc74d395b532/);
 assert.match(releaseSource, /writes\.length !== 7/);
 assert.match(releaseSource, /retire_legacy_connectivity/);
 assert.match(releaseSource, /kitsu\.firmware-update\.v2/);
@@ -94,6 +116,8 @@ const bundles = entries.filter((entry) => entry.endsWith(".js"));
 assert(bundles.length > 0, "bundled JavaScript is missing");
 const bundledText = (await Promise.all(bundles.map((entry) => readFile(path.join(dist, entry), "utf8")))).join("\n");
 assert.match(bundledText, /df530766fbc4fc93e82cdbd354ebe4a17a453c83e9bb7fe2af30ca2d202494ab/);
+assert.match(bundledText, /f9b22e16fcfb701520dd6c7e0791582ececbbd44c317c8d519e3d6b2b9ce8b7a/);
+assert.match(bundledText, /3337f0ec25e653d8c0bf9534abeb147a7505f41b1c2e25b53bb6cc74d395b532/);
 assert.doesNotMatch(bundledText, /https?:\/\/(?:unpkg|cdn\.jsdelivr|esm\.sh|cdnjs)/i);
 
 console.log(`audited ${entries.length} locally bundled flash-site files`);

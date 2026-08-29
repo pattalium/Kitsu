@@ -22,9 +22,11 @@ account, HTTP API, identity provider, public or self-hosted gateway, mobile
 relay, Wi-Fi provisioning, LAN control, TLS client, or server certificate.
 Historical server source may be retained for a bounded rollback/archive period,
 but it is excluded from the product build. Stored connectivity generations are
-not retained: the local-only firmware and USB bootstrap both erase and verify
-the isolated legacy connectivity partition, and firmware removes only the
-retired LAN-action NVS namespace.
+not retained: the local-only firmware erases and verifies the isolated legacy
+connectivity partition and removes only the retired LAN-action NVS namespace.
+The separately retained USB-bootstrap implementation also cleared that region
+in its exact pre-0.20.3 layout, but it is immutable history—not a 0.20.3
+install, migration, or recovery path.
 
 The active authenticated Bluetooth operation allowlist is:
 
@@ -393,18 +395,20 @@ Record 1 does not contain the downstream public URL or delivery record. Its
 frozen SHA-256 is bound externally by the final promotion/delivery record; it
 is not embedded in the exact `kitsu.ble-firmware.v1` manifest.
 
-Record 2 is the public-delivery smoke. After record 1 passes, create and sign
-the final manifest, stage the coordinated release behind an atomic rollback,
-then use the actual public HTTPS pages as an ordinary owner: install Android
-fresh, pair, use local controls and messages in airplane mode,
-Disconnect/reconnect, install the public `.kitsu-fw` through authenticated BLE,
-confirm the new slot, and Forget/re-pair. Public delivery must not expose a
-generic Web Serial migration, raw full-flash backup, controller material, or a
-legacy seven-write recovery path. Dedicated USB migration/restore stays a
-private, physically supervised recovery ceremony. Record 2 binds the exact
-final BLE manifest/signature and public artifacts, but its digest is never fed
-back into that manifest. Failure restores the prior public release and remains
-retained as a failure.
+Record 2 is the public-delivery smoke. After record 1 passes, re-inspect and
+stage the exact already signed record-1 manifest and `.kitsu-fw` package behind
+an atomic rollback. Record 2 must never create, rewrite, or sign a replacement
+manifest: exact `kitsu.ble-firmware.v1` package byte identity is preserved from
+record 1 through promotion. Then use the actual public HTTPS pages as an
+ordinary owner: install Android fresh, pair, use local controls and messages in
+airplane mode, Disconnect/reconnect, install the public `.kitsu-fw` through
+authenticated BLE, confirm the new slot, and Forget/re-pair. Public delivery
+must not expose a generic Web Serial migration, raw full-flash backup,
+controller material, or a legacy seven-write recovery path. Dedicated USB
+migration/restore stays a private, physically supervised recovery ceremony.
+Record 2 binds the exact final BLE manifest/signature and public artifacts, but
+its digest is never fed back into that manifest. Failure restores the prior
+public release and remains retained as a failure.
 
 The external final promotion decision binds both evidence digests, exact Android
 APK/version/certificate, firmware and `.kitsu-fw` hashes, final Web Serial
@@ -421,12 +425,14 @@ pass; a single circular evidence document may not authorize itself.
 
 ## Promotion and recovery
 
-Only record-1-accepted bytes may be bound into the signed BLE package and its
-public metadata. Only after the separate record-2 public-delivery smoke passes
-may that coordinated Android/site/docs/status/BLE-update release be declared
-stable. The legacy Web Serial manifest remains immutable historical authority;
-it is neither rewritten nor used for the 0.20.3 layout. Keep the atomic rollback
-available throughout.
+Only the exact already signed BLE package bytes exercised and accepted by
+record 1 may be copied into the public tree and named by its metadata. They
+must not be rebuilt, repackaged, or re-signed after record 1. Only after the
+separate record-2 public-delivery smoke passes may that coordinated
+Android/site/docs/status/BLE-update release be declared stable. The legacy Web
+Serial manifest remains immutable historical authority; it is neither
+rewritten nor used for the 0.20.3 layout. Keep the atomic rollback available
+throughout.
 
 After the one-time local-only retirement of the legacy LAN-action namespace, an
 ordinary matching-layout update preserves the remaining NVS, companion state,

@@ -503,7 +503,7 @@ private fun AdvertisementEvidenceBlock(
     }
 }
 
-private fun advertiseStatusCopy(error: String?): String = when (error) {
+internal fun advertiseStatusCopy(error: String?): String = when (error) {
     null -> "Checking readiness"
     "advertise_cooldown" -> "Waiting for the signed-advertisement cooldown"
     "advertise_result_unknown" ->
@@ -516,6 +516,8 @@ private fun advertiseStatusCopy(error: String?): String = when (error) {
     "send_busy", "queue_full" -> "The outbound mesh queue is busy"
     "location_unavailable" -> "A current one-shot location is unavailable"
     "companion_unavailable" -> "The Kitsu companion pack is unavailable"
-    "idempotency_unavailable" -> "Durable action storage is unavailable"
+    "idempotency_busy" ->
+        "Too many recent actions are still protected. Wait a moment and retry."
+    "idempotency_unavailable" -> "Durable action storage is unavailable."
     else -> error.humanized()
 }

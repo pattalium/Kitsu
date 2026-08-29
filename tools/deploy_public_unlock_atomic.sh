@@ -8,6 +8,8 @@ umask 077
 #
 # Digest mode is read-only and may run off-host:
 #   deploy_public_unlock_atomic.sh --digest PUBLIC BACKEND PACKS POLICY
+# Public-inventory mode is read-only and is used by source-tree tests:
+#   deploy_public_unlock_atomic.sh --public-digest PUBLIC
 #
 # Deployment mode must run as root on the production host:
 #   deploy_public_unlock_atomic.sh \
@@ -30,7 +32,57 @@ die() {
   exit 1
 }
 
+firmware_release_uri() {
+  python3 - "$1" <<'PY'
+from hashlib import sha256
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+source = root / "firmware-release.js"
+if not source.is_file() or source.is_symlink():
+    raise SystemExit("firmware_release_module_invalid")
+text = source.read_text(encoding="utf-8")
+disabled = text.count("export const publishedFirmwareRelease = null;")
+active = re.findall(
+    r'export const publishedFirmwareRelease = Object\.freeze\(\{\r?\n'
+    r'  url: "([^"]+)",\r?\n'
+    r'  bytes: ([1-9][0-9]*),\r?\n'
+    r'  sha256: "([0-9a-f]{64})",\r?\n'
+    r'  releaseId: "([0-9A-Za-z][0-9A-Za-z._-]{0,63})",\r?\n'
+    r'  firmwareVersion: "(0\.20\.3)",\r?\n'
+    r'\}\);',
+    text,
+)
+if disabled + len(active) != 1:
+    raise SystemExit("firmware_release_contract_ambiguous")
+packages = sorted(root.rglob("*.kitsu-fw"))
+if disabled == 1:
+    if packages:
+        raise SystemExit("firmware_package_present_while_release_disabled")
+    print("")
+    raise SystemExit(0)
+
+uri, expected_bytes_text, expected_sha256, _release_id, _version = active[0]
+match = re.fullmatch(
+    r'/downloads/[a-z0-9][a-z0-9._-]{0,96}-([0-9a-f]{64})\.kitsu-fw',
+    uri,
+)
+if not match or match.group(1) != expected_sha256:
+    raise SystemExit("firmware_release_path_invalid")
+expected_path = root / uri.removeprefix("/")
+if packages != [expected_path] or not expected_path.is_file() or expected_path.is_symlink():
+    raise SystemExit("firmware_package_set_invalid")
+content = expected_path.read_bytes()
+if len(content) != int(expected_bytes_text) or sha256(content).hexdigest() != expected_sha256:
+    raise SystemExit("firmware_package_integrity_mismatch")
+print(uri)
+PY
+}
+
 public_tree_digest() {
+  firmware_release_uri "$1" >/dev/null
   python3 - "$1" <<'PY'
 from hashlib import sha256
 from pathlib import Path
@@ -43,7 +95,7 @@ if not root.is_absolute() or not root.is_dir() or root.is_symlink():
     raise SystemExit("public_source_must_be_an_absolute_real_directory")
 
 required = {
-    "index.html", "styles.css", "theme.js", "site.js",
+    "index.html", "styles.css", "theme.js", "site.js", "firmware-release.js",
     "demo/index.html", "unlock/index.html", "unlock/unlock.css",
     "unlock/unlock.js", "unlock/catalog.js", "privacy/index.html",
     "terms/index.html", "security/index.html", "contact/index.html",
@@ -56,10 +108,39 @@ for relative in required:
         raise SystemExit(f"public_required_file_missing:{relative}")
 
 forbidden_suffixes = {".aab", ".idsig", ".jks", ".keystore", ".p12", ".pfx"}
+forbidden_suffixes |= {
+    ".bin", ".elf", ".map", ".csv", ".log", ".txt", ".zip", ".tar",
+    ".gz", ".tgz", ".bak", ".backup", ".dump", ".img", ".hex", ".uf2",
+}
 secret_name = re.compile(
     r"(^|[-_.])(private|secret|password|credential|upload[-_]?key|signing[-_]?key)($|[-_.])"
 )
+private_artifact_name = re.compile(
+    r"(^|[/_.-])(nvs|partition(?:s|[-_]?table)?|full[-_]?flash|backup|migration|"
+    r"oracle|evidence|preflight|unsigned|coredump|bootloader|otadata|spiffs|"
+    r"connectivity[-_]?partition)(?=$|[/_.-])"
+)
 private_key_header = re.compile(br"BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH )?PRIVATE KEY")
+allowed_exact = {
+    ".gitignore", "README.md", "DESIGN.md", "config.json", "index.html",
+    "styles.css", "theme.js", "site.js", "firmware-release.js",
+    "preview-release.js", "contact/index.html", "privacy/index.html",
+    "security/index.html", "terms/index.html", "demo/index.html",
+    "demo/demo.css", "demo/demo.js", "demo/assets/fox-48-frame-contact.png",
+    "unlock/index.html", "unlock/unlock.css", "unlock/unlock.js",
+    "unlock/catalog.js", "tests/site.test.mjs",
+    "tests/firmware-release.test.mjs", "downloads/latest.json",
+    "downloads/latest.json.sig", "downloads/update-ed25519-public.pem",
+}
+allowed_patterns = [
+    re.compile(r"assets/kitsu-(?:app-icon|k32-mascot-bw-v2|k32-social-card-v1)\.png"),
+    re.compile(r"demo/kitsu-firmware-full\.[0-9a-f]{64}\.wasm"),
+    re.compile(r"demo/assets/fox\.[0-9a-f]{64}\.k868"),
+    re.compile(r"downloads/kitsu(?:-k32)?-android-[0-9A-Za-z.+-]+\.apk"),
+    re.compile(r"downloads/android-stable-[0-9A-Za-z.+-]+\.json(?:\.sig)?"),
+    re.compile(r"downloads/[a-z0-9][a-z0-9._-]{0,96}-[0-9a-f]{64}\.kitsu-fw"),
+    re.compile(r"unlock/portraits/[a-z0-9-]+\.[0-9a-f]{64}\.png"),
+]
 records = []
 for candidate in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
     relative = candidate.relative_to(root).as_posix()
@@ -73,13 +154,44 @@ for candidate in sorted(root.rglob("*"), key=lambda item: item.relative_to(root)
     if not stat.S_ISREG(mode):
         raise SystemExit(f"public_special_entry_forbidden:{relative}")
     lowered = relative.lower()
+    if relative not in allowed_exact and not any(
+        pattern.fullmatch(relative) for pattern in allowed_patterns
+    ):
+        raise SystemExit(f"public_inventory_entry_forbidden:{relative}")
     if lowered.startswith("unlock/") and candidate.suffix.lower() == ".k868":
         raise SystemExit(f"private_unlock_pack_forbidden:{relative}")
-    if candidate.suffix.lower() in forbidden_suffixes or secret_name.search(lowered):
+    if (candidate.suffix.lower() in forbidden_suffixes or secret_name.search(lowered)
+            or private_artifact_name.search(lowered)):
         raise SystemExit(f"public_sensitive_artifact_forbidden:{relative}")
     content = candidate.read_bytes()
     if private_key_header.search(content):
         raise SystemExit(f"public_private_key_forbidden:{relative}")
+    if content.startswith(b"\x7fELF") or content.startswith(b"\xaa\x50"):
+        raise SystemExit(f"public_raw_firmware_magic_forbidden:{relative}")
+    if content.startswith(b"\xe9") and not relative.endswith(".kitsu-fw"):
+        raise SystemExit(f"public_raw_esp_image_forbidden:{relative}")
+    if relative.endswith(".png") and not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise SystemExit(f"public_png_magic_invalid:{relative}")
+    if relative.endswith(".apk") and not content.startswith(b"PK\x03\x04"):
+        raise SystemExit(f"public_apk_magic_invalid:{relative}")
+    if relative.endswith(".wasm") and not content.startswith(b"\0asm"):
+        raise SystemExit(f"public_wasm_magic_invalid:{relative}")
+    if relative.endswith(".k868") and not content.startswith(b"K868PK1\0"):
+        raise SystemExit(f"public_pack_magic_invalid:{relative}")
+    if relative.endswith(".kitsu-fw") and not content.startswith(b"KITSUFW1"):
+        raise SystemExit(f"public_firmware_package_magic_invalid:{relative}")
+    if relative.endswith(".json.sig") and len(content) != 64:
+        raise SystemExit(f"public_signature_length_invalid:{relative}")
+    if relative.endswith(".pem") and not content.startswith(b"-----BEGIN PUBLIC KEY-----"):
+        raise SystemExit(f"public_pem_contract_invalid:{relative}")
+    if candidate.suffix.lower() in {".css", ".html", ".js", ".json", ".md", ".mjs"} \
+            or relative == ".gitignore":
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise SystemExit(f"public_text_not_utf8:{relative}:{error}")
+        if b"\0" in content:
+            raise SystemExit(f"public_text_contains_nul:{relative}")
     records.append((relative, len(content), sha256(content).hexdigest()))
 
 tree = sha256()
@@ -323,6 +435,13 @@ deployment_digest() {
   combine_component_digests \
     "$public_digest" "$backend_digest" "$pack_digest" "$policy_digest"
 }
+
+if [[ "${1:-}" == '--public-digest' ]]; then
+  [[ $# == 2 ]] || die \
+    'usage: deploy_public_unlock_atomic.sh --public-digest PUBLIC'
+  public_tree_digest "$2"
+  exit 0
+fi
 
 if [[ "${1:-}" == '--digest' ]]; then
   [[ $# == 5 ]] || die \
@@ -631,6 +750,7 @@ cmp -s -- "$nginx_available" "$nginx_enabled" \
 [[ ! -e "$backend_dropin" || ( -f "$backend_dropin" && ! -L "$backend_dropin" ) ]] \
   || die 'existing_backend_dropin_invalid'
 
+probe_dir=$(mktemp -d '/tmp/kitsu-public-unlock.XXXXXX')
 public_source_digest=$(public_tree_digest "$public_source")
 backend_source_digest=$(backend_tree_digest "$backend_source")
 pack_source_digest=$(pack_tree_digest "$pack_source")
@@ -665,6 +785,96 @@ content = apk.read_bytes()
 if len(content) != release.get("bytes") or sha256(content).hexdigest() != release.get("sha256"):
     raise SystemExit("manifest_apk_integrity_mismatch")
 PY
+
+release_firmware_path=$(firmware_release_uri "$public_source")
+if [[ -n "$release_firmware_path" ]]; then
+  python3 - "$public_source" "$release_firmware_path" \
+    "$probe_dir/firmware.manifest" "$probe_dir/firmware.signature" <<'PY'
+from pathlib import Path
+import json
+import re
+import struct
+import sys
+
+root = Path(sys.argv[1])
+uri = sys.argv[2]
+manifest_output = Path(sys.argv[3])
+signature_output = Path(sys.argv[4])
+text = (root / "firmware-release.js").read_text(encoding="utf-8")
+match = re.search(
+    r'export const publishedFirmwareRelease = Object\.freeze\(\{\r?\n'
+    r'  url: "([^"]+)",\r?\n'
+    r'  bytes: ([1-9][0-9]*),\r?\n'
+    r'  sha256: "([0-9a-f]{64})",\r?\n'
+    r'  releaseId: "([0-9A-Za-z][0-9A-Za-z._-]{0,63})",\r?\n'
+    r'  firmwareVersion: "(0\.20\.3)",\r?\n'
+    r'\}\);',
+    text,
+)
+if not match or match.group(1) != uri:
+    raise SystemExit("firmware_preflight_contract_invalid")
+release_id = match.group(4)
+version = match.group(5)
+package = (root / uri.removeprefix("/")).read_bytes()
+if len(package) < 85 or package[:8] != b"KITSUFW1":
+    raise SystemExit("firmware_preflight_header_invalid")
+manifest_bytes, signature_bytes, flags, image_bytes = struct.unpack_from(
+    ">IHHI", package, 8
+)
+if not 1 <= manifest_bytes <= 1024 or signature_bytes != 64 or flags != 0:
+    raise SystemExit("firmware_preflight_boundaries_invalid")
+if not 1 <= image_bytes <= 0x2ff000:
+    raise SystemExit("firmware_preflight_image_size_invalid")
+manifest_start = 20
+manifest_end = manifest_start + manifest_bytes
+signature_end = manifest_end + signature_bytes
+if signature_end + image_bytes != len(package):
+    raise SystemExit("firmware_preflight_exact_eof_invalid")
+manifest = package[manifest_start:manifest_end]
+signature = package[manifest_end:signature_end]
+image = package[signature_end:]
+try:
+    manifest_text = manifest.decode("ascii")
+    pairs = json.loads(manifest_text, object_pairs_hook=lambda value: value)
+except (UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit("firmware_preflight_manifest_encoding_invalid")
+expected_keys = [
+    "schema", "release_id", "firmware_version", "device_class", "image_format",
+    "image_bytes", "image_sha256", "partition_bytes", "chunk_bytes", "rollback",
+]
+if not isinstance(pairs, list) or [key for key, _value in pairs] != expected_keys:
+    raise SystemExit("firmware_preflight_manifest_fields_invalid")
+value = dict(pairs)
+if value != {
+    "schema": "kitsu.ble-firmware.v1",
+    "release_id": release_id,
+    "firmware_version": version,
+    "device_class": "heltec-wifi-lora-32-v3-esp32s3-8mb",
+    "image_format": "esp32s3-app",
+    "image_bytes": image_bytes,
+    "image_sha256": value.get("image_sha256"),
+    "partition_bytes": 0x300000,
+    "chunk_bytes": 4096,
+    "rollback": True,
+}:
+    raise SystemExit("firmware_preflight_manifest_contract_invalid")
+if not re.fullmatch(r"[0-9a-f]{64}", value["image_sha256"]):
+    raise SystemExit("firmware_preflight_image_digest_invalid")
+from hashlib import sha256
+if sha256(image).hexdigest() != value["image_sha256"]:
+    raise SystemExit("firmware_preflight_image_integrity_mismatch")
+canonical = json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+if canonical != manifest:
+    raise SystemExit("firmware_preflight_manifest_not_canonical")
+manifest_output.write_bytes(manifest)
+signature_output.write_bytes(signature)
+PY
+  openssl pkeyutl -verify -pubin \
+    -inkey "$public_source/downloads/update-ed25519-public.pem" \
+    -rawin -in "$probe_dir/firmware.manifest" \
+    -sigfile "$probe_dir/firmware.signature" >/dev/null \
+    || die 'firmware_manifest_signature_invalid'
+fi
 
 # Stage and re-hash every immutable release before changing any live pointer.
 install -d -o root -g root -m 0755 -- "$public_staging"
@@ -790,7 +1000,6 @@ done
   || die 'backend_not_active_after_restart'
 backend_committed=1
 
-probe_dir=$(mktemp -d '/tmp/kitsu-public-unlock.XXXXXX')
 verify_rejection_has_no_pack() {
   local label=$1
   shift
@@ -1040,6 +1249,65 @@ if route not in transformed:
 if transformed.count(route) != 1:
     raise SystemExit("nginx_release_apk_route_invalid")
 
+firmware_text = (public_source / "firmware-release.js").read_text(encoding="utf-8")
+firmware_disabled = firmware_text.count(
+    "export const publishedFirmwareRelease = null;"
+)
+firmware_active = re.findall(
+    r'export const publishedFirmwareRelease = Object\.freeze\(\{\r?\n'
+    r'  url: "([^"]+)",\r?\n'
+    r'  bytes: ([1-9][0-9]*),\r?\n'
+    r'  sha256: "([0-9a-f]{64})",\r?\n'
+    r'  releaseId: "([0-9A-Za-z][0-9A-Za-z._-]{0,63})",\r?\n'
+    r'  firmwareVersion: "(0\.20\.3)",\r?\n'
+    r'\}\);',
+    firmware_text,
+)
+if firmware_disabled + len(firmware_active) != 1:
+    raise SystemExit("nginx_firmware_contract_ambiguous")
+firmware_uri = None if firmware_disabled else firmware_active[0][0]
+firmware_begin = "    # BEGIN KITSU FIRMWARE RELEASE\n"
+firmware_end = "    # END KITSU FIRMWARE RELEASE\n"
+if transformed.count(firmware_begin) != transformed.count(firmware_end):
+    raise SystemExit("nginx_firmware_route_markers_unbalanced")
+if transformed.count(firmware_begin) > 1:
+    raise SystemExit("nginx_firmware_route_markers_duplicated")
+transformed = re.sub(
+    r"    # BEGIN KITSU FIRMWARE RELEASE\n.*?"
+    r"    # END KITSU FIRMWARE RELEASE\n\n?",
+    "",
+    transformed,
+    flags=re.DOTALL,
+)
+if re.search(r"location\s*=\s*/downloads/[^\s{]+\.kitsu-fw\s*\{", transformed):
+    raise SystemExit("nginx_unmanaged_firmware_route_forbidden")
+if firmware_uri is not None:
+    if not re.fullmatch(
+        r"/downloads/[a-z0-9][a-z0-9._-]{0,96}-[0-9a-f]{64}\.kitsu-fw",
+        firmware_uri,
+    ):
+        raise SystemExit("nginx_firmware_uri_invalid")
+    firmware_path = public_source / firmware_uri.removeprefix("/")
+    if not firmware_path.is_file() or firmware_path.is_symlink():
+        raise SystemExit("nginx_firmware_package_missing")
+    marker = "    location ^~ /downloads/ {"
+    if transformed.count(marker) != 1:
+        raise SystemExit("nginx_downloads_deny_marker_invalid")
+    firmware_block = (
+        firmware_begin
+        + f"    location = {firmware_uri} {{\n"
+        + "        try_files $uri =404;\n"
+        + "        default_type application/octet-stream;\n"
+        + "        expires 1y;\n"
+        + '        add_header Cache-Control "public, immutable" always;\n'
+        + "    }\n"
+        + firmware_end
+        + "\n"
+    )
+    transformed = transformed.replace(marker, firmware_block + marker)
+    if transformed.count(f"    location = {firmware_uri} {{") != 1:
+        raise SystemExit("nginx_firmware_route_invalid")
+
 output.write_text(transformed, encoding="utf-8", newline="")
 PY
 }
@@ -1150,11 +1418,21 @@ print(value)
 PY
 )
 fetch_exact origin "$release_apk_path" "$public_target$release_apk_path"
+[[ "$(firmware_release_uri "$public_target")" == "$release_firmware_path" ]] \
+  || die 'staged_firmware_release_contract_changed'
+if [[ -n "$release_firmware_path" ]]; then
+  fetch_exact origin "$release_firmware_path" \
+    "$public_target$release_firmware_path"
+fi
 verify_browser_policies
 fetch_exact public "/unlock/?release=$release_id#code=K8-ABCDE-FGHJK-MNPQR" \
   "$public_target/unlock/index.html"
 fetch_exact public "$release_apk_path?release=$release_id" \
   "$public_target$release_apk_path"
+if [[ -n "$release_firmware_path" ]]; then
+  fetch_exact public "$release_firmware_path?release=$release_id" \
+    "$public_target$release_firmware_path"
+fi
 
 [[ "$(readlink -f -- "$public_current")" == "$public_target" ]] \
   || die 'public_current_changed_after_checks'

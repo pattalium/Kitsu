@@ -62,6 +62,15 @@ class UiPolicyTest {
         )
     }
 
+    @Test fun transientReplayPressureIsNotPresentedAsPersistentStorageFailure() {
+        val busy = "Too many recent actions are still protected. Wait a moment and retry."
+        val unavailable = "Durable action storage is unavailable."
+        assertEquals(busy, "idempotency_busy".humanized())
+        assertEquals(busy, advertiseStatusCopy("idempotency_busy"))
+        assertEquals(unavailable, "idempotency_unavailable".humanized())
+        assertEquals(unavailable, advertiseStatusCopy("idempotency_unavailable"))
+    }
+
     @Test fun bluetoothPermissionDenialRetainsTheInitiatingFlow() {
         assertEquals("bluetooth_permission_required", blePermissionErrorCode(pairing = false))
         assertEquals("pairing_bluetooth_permission_required", blePermissionErrorCode(pairing = true))

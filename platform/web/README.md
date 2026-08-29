@@ -57,7 +57,8 @@ Recommended public host split:
 - `app.k32.run`: authenticated companion Web UI from this directory.
 - `api.k32.run`: owner API and browser BFF.
 - `auth.k32.run`: external OIDC issuer.
-- `flash.k32.run`: Web Serial firmware installer.
+- `flash.k32.run`: immutable historical pre-0.20.3 Web Serial installer; it is
+  noncurrent and unsupported for migrated or unknown-layout boards.
 
 The native Android app never embeds this UI. It connects directly over BLE
 when the companion is nearby and uses the owner API only when BLE is genuinely

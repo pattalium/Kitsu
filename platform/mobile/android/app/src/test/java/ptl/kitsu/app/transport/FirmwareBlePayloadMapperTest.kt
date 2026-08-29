@@ -107,6 +107,38 @@ class FirmwareBlePayloadMapperTest {
         assertEquals("advertise_cooldown", cooldown.code)
     }
 
+    @Test fun replayCapacityIsAnActionRejectionAndNeverAdvertiseReadiness() {
+        val actionId = "00000000-0000-4000-8000-000000000005"
+        val command = ActionCommand(
+            ActionKind.ADVERTISE_ONCE,
+            actionId,
+            advertiseScope = AdvertiseScope.NEARBY,
+        )
+        listOf("idempotency_busy", "idempotency_unavailable").forEach { error ->
+            val failure = runCatching {
+                FirmwareBlePayloadMapper.action(
+                    """{"action_id":"$actionId","accepted":false,"state":"rejected","error_code":"$error"}""".toByteArray(),
+                    command,
+                )
+            }.exceptionOrNull() as TransportException
+            assertEquals(error, failure.code)
+        }
+
+        val durableFailure = FirmwareBlePayloadMapper.state(
+            """{"schema":"kitsu.state.v1","device_uid":"KTDEAD","companion":"FOX","energy":88,"curiosity":72,"affection":91,"sleeping":false,"mesh_enabled":true,"mesh_rx_ready":true,"mesh_time_valid":true,"mesh_identity_ready":true,"mesh_advertise_ready":false,"mesh_advertise_retry_after_ms":0,"mesh_advertise_error":"idempotency_unavailable"}""".toByteArray(),
+            1_787_000_000,
+        )
+        assertEquals("idempotency_unavailable", durableFailure.mesh.advertiseError)
+
+        val spoofedTransientReadiness = runCatching {
+            FirmwareBlePayloadMapper.state(
+                """{"schema":"kitsu.state.v1","device_uid":"KTDEAD","companion":"FOX","energy":88,"curiosity":72,"affection":91,"sleeping":false,"mesh_enabled":true,"mesh_rx_ready":true,"mesh_time_valid":true,"mesh_identity_ready":true,"mesh_advertise_ready":false,"mesh_advertise_retry_after_ms":0,"mesh_advertise_error":"idempotency_busy"}""".toByteArray(),
+                1_787_000_000,
+            )
+        }.exceptionOrNull() as TransportException
+        assertEquals("malformed_state", spoofedTransientReadiness.code)
+    }
+
     @Test fun acceptsLegacyStateWithoutAdvertiseCapabilityFields() {
         val status = FirmwareBlePayloadMapper.state(
             """{"schema":"kitsu.state.v1","device_uid":"KTLEGACY","companion":"FOX","energy":88,"curiosity":72,"affection":91,"sleeping":false,"mesh_enabled":true,"mesh_rx_ready":true,"mesh_time_valid":true}""".toByteArray(),

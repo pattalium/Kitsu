@@ -15,7 +15,7 @@
     <a class="skip-link" href="#main-content">Skip to manual content</a>
     <header class="docs-header">
       <a class="brand" href="/"><img src="/assets/kitsu-app-icon.png?v=4f850b55" alt="" width="43" height="43" /><span>Kitsu Manual<small>K32 companion documentation</small></span></a>
-      <nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://flash.k32.run">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme" aria-pressed="false"><span class="theme-toggle-prefix">Theme</span><span data-theme-label>Dark</span></button><a class="button" href="https://k32.run/#download">Get Android</a></nav>
+      <nav class="top-nav"><a href="https://k32.run">Product</a><a href="https://k32.run/#firmware">Firmware</a><a href="https://github.com/pattalium/Kitsu">Source</a><button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch theme" aria-pressed="false"><span class="theme-toggle-prefix">Theme</span><span data-theme-label>Dark</span></button><a class="button" href="https://k32.run/#download">Get Android</a></nav>
     </header>
     <main class="docs-shell">
       <details class="mobile-manual"><summary><span>Manual</span><b>Manual home</b></summary><nav aria-label="Mobile manual pages"><a aria-current="page" href="/">Manual home</a><a href="/getting-started/">Getting started</a><a href="/device/">Device controls</a><a href="/android/">Android app</a><a href="/messaging/">Messaging</a><a href="/connectivity/">Bluetooth and offline use</a><a href="/updates/">Firmware updates</a><a href="/troubleshooting/">Troubleshooting</a><a href="/security/">Security and privacy</a></nav></details>
@@ -36,12 +36,12 @@
       <article class="article" id="main-content">
         <p class="eyebrow">KITSU USER MANUAL</p>
         <h1>Everything you need to use Kitsu.</h1>
-        <p class="lede">Kitsu is a local-first portrait companion running on a Heltec WiFi LoRa 32 V3. This manual covers the first firmware install, Android pairing, one-button device controls, care, messages, authenticated Bluetooth, signed A/B updates, and recovery.</p>
+        <p class="lede">Kitsu is a local-first portrait companion running on a Heltec WiFi LoRa 32 V3. This manual covers current-layout readiness, Android pairing, one-button device controls, care, messages, authenticated Bluetooth, signed A/B updates, and safe recovery boundaries.</p>
 
         <div class="button-row"><a href="/getting-started/">Start setup</a><a class="secondary" href="https://k32.run/#download">Download Android</a></div>
 
         <div class="quick-grid">
-          <a class="quick-card" href="/getting-started/"><span>First use</span><h3>Set up Kitsu</h3><p>Install firmware and Android, compare the pairing code, and grant the phone.</p><b>Open setup guide →</b></a>
+          <a class="quick-card" href="/getting-started/"><span>First use</span><h3>Set up Kitsu</h3><p>Confirm current firmware, install Android, compare the pairing code, and grant the phone.</p><b>Open setup guide →</b></a>
           <a class="quick-card" href="/device/"><span>On the Heltec</span><h3>Learn the one-button controls</h3><p>Short press, hold, menus, games, inbox, sleep, radio, and phone pairing.</p><b>See every control →</b></a>
           <a class="quick-card" href="/android/"><span>Saved Kitsu</span><h3>Use real per-device controls</h3><p>Select, connect, disconnect, pair another Kitsu, revoke authorization, and install signed firmware.</p><b>Read the Android guide →</b></a>
           <a class="quick-card" href="/messaging/"><span>MeshCore</span><h3>Send and receive messages</h3><p>Use real peer and channel pickers, manual exact targets, device-reported history, and the device inbox.</p><b>Learn messaging →</b></a>
@@ -57,7 +57,7 @@
 
         <h2>The shortest successful setup</h2>
         <ol class="step-list">
-          <li><strong>Install an accepted firmware release.</strong><p>Use the browser installer with a supported Heltec board and a USB data cable only when it reports a signed, physically accepted release. If it reports unavailable, no public firmware has passed the release gate yet.</p></li>
+          <li><strong>Start with an accepted current-layout Kitsu.</strong><p>Public setup for firmware 0.20.3 begins with a board that has already passed the private, table-last storage transition. If the board reports 0.20.2 or an unknown layout, stop; the transition is not an owner download and the historical browser flasher must not be used.</p></li>
           <li><strong>Install Kitsu for Android.</strong><p>Download and install the signed Android APK from the product page, then allow installation from the browser when Android asks.</p></li>
           <li><strong>Open Bluetooth pairing on Kitsu.</strong><p>From Home, hold PRG for the menu, leave CONNECT selected and hold, leave BLUETOOTH selected and hold again.</p></li>
           <li><strong>Compare the six-digit number.</strong><p>Accept Android's pairing prompt only when its number matches Kitsu. Hold PRG on Kitsu when instructed.</p></li>
@@ -65,13 +65,15 @@
           <li><strong>Use Kitsu nearby.</strong><p>Bluetooth is the complete supported control path. No account, Wi-Fi, gateway, or Internet connection is required.</p></li>
         </ol>
 
+        <div class="callout warning"><strong>Legacy installer boundary</strong>The already-published seven-write Web Serial release remains immutable history for its accepted pre-0.20.3 layout only. It is blocked for migrated or unknown layouts. After migration, download the signed <code>.kitsu-fw</code> from the product page and install it through authenticated Android Bluetooth.</div>
+
         <div class="callout"><strong>About the PRG button</strong>A short press is less than 750 ms. A hold is 750 ms or longer. PRG is also the board's boot button, so do not hold it while resetting unless you intentionally want firmware-download mode.</div>
 
         <h2>Choose a topic</h2>
         <ul>
           <li><a href="/android/">Android app</a> — permissions, saved Kitsu, Connect, Disconnect, Forget authorization, care, messages, and offline OTA.</li>
           <li><a href="/connectivity/">Bluetooth and offline use</a> — the authenticated session, real connection states, and what works in airplane mode.</li>
-          <li><a href="/updates/">Firmware updates</a> — signed Bluetooth A/B installation, resume, rollback, USB bootstrap, and recovery.</li>
+          <li><a href="/updates/">Firmware updates</a> — signed Bluetooth A/B installation, resume, rollback, and the private migration/recovery boundary.</li>
           <li><a href="/troubleshooting/">Troubleshooting</a> — pairing, scanning, messages, OTA, display, and recovery.</li>
           <li><a href="/security/">Security and privacy</a> — what is protected, what the reflashable design means, and what data is kept.</li>
         </ul>

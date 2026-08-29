@@ -10,6 +10,7 @@ import java.io.InputStream
 import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.zip.CRC32
 import net.i2p.crypto.eddsa.EdDSAEngine
 import net.i2p.crypto.eddsa.EdDSAPublicKey
 import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable
@@ -90,7 +91,7 @@ object FirmwareUpdatePackageReader {
             }
             if (input.read() != -1) fail("trailing_package_data")
             if (hex(imageDigest.digest()) != manifest.imageSha256) fail("image_hash_mismatch")
-            validateEsp32S3Image(imageFile, imageLength)
+            validateStagedImage(imageFile, imageLength, manifest)
             return VerifiedFirmwarePackage(manifest, manifestBytes, signature, imageFile)
         } catch (failure: FirmwarePackageException) {
             imageFile.delete()
@@ -140,6 +141,117 @@ object FirmwareUpdatePackageReader {
 
     internal fun isSupportedFirmwareLayout(partitionBytes: Int, imageBytes: Int): Boolean =
         maximumImageBytes(partitionBytes)?.let { imageBytes in 1..it } == true
+
+    /**
+     * Completes all local validation before the staged image can become a
+     * [VerifiedFirmwarePackage]. A current-layout identity failure removes the
+     * staged image here as well as at the outer package-reader boundary.
+     */
+    internal fun validateStagedImage(
+        imageFile: File,
+        declaredBytes: Int,
+        manifest: FirmwareUpdateManifest,
+    ) {
+        try {
+            validateEsp32S3Image(imageFile, declaredBytes)
+            validateFirmwareIdentity(imageFile, manifest)
+        } catch (failure: Throwable) {
+            imageFile.delete()
+            throw failure
+        }
+    }
+
+    /**
+     * Binds a signed current-layout manifest to the immutable identity compiled
+     * into the ESP application. Legacy 3.3 MiB packages predate this record and
+     * intentionally remain importable.
+     */
+    internal fun validateFirmwareIdentity(
+        imageFile: File,
+        manifest: FirmwareUpdateManifest,
+    ) {
+        when (manifest.partitionBytes) {
+            LEGACY_PARTITION_BYTES -> return
+            CURRENT_PARTITION_BYTES -> Unit
+            else -> fail("unsupported_manifest")
+        }
+        if (manifest.imageBytes !in 1..CURRENT_MAXIMUM_IMAGE_BYTES ||
+            imageFile.length() != manifest.imageBytes.toLong()
+        ) {
+            fail("invalid_firmware_identity")
+        }
+
+        // The signed manifest caps this allocation at the current slot's
+        // application limit (just under 3 MiB).
+        val image = imageFile.readBytes()
+        if (image.size != manifest.imageBytes) fail("invalid_firmware_identity")
+        var identityStart = -1
+        var cursor = 0
+        while (true) {
+            val start = image.indexOfSequence(firmwareIdentityMagic, cursor)
+            if (start < 0) break
+            if (identityStart >= 0) fail("invalid_firmware_identity")
+            identityStart = start
+            cursor = start + 1
+        }
+        if (identityStart < 0) fail("invalid_firmware_identity")
+
+        val start = identityStart
+        val limit = minOf(image.size, start + FIRMWARE_IDENTITY_MAX_BYTES + 1)
+        var terminator = -1
+        for (index in start until limit) {
+            if (image[index] == 0.toByte()) {
+                terminator = index
+                break
+            }
+        }
+        if (terminator < 0) fail("invalid_firmware_identity")
+        val raw = image.copyOfRange(start, terminator)
+        if (raw.any { (it.toInt() and 0xff) > 0x7f }) fail("invalid_firmware_identity")
+
+        val match = firmwareIdentity.matchEntire(raw.toString(Charsets.US_ASCII))
+            ?: fail("invalid_firmware_identity")
+        val groups = match.groupValues
+        val schema = groups[1].toLongOrNull(10) ?: fail("invalid_firmware_identity")
+        val length = groups[2].toIntOrNull(10) ?: fail("invalid_firmware_identity")
+        val version = groups[3]
+        val crcBoundary = raw.indexOfSequence(firmwareIdentityCrcField, 0)
+        val expectedCrc = groups[22].toLongOrNull(16) ?: fail("invalid_firmware_identity")
+        if (length != raw.size + 1 || crcBoundary < 0 ||
+            CRC32().apply { update(raw, 0, crcBoundary) }.value != expectedCrc ||
+            !isSupportedFirmwareVersion(version)
+        ) {
+            fail("invalid_firmware_identity")
+        }
+
+        fun hex(index: Int): Long =
+            groups[index].toLongOrNull(16) ?: fail("invalid_firmware_identity")
+
+        if (schema != FIRMWARE_IDENTITY_SCHEMA ||
+            version != manifest.firmwareVersion ||
+            groups[4] != FIRMWARE_IDENTITY_DEVICE_CLASS ||
+            manifest.deviceClass != DEVICE_CLASS ||
+            groups[5] != FIRMWARE_LAYOUT_ID ||
+            hex(6) != FIRMWARE_FLASH_BYTES ||
+            hex(7) != FIRMWARE_NVS_OFFSET ||
+            hex(8) != FIRMWARE_NVS_BYTES ||
+            hex(9) != FIRMWARE_OTA_DATA_OFFSET ||
+            hex(10) != FIRMWARE_OTA_DATA_BYTES ||
+            hex(11) != FIRMWARE_APP0_OFFSET ||
+            hex(12) != FIRMWARE_APP1_OFFSET ||
+            hex(13) != manifest.partitionBytes.toLong() ||
+            hex(14) != JOURNAL_BYTES.toLong() ||
+            hex(15) != CURRENT_MAXIMUM_IMAGE_BYTES.toLong() ||
+            hex(16) != FIRMWARE_SPIFFS_OFFSET ||
+            hex(17) != FIRMWARE_SPIFFS_BYTES ||
+            hex(18) != FIRMWARE_CONNECTIVITY_OFFSET ||
+            hex(19) != FIRMWARE_CONNECTIVITY_BYTES ||
+            hex(20) != FIRMWARE_COREDUMP_OFFSET ||
+            hex(21) != FIRMWARE_COREDUMP_BYTES
+        ) {
+            fail("firmware_identity_mismatch")
+        }
+    }
 
     /**
      * Firmware 0.20.3 is the serial-only migration boundary to the 3 MiB A/B
@@ -381,6 +493,19 @@ object FirmwareUpdatePackageReader {
         return value.toInt()
     }
 
+    private fun ByteArray.indexOfSequence(sequence: ByteArray, fromIndex: Int): Int {
+        if (sequence.isEmpty()) return fromIndex.coerceIn(0, size)
+        val first = fromIndex.coerceAtLeast(0)
+        val last = size - sequence.size
+        outer@ for (start in first..last) {
+            for (index in sequence.indices) {
+                if (this[start + index] != sequence[index]) continue@outer
+            }
+            return start
+        }
+        return -1
+    }
+
     private fun fail(code: String): Nothing = throw FirmwarePackageException(code)
 
     const val MANIFEST_SCHEMA = "kitsu.ble-firmware.v1"
@@ -391,6 +516,24 @@ object FirmwareUpdatePackageReader {
     const val JOURNAL_BYTES = 0x1000
     const val CHUNK_BYTES = 4_096
     const val MAX_SUPPORTED_IMAGE_BYTES = LEGACY_PARTITION_BYTES - JOURNAL_BYTES
+    private const val CURRENT_MAXIMUM_IMAGE_BYTES = CURRENT_PARTITION_BYTES - JOURNAL_BYTES
+    private const val FIRMWARE_IDENTITY_SCHEMA = 1L
+    private const val FIRMWARE_IDENTITY_DEVICE_CLASS = "heltec-v3.2"
+    private const val FIRMWARE_LAYOUT_ID = "kitsu-8m-dual-ota-3m-v1"
+    private const val FIRMWARE_FLASH_BYTES = 0x800000L
+    private const val FIRMWARE_NVS_OFFSET = 0x009000L
+    private const val FIRMWARE_NVS_BYTES = 0x040000L
+    private const val FIRMWARE_OTA_DATA_OFFSET = 0x049000L
+    private const val FIRMWARE_OTA_DATA_BYTES = 0x002000L
+    private const val FIRMWARE_APP0_OFFSET = 0x050000L
+    private const val FIRMWARE_APP1_OFFSET = 0x350000L
+    private const val FIRMWARE_SPIFFS_OFFSET = 0x670000L
+    private const val FIRMWARE_SPIFFS_BYTES = 0x140000L
+    private const val FIRMWARE_CONNECTIVITY_OFFSET = 0x7b0000L
+    private const val FIRMWARE_CONNECTIVITY_BYTES = 0x040000L
+    private const val FIRMWARE_COREDUMP_OFFSET = 0x7f0000L
+    private const val FIRMWARE_COREDUMP_BYTES = 0x010000L
+    private const val FIRMWARE_IDENTITY_MAX_BYTES = 384
     private const val MAX_VERSION_BYTES = 32
     private const val HEADER_BYTES = 20
     private const val MAX_MANIFEST_BYTES = 1_024
@@ -407,6 +550,21 @@ object FirmwareUpdatePackageReader {
         "MCowBQYDK2VwAyEAJAAR8Unpz7n7h/q02cpFc8HH/7OHF3ZYAAXsQa7lE4I="
     private const val UPDATE_AUTHORITY_SPKI_SHA256 =
         "df530766fbc4fc93e82cdbd354ebe4a17a453c83e9bb7fe2af30ca2d202494ab"
+    private val firmwareIdentityMagic = "KITSU-ID1|".toByteArray(Charsets.US_ASCII)
+    private val firmwareIdentityCrcField = "|crc32=".toByteArray(Charsets.US_ASCII)
+    private val firmwareIdentity = Regex(
+        "^KITSU-ID1\\|schema=([0-9]+)\\|length=([0-9]{4})\\|version=([^|]+)" +
+            "\\|device_class=([^|]+)\\|layout=([^|]+)\\|flash=([0-9a-f]{8})" +
+            "\\|nvs=([0-9a-f]{8})/([0-9a-f]{8})" +
+            "\\|otadata=([0-9a-f]{8})/([0-9a-f]{8})" +
+            "\\|app0=([0-9a-f]{8})\\|app1=([0-9a-f]{8})" +
+            "\\|slot=([0-9a-f]{8})\\|journal=([0-9a-f]{8})" +
+            "\\|max=([0-9a-f]{8})" +
+            "\\|spiffs=([0-9a-f]{8})/([0-9a-f]{8})" +
+            "\\|conn=([0-9a-f]{8})/([0-9a-f]{8})" +
+            "\\|coredump=([0-9a-f]{8})/([0-9a-f]{8})" +
+            "\\|crc32=([0-9a-f]{8})\\|end$",
+    )
 }
 
 internal fun verifyEd25519Spki(spki: ByteArray, message: ByteArray, signature: ByteArray): Boolean {

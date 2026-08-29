@@ -26,6 +26,14 @@ test("status page checks only the four public release surfaces", async () => {
   assert.doesNotMatch(script, /\.filter\(|\$\{available\}|\$\{results\.length\}/);
 });
 
+test("labels the retained USB origin as pre-0.20.3 history, not current recovery", async () => {
+  const html = await readFile(path.join(root, "index.html"), "utf8");
+  assert.match(html, /Historical Web Serial surface/);
+  assert.match(html, /immutable pre-0\.20\.3 USB origin/i);
+  assert.match(html, /not a current migration, update, or recovery path/i);
+  assert.doesNotMatch(html, /recover firmware over USB|USB recovery installer origin/i);
+});
+
 test("health validation fails closed for every non-200 or unexpected body", async () => {
   await assert.doesNotReject(validateHealthResponse({ ok: true, status: 200, text: async () => "ok\n" }));
   await assert.rejects(

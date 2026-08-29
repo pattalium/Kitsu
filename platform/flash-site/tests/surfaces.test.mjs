@@ -58,14 +58,18 @@ test("status checks only the retained static release surfaces", async () => {
   assert.doesNotMatch(script, /issuer|oidc|auth\.k32\.run|kind === "ready"/i);
 });
 
-test("static product, manual, and USB recovery surfaces link real destinations", async () => {
-  const [product, manual, flasher] = await Promise.all([
+test("static product, manual, and historical pre-0.20.3 USB surfaces link safe destinations", async () => {
+  const [product, manual, flasher, historicalWeb] = await Promise.all([
     text("public-site/index.html"),
     text("docs-site/index.html"),
     text("flash-site/index.html"),
+    text("web/README.md"),
   ]);
   assert.match(product, /https:\/\/docs\.k32\.run\/connectivity\//);
-  assert.match(product, /https:\/\/flash\.k32\.run/);
+  assert.match(product, /href="#firmware"/);
+  assert.match(product, /Checking signed firmware package/);
+  assert.match(product, /Verifying the package signature, application image, and flash layout/);
+  assert.doesNotMatch(product, /https:\/\/flash\.k32\.run/);
   assert.match(manual, /https:\/\/github\.com\/pattalium\/Kitsu/);
   assert.match(flasher, /seven verified core writes/);
   assert.match(flasher, /no intermediate starter is booted/);
@@ -74,6 +78,8 @@ test("static product, manual, and USB recovery surfaces link real destinations",
   assert.match(flasher, /app0 and app1/);
   assert.match(flasher, /clean private OTA journal in each slot/);
   assert.match(flasher, /isolated retired connectivity partition/);
+  assert.match(historicalWeb, /immutable historical pre-0\.20\.3 Web Serial installer/i);
+  assert.match(historicalWeb, /noncurrent and unsupported for migrated or unknown-layout boards/i);
   assert.doesNotMatch(`${product}\n${manual}\n${flasher}`, /link pending|placeholder|app\.k32\.run/i);
 });
 
@@ -144,16 +150,22 @@ test("flasher keeps its firmware controls while exposing a persistent accessible
   assert.doesNotMatch(html, /class="step">\d/u);
 });
 
-test("physical acceptance cannot authorize its own signed manifest", async () => {
+test("physical acceptance keeps migration private and evidence external to the signed manifest", async () => {
   const acceptance = await text("mobile/android/qa/PHYSICAL-RELEASE-ACCEPTANCE.md");
-  assert.match(acceptance, /two\s+deliberately separate records/i);
-  assert.match(acceptance, /candidate hardware evidence/i);
-  assert.match(acceptance, /must exclude the final manifest, final signature, and final\s+public URL/i);
-  assert.match(acceptance, /physical_acceptance\.evidence_sha256/);
-  assert.match(acceptance, /Final public-delivery smoke/i);
-  assert.match(acceptance, /None of those values are fed back into record 1 or the\s+manifest/i);
-  assert.match(acceptance, /external retained record that\s+binds both evidence hashes/i);
-  assert.doesNotMatch(acceptance, /completed evidence.*final manifest.*evidence_sha256/is);
+  assert.match(acceptance, /two\s+deliberately separate retained records/i);
+  assert.match(acceptance, /Private capture, double backup, and fresh NVS oracle/i);
+  assert.match(acceptance, /two private copies[\s\S]*different physical volumes/i);
+  assert.match(acceptance, /IDF 4\.4\.7[\s\S]*zero\s+writes and zero\s+erases/i);
+  assert.match(acceptance, /partition-table sector[\s\S]*final flash mutation/i);
+  assert.match(acceptance, /restore[\s\S]*legacy table last/i);
+  assert.match(acceptance, /signed post-migration Bluetooth firmware update/i);
+  assert.match(acceptance, /Final public Android and `\.kitsu-fw` delivery smoke/i);
+  assert.match(acceptance, /exact `kitsu\.ble-firmware\.v1` manifest has no physical-evidence field/i);
+  assert.match(acceptance, /final promotion record externally binds record 1[\s\S]*record 2/i);
+  assert.match(acceptance, /public package must be byte-for-byte\s+identical to the record-1 package/i);
+  assert.doesNotMatch(acceptance, /0x10000(?![0-9a-f])|0x340000/i);
+  assert.doesNotMatch(acceptance, /final signed BLE manifest may bind[\s\S]*physical_acceptance\.evidence_sha256/i);
+  assert.doesNotMatch(acceptance, /Web Serial[^\n]*(?:install|migrat|repair|recover)[^\n]*`0\.20\.3`/i);
 });
 
 test("all public web surfaces are free of common UTF-8 mojibake", async () => {

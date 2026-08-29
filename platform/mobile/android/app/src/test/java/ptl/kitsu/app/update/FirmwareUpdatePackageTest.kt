@@ -5,6 +5,7 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.zip.CRC32
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -65,6 +66,152 @@ class FirmwareUpdatePackageTest {
         } finally {
             destination.delete()
         }
+    }
+
+    @Test fun currentLayoutAcceptsTheExactFrozenFirmwareIdentity() {
+        val identity = firmwareIdentity()
+        assertEquals(331, identity.size)
+        assertEquals(
+            "KITSU-ID1|schema=1|length=0331|version=0.20.3|" +
+                "device_class=heltec-v3.2|layout=kitsu-8m-dual-ota-3m-v1|" +
+                "flash=00800000|nvs=00009000/00040000|otadata=00049000/00002000|" +
+                "app0=00050000|app1=00350000|slot=00300000|journal=00001000|" +
+                "max=002ff000|spiffs=00670000/00140000|conn=007b0000/00040000|" +
+                "coredump=007f0000/00010000|crc32=068e9051|end\u0000",
+            identity.toString(Charsets.US_ASCII),
+        )
+        val image = imageWithIdentities(identity)
+        withTemporaryImage(image) { imageFile ->
+            FirmwareUpdatePackageReader.validateFirmwareIdentity(
+                imageFile,
+                firmwareManifest(image),
+            )
+        }
+    }
+
+    @Test fun legacyLayoutRemainsReadableWithoutAnIdentityMarker() {
+        val image = validEsp32S3Image(ByteArray(1_536))
+        withTemporaryImage(image) { imageFile ->
+            FirmwareUpdatePackageReader.validateFirmwareIdentity(
+                imageFile,
+                firmwareManifest(
+                    image,
+                    partitionBytes = FirmwareUpdatePackageReader.LEGACY_PARTITION_BYTES,
+                ),
+            )
+        }
+    }
+
+    @Test fun currentLayoutRejectsMissingAndDuplicateIdentityMarkers() {
+        val missing = validEsp32S3Image(ByteArray(1_536))
+        assertEquals(
+            "invalid_firmware_identity",
+            identityFailureCode(missing, firmwareManifest(missing)),
+        )
+
+        val duplicate = imageWithIdentities(firmwareIdentity(), firmwareIdentity())
+        assertEquals(
+            "invalid_firmware_identity",
+            identityFailureCode(duplicate, firmwareManifest(duplicate)),
+        )
+    }
+
+    @Test fun currentLayoutRejectsCorruptUnboundedAndNoncanonicalIdentities() {
+        val badCrc = firmwareIdentity().also { record ->
+            val lastCrcDigit = record.size - "|end\u0000".toByteArray(Charsets.US_ASCII).size - 1
+            record[lastCrcDigit] = if (record[lastCrcDigit] == '0'.code.toByte()) {
+                '1'.code.toByte()
+            } else {
+                '0'.code.toByte()
+            }
+        }
+        val unbounded = "KITSU-ID1|".toByteArray(Charsets.US_ASCII) +
+            ByteArray(376) { 'a'.code.toByte() } + byteArrayOf(0)
+        val uppercaseHex = firmwareIdentity(mapOf("app0" to "0005000A"))
+
+        listOf(badCrc, unbounded, uppercaseHex).forEach { identity ->
+            val image = imageWithIdentities(identity)
+            assertEquals(
+                "invalid_firmware_identity",
+                identityFailureCode(image, firmwareManifest(image)),
+            )
+        }
+    }
+
+    @Test fun currentLayoutBindsIdentityVersionDeviceLayoutAndSchemaToTheManifest() {
+        val wrongIdentityFields = listOf(
+            mapOf("version" to "0.20.4"),
+            mapOf("device_class" to "heltec-v3.1"),
+            mapOf("layout" to "kitsu-8m-dual-ota-3m-v2"),
+            mapOf("schema" to "2"),
+        )
+        wrongIdentityFields.forEach { overrides ->
+            val image = imageWithIdentities(firmwareIdentity(overrides))
+            assertEquals(
+                "firmware_identity_mismatch",
+                identityFailureCode(image, firmwareManifest(image)),
+            )
+        }
+
+        val validImage = imageWithIdentities(firmwareIdentity())
+        assertEquals(
+            "firmware_identity_mismatch",
+            identityFailureCode(
+                validImage,
+                firmwareManifest(validImage).copy(firmwareVersion = "0.20.4"),
+            ),
+        )
+        assertEquals(
+            "firmware_identity_mismatch",
+            identityFailureCode(
+                validImage,
+                firmwareManifest(validImage).copy(deviceClass = "heltec-v3.2"),
+            ),
+        )
+    }
+
+    @Test fun currentLayoutBindsEveryAddressAndSizeInTheFirmwareIdentity() {
+        val wrongGeometry = listOf(
+            mapOf("flash" to "007fffff"),
+            mapOf("nvs_offset" to "0000a000"),
+            mapOf("nvs_bytes" to "0003f000"),
+            mapOf("otadata_offset" to "00048000"),
+            mapOf("otadata_bytes" to "00001000"),
+            mapOf("app0" to "00051000"),
+            mapOf("app1" to "00351000"),
+            mapOf("slot" to "002ff000"),
+            mapOf("journal" to "00002000"),
+            mapOf("max" to "002fe000"),
+            mapOf("spiffs_offset" to "00671000"),
+            mapOf("spiffs_bytes" to "0013f000"),
+            mapOf("conn_offset" to "007b1000"),
+            mapOf("conn_bytes" to "0003f000"),
+            mapOf("coredump_offset" to "007f1000"),
+            mapOf("coredump_bytes" to "0000f000"),
+        )
+        wrongGeometry.forEach { overrides ->
+            val image = imageWithIdentities(firmwareIdentity(overrides))
+            assertEquals(
+                overrides.toString(),
+                "firmware_identity_mismatch",
+                identityFailureCode(image, firmwareManifest(image)),
+            )
+        }
+    }
+
+    @Test fun identityFailureDeletesTheStagedCurrentLayoutImage() {
+        val image = validEsp32S3Image(ByteArray(1_536))
+        val destination = java.io.File.createTempFile("kitsu-identity-cleanup", ".bin")
+        destination.writeBytes(image)
+        val failure = runCatching {
+            FirmwareUpdatePackageReader.validateStagedImage(
+                destination,
+                image.size,
+                firmwareManifest(image),
+            )
+        }.exceptionOrNull() as FirmwarePackageException
+        assertEquals("invalid_firmware_identity", failure.code)
+        assertFalse(destination.exists())
     }
 
     @Test fun firmwareVersionMatchesTheDeviceThirtyTwoByteLimit() {
@@ -229,24 +376,100 @@ class FirmwareUpdatePackageTest {
         assertArrayEquals(arrayOf("*/*"), firmwarePackagePickerMimeTypes())
     }
 
-    private fun validEsp32S3Image(): ByteArray {
-        val prefix = ByteArray(48)
-        prefix[0] = 0xE9.toByte()
-        prefix[1] = 1
-        prefix[12] = 9
-        prefix[23] = 1
-        // One four-byte segment starts after its little-endian header at byte 32.
-        prefix[24] = 0x00
-        prefix[25] = 0x10
-        prefix[26] = 0x00
-        prefix[27] = 0x3f
-        prefix[28] = 4
-        prefix[32] = 1
-        prefix[33] = 2
-        prefix[34] = 3
-        prefix[35] = 4
-        prefix[47] = (0xEF xor 1 xor 2 xor 3 xor 4).toByte()
+    private fun validEsp32S3Image(
+        segmentData: ByteArray = byteArrayOf(1, 2, 3, 4),
+    ): ByteArray {
+        require(segmentData.isNotEmpty() && segmentData.size % 4 == 0)
+        val header = ByteArray(24)
+        header[0] = 0xE9.toByte()
+        header[1] = 1
+        header[12] = 9
+        header[23] = 1
+        val segmentHeader = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putInt(0x3f001000)
+            putInt(segmentData.size)
+        }.array()
+        val body = header + segmentHeader + segmentData
+        val checksumOffset = body.size + (15 - (body.size % 16))
+        val prefix = body.copyOf(checksumOffset + 1)
+        prefix[checksumOffset] = segmentData.fold(0xEF) { checksum, byte ->
+            checksum xor (byte.toInt() and 0xff)
+        }.toByte()
         return prefix + MessageDigest.getInstance("SHA-256").digest(prefix)
+    }
+
+    private fun imageWithIdentities(vararg identities: ByteArray): ByteArray {
+        val data = ByteArray(1_536)
+        identities.forEachIndexed { index, identity ->
+            val offset = 64 + (index * 512)
+            require(offset + identity.size <= data.size)
+            identity.copyInto(data, destinationOffset = offset)
+        }
+        return validEsp32S3Image(data)
+    }
+
+    private fun firmwareIdentity(overrides: Map<String, String> = emptyMap()): ByteArray {
+        fun field(name: String, fallback: String): String = overrides[name] ?: fallback
+        var prefix =
+            "KITSU-ID1|schema=${field("schema", "1")}|length=0000|" +
+                "version=${field("version", "0.20.3")}|" +
+                "device_class=${field("device_class", "heltec-v3.2")}|" +
+                "layout=${field("layout", "kitsu-8m-dual-ota-3m-v1")}|" +
+                "flash=${field("flash", "00800000")}|" +
+                "nvs=${field("nvs_offset", "00009000")}/${field("nvs_bytes", "00040000")}|" +
+                "otadata=${field("otadata_offset", "00049000")}/" +
+                "${field("otadata_bytes", "00002000")}|" +
+                "app0=${field("app0", "00050000")}|app1=${field("app1", "00350000")}|" +
+                "slot=${field("slot", "00300000")}|journal=${field("journal", "00001000")}|" +
+                "max=${field("max", "002ff000")}|" +
+                "spiffs=${field("spiffs_offset", "00670000")}/" +
+                "${field("spiffs_bytes", "00140000")}|" +
+                "conn=${field("conn_offset", "007b0000")}/${field("conn_bytes", "00040000")}|" +
+                "coredump=${field("coredump_offset", "007f0000")}/" +
+                "${field("coredump_bytes", "00010000")}"
+        val totalBytes = prefix.toByteArray(Charsets.US_ASCII).size +
+            "|crc32=00000000|end\u0000".toByteArray(Charsets.US_ASCII).size
+        prefix = prefix.replace("length=0000", "length=${totalBytes.toString().padStart(4, '0')}")
+        val prefixBytes = prefix.toByteArray(Charsets.US_ASCII)
+        val checksum = CRC32().apply { update(prefixBytes) }.value.toString(16).padStart(8, '0')
+        return "$prefix|crc32=$checksum|end\u0000".toByteArray(Charsets.US_ASCII)
+    }
+
+    private fun firmwareManifest(
+        image: ByteArray,
+        firmwareVersion: String = "0.20.3",
+        partitionBytes: Int = FirmwareUpdatePackageReader.CURRENT_PARTITION_BYTES,
+    ): FirmwareUpdateManifest = FirmwareUpdateManifest(
+        schema = FirmwareUpdatePackageReader.MANIFEST_SCHEMA,
+        releaseId = "identity-test",
+        firmwareVersion = firmwareVersion,
+        deviceClass = FirmwareUpdatePackageReader.DEVICE_CLASS,
+        imageFormat = FirmwareUpdatePackageReader.IMAGE_FORMAT,
+        imageBytes = image.size,
+        imageSha256 = sha256(image),
+        partitionBytes = partitionBytes,
+        chunkBytes = FirmwareUpdatePackageReader.CHUNK_BYTES,
+        rollback = true,
+    )
+
+    private fun identityFailureCode(
+        image: ByteArray,
+        manifest: FirmwareUpdateManifest,
+    ): String = withTemporaryImage(image) { imageFile ->
+        val failure = runCatching {
+            FirmwareUpdatePackageReader.validateFirmwareIdentity(imageFile, manifest)
+        }.exceptionOrNull() as FirmwarePackageException
+        failure.code
+    }
+
+    private fun <T> withTemporaryImage(image: ByteArray, block: (java.io.File) -> T): T {
+        val imageFile = java.io.File.createTempFile("kitsu-identity", ".bin")
+        return try {
+            imageFile.writeBytes(image)
+            block(imageFile)
+        } finally {
+            imageFile.delete()
+        }
     }
 
     private fun unsignedPackage(partitionBytes: Int, imageBytes: Int): ByteArray {

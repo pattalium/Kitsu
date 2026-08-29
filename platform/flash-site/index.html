@@ -23,9 +23,9 @@
     </header>
     <main id="main-content">
       <section class="hero">
-        <p class="eyebrow">Signed firmware recovery</p>
-        <h1>Install Kitsu safely.</h1>
-        <p>Connect a Heltec over USB and install Kitsu without replacing its pet. Pet replacement is a separate, explicit destructive choice; the signed core and every selected companion bundle must pass their integrity gates before anything is written.</p>
+        <p class="eyebrow">Historical-layout USB recovery</p>
+        <h1>Recover a legacy Kitsu safely.</h1>
+        <p>This installer is only for a Heltec that still has the exact reviewed pre-0.20.3 partition layout. It reads and hashes the physical partition table before enabling installation and again before the first write. A board already migrated to the 256&nbsp;KiB NVS layout is blocked here and uses Android's signed <code>.kitsu-fw</code> updater instead. Pet replacement remains a separate, explicit destructive choice.</p>
       </section>
 
       <section class="grid" aria-label="Flashing workflow">
@@ -47,7 +47,7 @@
         <article>
           <span class="step">Device</span>
           <h2>Write and read back</h2>
-          <p>Install unlocks only for an ESP32-S3 with 8&nbsp;MiB flash. A normal install performs seven verified core writes: the rollback-enabled Kitsu bootloader, partition table, the same accepted app in app0 and app1, a clean private OTA journal in each slot, and one exact clear over the isolated retired connectivity partition. Keep current pet is forced on every page load. If you explicitly choose a different species, a PREPARED record preserving the original pet identity is verified before any pack byte; a separate matching COMMITTED record is verified only after exact pack readback. Interrupted replacements resume only with that bound target and preserve both transaction sectors while re-clearing the retired suffix. One final reset boots the complete result; no intermediate starter is booted.</p>
+          <p><strong>Legacy layout only.</strong> Install unlocks only for an ESP32-S3 with 8&nbsp;MiB flash and the exact historical partition-table hash. On that approved source layout, the recovery performs seven verified core writes: the rollback-enabled Kitsu bootloader, partition table, the same accepted app in app0 and app1, a clean private OTA journal in each slot, and one exact clear over the isolated retired connectivity partition. Keep current pet is forced on every page load. If you explicitly choose a different species, a PREPARED record preserving the original pet identity is verified before any pack byte; a separate matching COMMITTED record is verified only after exact pack readback. Interrupted replacements resume only with that bound target and preserve both transaction sectors while re-clearing the retired suffix. One final reset boots the complete result; no intermediate starter is booted.</p>
           <div class="pack-choice">
             <label for="pack-select">Pet installed with Kitsu</label>
             <select id="pack-select" name="companion-pack" autocomplete="off" aria-describedby="pack-detail">
@@ -76,7 +76,7 @@
 
       <aside class="notice">
         <strong>Owner-reflashable by design.</strong>
-        <span>This installer writes the reviewed Kitsu bootloader so Bluetooth updates can roll back safely and clears only the retired partition that held legacy Wi-Fi, gateway, and server credentials. It never calls full-chip erase and never writes OTA data, controller records, MeshCore state, coredump, or eFuses. The companion slot stays byte-for-byte untouched in the default mode. A different species requires two explicit confirmations plus separate PREPARED-before-pack and COMMITTED-after-readback records. A pending replacement cannot be silently discarded when its physical source pack is no longer intact. Ordinary serial recovery and restoration of stock MeshCore remain available.</span>
+        <span>This historical recovery installer writes the reviewed legacy-layout Kitsu bootloader so its Bluetooth updates can roll back safely and clears only the retired partition that held legacy Wi-Fi, gateway, and server credentials. It never calls full-chip erase and never writes OTA data, controller records, MeshCore state, coredump, or eFuses. The companion slot stays byte-for-byte untouched in the default mode. A different species requires two explicit confirmations plus separate PREPARED-before-pack and COMMITTED-after-readback records. A pending replacement cannot be silently discarded when its physical source pack is no longer intact. The 0.20.3 storage transition is a separate private table-last ceremony; after migration, use signed Android Bluetooth OTA or the dedicated restore procedure, never these legacy offsets.</span>
       </aside>
     </main>
     <footer><span>K32 · Kitsu</span><span>Signed stable channel · fail closed</span></footer>

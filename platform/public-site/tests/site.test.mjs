@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify, webcrypto } from "node:crypto";
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -135,13 +137,15 @@ test("publishes a complete product surface with real destinations", async () => 
   assert.match(html, /Download Android/);
   assert.match(html, /https:\/\/docs\.k32\.run/);
   assert.match(html, /https:\/\/docs\.k32\.run\/connectivity\//);
-  assert.match(html, /https:\/\/flash\.k32\.run/);
+  assert.doesNotMatch(html, /https:\/\/flash\.k32\.run/);
   assert.match(html, /https:\/\/github\.com\/pattalium\/Kitsu/);
   assert.match(html, /does not need an account, gateway, or Internet connection/i);
-  assert.match(html, /reviewed rollback bootloader, partition table, both A\/B application slots, both clean private update journals, and an exact clear over the isolated legacy connectivity partition/i);
-  assert.match(html, /browser flasher stays unavailable until a physically accepted release/i);
-  assert.match(html, /Check firmware availability/i);
-  assert.match(html, /installer fails closed until a physically accepted signed release is available/i);
+  assert.match(html, /Public 0\.20\.3 starts from a board already prepared for the current layout/i);
+  assert.match(html, /one-time 0\.20\.2 migration is a private, backed-up serial operation, not an owner download/i);
+  assert.match(html, /Never run the historical browser installer on a migrated or unknown layout/i);
+  assert.match(html, /id="firmware"/i);
+  assert.match(html, /Checking signed firmware package/i);
+  assert.match(html, /Verifying the package signature, application image, and flash layout/i);
   assert.doesNotMatch(html, /hero-signal|signal-trace|signal-orbit|label-near|label-far|label-home/);
   assert.doesNotMatch(html, /[✦◇⌁]/u);
   assert.equal((html.match(/class="feature-icon" aria-hidden="true"><svg/g) ?? []).length, 4);
@@ -175,14 +179,27 @@ test("offers only a voluntary no-benefit Ko-fi support action", async () => {
 });
 
 test("source landing instructions match the local-only device controls", async () => {
-  const readme = await readFile(path.join(projectRoot, "README.md"), "utf8");
+  const [readme, enhancements] = await Promise.all([
+    readFile(path.join(projectRoot, "README.md"), "utf8"),
+    readFile(path.join(projectRoot, "docs", "enhancements.md"), "utf8"),
+  ]);
+  const firstUse = readme.match(/## First use\s+([\s\S]*?)\n## /)?.[1];
+  assert.ok(firstUse);
   assert.match(readme, /has no Internet permission/i);
   assert.match(readme, /hold PRG from Home[\s\S]*CONNECT[\s\S]*BLUETOOTH[\s\S]*PAIR PHONE/i);
   assert.match(readme, /Pair this phone/);
   assert.match(readme, /no online service is involved/i);
   assert.match(readme, /only the currently accepted, signed, local-first\s+Android release/i);
-  assert.match(readme, /firmware installer remains fail-closed until the matching\s+local-only firmware\s+finishes physical acceptance/i);
+  assert.match(readme, /firmware download card exposes only the exact accepted\s+signed package/i);
+  assert.match(firstUse, /already prepared for the current 8 MiB dual-OTA\s+layout/i);
+  assert.match(firstUse, /0\.20\.2[\s\S]*private,[\s\S]*double-backed-up,[\s\S]*physically supervised/i);
+  assert.match(firstUse, /Normal signed firmware updates[\s\S]*\.kitsu-fw[\s\S]*Android/i);
+  assert.doesNotMatch(firstUse, /Web Serial|browser firmware installer|USB data cable|seven[- ]write|USB bootstrap/i);
+  assert.match(readme, /platform\/flash-site\/` \| Immutable historical pre-0\.20\.3 Web Serial surface/i);
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
+  assert.match(enhancements, /Only the exact accepted historical pre-0\.20\.3 Web Serial layout/i);
+  assert.match(enhancements, /Pack installation on migrated\/current-layout boards is not offered\s+yet/i);
+  assert.doesNotMatch(enhancements, /The Web Serial flasher can install an unlocked pack/i);
 });
 
 test("fails closed outside the exact Android 2.2.10 production contract", async () => {
@@ -207,6 +224,50 @@ test("fails closed outside the exact Android 2.2.10 production contract", async 
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
 });
 
+test("ships one exact content-addressed package behind the inner-authority verifier", async () => {
+  const [html, script, readme, attributes, deploy, downloads] = await Promise.all([
+    readFile(path.join(root, "index.html"), "utf8"),
+    readFile(path.join(root, "firmware-release.js"), "utf8"),
+    readFile(path.join(root, "README.md"), "utf8"),
+    readFile(path.join(projectRoot, ".gitattributes"), "utf8"),
+    readFile(path.join(projectRoot, "tools", "deploy_public_unlock_atomic.sh"), "utf8"),
+    listFiles(path.join(root, "downloads")),
+  ]);
+  const scriptDigest = html.match(/src="\/firmware-release\.js\?sha256=([a-f0-9]{64})"/)?.[1];
+  assert.equal(scriptDigest, await sha256(path.join(root, "firmware-release.js")));
+  const packageName = "kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw";
+  const packagePath = path.join(root, "downloads", packageName);
+  assert.equal((script.match(/export const publishedFirmwareRelease = Object\.freeze/g) ?? []).length, 1);
+  assert.doesNotMatch(script, /export const publishedFirmwareRelease = null;/);
+  assert.match(script, new RegExp(`/downloads/${packageName.replaceAll(".", "\\.")}`));
+  assert.match(script, /bytes: 1228050,/);
+  assert.match(script, /releaseId: "kitsu-0\.20\.3-reflashable-1"/);
+  assert.match(script, /firmwareVersion: "0\.20\.3"/);
+  assert.doesNotMatch(html, /href=["'][^"']+\.kitsu-fw/i);
+  assert.deepEqual(downloads.filter((name) => name.endsWith(".kitsu-fw")), [packageName]);
+  assert.equal((await stat(packagePath)).size, 1_228_050);
+  assert.equal(
+    await sha256(packagePath),
+    "022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51",
+  );
+  assert.match(html, /id="firmware"/);
+  assert.match(html, /id="firmware-download"[^>]*aria-disabled="true"/);
+  assert.match(script, /KITSUFW1/);
+  assert.match(script, /Ed25519/);
+  assert.match(script, /KITSU-ID1/);
+  assert.match(script, /createObjectURL/);
+  assert.match(script, /revokeObjectURL/);
+  assert.match(readme, /signed inner package is the firmware authority/i);
+  assert.match(readme, /There is no second outer\s+manifest or signature/i);
+  assert.match(readme, /kitsu-0\.20\.3-reflashable-1/);
+  assert.match(readme, /022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51/);
+  assert.match(attributes, /platform\/public-site\/downloads\/\*\.kitsu-fw -text/);
+  assert.match(deploy, /firmware_package_present_while_release_disabled/);
+  assert.match(deploy, /BEGIN KITSU FIRMWARE RELEASE/);
+  assert.match(deploy, /fetch_exact origin "\$release_firmware_path"/);
+  assert.match(deploy, /fetch_exact public "\$release_firmware_path\?release=\$release_id"/);
+});
+
 test("preserves historical testing-preview bytes without advertising them", async () => {
   const [html, styles, stableScript] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
@@ -218,7 +279,8 @@ test("preserves historical testing-preview bytes without advertising them", asyn
   await access(path.join(root, "preview-release.js"));
   const stylesDigest = html.match(/href="\/styles\.css\?sha256=([a-f0-9]{64})"/)?.[1];
   assert.equal(stylesDigest, await sha256(path.join(root, "styles.css")));
-  assert.match(styles, /\.download-cards\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(styles, /\.download-cards\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /@media \(max-width: 1050px\)[\s\S]*\.download-cards\s*\{\s*grid-template-columns:\s*1fr;/);
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.download-cards\s*\{\s*grid-template-columns:\s*1fr;/);
 
   // The stable verifier remains its independent, production-only channel.
@@ -430,11 +492,12 @@ test("ships the full source-built firmware demo over a browser hardware layer", 
   for (const section of ["Flash", "Device", "Care", "Mesh"]) assert.match(html, new RegExp(`>${section}<`));
   assert.doesNotMatch(html, /data-demo-(?:view|panel)="pack"|id="pack-(?:next|bootloader|progress|stage|error)"/);
   assert.match(html, /Hold it for 750 ms to select/);
-  assert.match(html, /same core-and-pet sequence as the real flasher/i);
+  assert.match(html, /historical demo reproduces the pre-0\.20\.3 core-and-pet sequence in emulated storage/i);
   assert.match(html, /automatic reset first/i);
-  assert.match(html, /PRG \+ RST is available as a manual fallback/i);
-  assert.match(html, /real flasher writes and verifies the signed core, then installs your selected official pet in the same USB session/i);
-  assert.match(html, /href="https:\/\/flash\.k32\.run">Open the real flasher/);
+  assert.match(html, /If that fails, hold PRG, tap RST, then release PRG/i);
+  assert.match(html, /href="\/#firmware">Get signed firmware guidance/);
+  assert.match(html, /Do not use the retired seven-write flow on a migrated or unknown-layout board/i);
+  assert.doesNotMatch(html, /https:\/\/flash\.k32\.run/i);
   assert.match(html, /emulated pet partition/i);
   assert.match(html, /do not flash a physical board, request USB, accept files or codes/i);
   assert.doesNotMatch(html, /<input[^>]+type=["']file["']/i);
@@ -868,6 +931,7 @@ test("ships every referenced local release asset", async () => {
     "styles.css",
     "theme.js",
     "site.js",
+    "firmware-release.js",
     "preview-release.js",
     "demo/index.html",
     "demo/demo.css",
@@ -881,6 +945,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/latest.json",
     "downloads/latest.json.sig",
     "downloads/update-ed25519-public.pem",
+    "downloads/kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw",
     "downloads/kitsu-android-2.1.5-72cd273f7e44402267ccd7a9bbbec9f2.apk",
     "downloads/kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "downloads/kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
@@ -979,7 +1044,7 @@ test("uses byte-exact authoritative K32 brand assets", async () => {
 });
 
 test("all public text assets are valid UTF-8 without mojibake", async () => {
-  const paths = ["index.html", "styles.css", "theme.js", "site.js", "preview-release.js", "README.md", "demo/index.html", "demo/demo.css", "demo/demo.js", "unlock/index.html", "unlock/unlock.css", "unlock/unlock.js", "unlock/catalog.js", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
+  const paths = ["index.html", "styles.css", "theme.js", "site.js", "firmware-release.js", "preview-release.js", "README.md", "demo/index.html", "demo/demo.css", "demo/demo.js", "unlock/index.html", "unlock/unlock.css", "unlock/unlock.js", "unlock/catalog.js", "privacy/index.html", "terms/index.html", "security/index.html", "contact/index.html"];
   for (const relative of paths) assert.doesNotMatch(await readFile(path.join(root, relative), "utf8"), /(?:Ã‚|Ã¢â‚¬|Ã¢â‚¬â„¢|Ã¢â€ |Ã¢â€¡|Ã¢â„¢|Ã¢â€”|Ã¢Å“|Ã¢Å’|Ãƒ|ï¿½)/, relative);
 });
 
@@ -1041,8 +1106,120 @@ test("ships a pinned, rollback-capable atomic unlock deployment script", async (
   assert.match(deploy, /mv -Tf -- "\$next_link" "\$current"/);
   assert.match(deploy, /KITSU_PUBLIC_UNLOCK_ROLLBACK_OK/);
   assert.match(deploy, /\/unlock\/#code=K8-ABCDE-FGHJK-MNPQR/);
+  assert.match(deploy, /--public-digest PUBLIC/);
+  assert.match(deploy, /public_inventory_entry_forbidden/);
+  assert.match(deploy, /public_raw_esp_image_forbidden/);
+  assert.match(deploy, /nvs\|partition/);
+  for (const privateArtifactName of ["migration", "oracle", "evidence", "preflight", "unsigned"]) {
+    assert.match(deploy, new RegExp(`\\b${privateArtifactName}\\b`));
+  }
   assert.doesNotMatch(deploy, /\/unlock\/\?code=/);
   assert.doesNotMatch(deploy, /sshpass|password\s*=|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/i);
+});
+
+test("public deployment inventory rejects raw firmware, NVS, migration, and evidence artifacts", {
+  skip: process.platform === "win32",
+}, async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "kitsu-public-inventory-"));
+  const deploy = path.join(projectRoot, "tools", "deploy_public_unlock_atomic.sh");
+  const required = [
+    "index.html", "styles.css", "theme.js", "site.js", "firmware-release.js",
+    "demo/index.html", "unlock/index.html", "unlock/unlock.css", "unlock/unlock.js",
+    "unlock/catalog.js", "privacy/index.html", "terms/index.html", "security/index.html",
+    "contact/index.html", "downloads/latest.json", "downloads/latest.json.sig",
+    "downloads/update-ed25519-public.pem",
+    "downloads/kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw",
+  ];
+  try {
+    for (const relative of required) {
+      const destination = path.join(fixture, relative);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await cp(path.join(root, relative), destination);
+    }
+    const runInventory = () => spawnSync(
+      "bash",
+      [deploy, "--public-digest", fixture],
+      { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 },
+    );
+    const baseline = runInventory();
+    assert.equal(baseline.status, 0, baseline.stderr);
+    assert.match(baseline.stdout, /^[0-9a-f]{64}\n$/);
+
+    const injections = [
+      ["firmware.bin", Buffer.from([0xe9, 1, 2, 3])],
+      ["full-flash.img", Buffer.from([0xe9, 2, 3, 4])],
+      ["nvs.bin", Buffer.alloc(64, 0xff)],
+      ["migration-record.json", Buffer.from("{}\n")],
+      ["physical-acceptance-evidence.json", Buffer.from("{}\n")],
+      ["downloads/unaccepted-" + "0".repeat(64) + ".kitsu-fw", Buffer.from("KITSUFW1")],
+    ];
+    for (const [relative, bytes] of injections) {
+      const destination = path.join(fixture, relative);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, bytes);
+      const result = runInventory();
+      assert.notEqual(result.status, 0, `${relative} unexpectedly passed inventory`);
+      await rm(destination, { force: true });
+    }
+
+    await writeFile(path.join(fixture, "site.js"), Buffer.from([0xe9, 1, 2, 3]));
+    const disguised = runInventory();
+    assert.notEqual(disguised.status, 0, "raw ESP image disguised as an allowed asset passed");
+    assert.match(disguised.stderr, /public_raw_esp_image_forbidden:site\.js/);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("enabled deployment route preflight emits one immutable package route without publishing", {
+  skip: process.platform === "win32",
+}, async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "kitsu-firmware-route-"));
+  const deployPath = path.join(projectRoot, "tools", "deploy_public_unlock_atomic.sh");
+  const policyPath = path.join(projectRoot, "platform", "ops", "k32-unlock-policy-map.conf");
+  try {
+    const deploy = await readFile(deployPath, "utf8");
+    const transform = deploy.match(
+      /transform_nginx_config\(\) \{\r?\n  python3 - "\$1" "\$2" "\$3" "\$4" <<'PY'\r?\n([\s\S]*?)\r?\nPY\r?\n\}/,
+    )?.[1];
+    assert.ok(transform, "deployment nginx transform must remain extractable for read-only preflight");
+
+    const input = path.join(fixture, "k32-sites.conf");
+    const output = path.join(fixture, "k32-sites.next.conf");
+    const secondOutput = path.join(fixture, "k32-sites.second.conf");
+    await writeFile(input, [
+      "server {",
+      "    listen 443 ssl;",
+      "    server_name k32.run www.k32.run;",
+      "    root /srv/k32/public/current;",
+      "    add_header Content-Security-Policy $kitsu_public_site_csp always;",
+      "    add_header Permissions-Policy $kitsu_public_site_permissions_policy always;",
+      "    location ^~ /downloads/ {",
+      "        deny all;",
+      "    }",
+      "}",
+      "",
+    ].join("\n"));
+    const runTransform = (source, destination) => spawnSync(
+      "python3",
+      ["-", source, policyPath, destination, root],
+      { input: transform, encoding: "utf8", maxBuffer: 2 * 1024 * 1024 },
+    );
+    const first = runTransform(input, output);
+    assert.equal(first.status, 0, first.stderr);
+    const transformed = await readFile(output, "utf8");
+    const packageUri = "/downloads/kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw";
+    assert.equal((transformed.match(/# BEGIN KITSU FIRMWARE RELEASE/g) ?? []).length, 1);
+    assert.equal((transformed.match(new RegExp(`location = ${packageUri.replaceAll(".", "\\.")} \\{`, "g")) ?? []).length, 1);
+    assert.match(transformed, /default_type application\/octet-stream;[\s\S]*expires 1y;[\s\S]*Cache-Control "public, immutable" always;/);
+    assert.match(transformed, /location \^~ \/downloads\/ \{[\s\S]*deny all;/);
+
+    const second = runTransform(output, secondOutput);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(await readFile(secondOutput, "utf8"), transformed, "route transform must be idempotent");
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test("publishes an accessible, fail-closed local unlock surface", async () => {
@@ -1097,7 +1274,9 @@ test("publishes an accessible, fail-closed local unlock surface", async () => {
   assert.match(html, /firmware verification record are sent only to the K32 API/);
   assert.match(html, /maxlength="20"/);
   assert.match(html, /placeholder="K8-XXXXX-XXXXX-XXXXX"/);
-  assert.match(html, /href="https:\/\/flash\.k32\.run"/);
+  assert.match(html, /Installation on migrated 0\.20\.3 boards is not offered from this page yet/i);
+  assert.match(html, /href="\/#firmware">signed firmware guidance/);
+  assert.doesNotMatch(html, /https:\/\/flash\.k32\.run/i);
 
   const cssDigest = html.match(/href="\/unlock\/unlock\.css\?sha256=([a-f0-9]{64})"/)?.[1];
   const scriptDigest = html.match(/src="\/unlock\/unlock\.js\?sha256=([a-f0-9]{64})"/)?.[1];

@@ -266,6 +266,9 @@ internal fun String.humanized(): String = when (this) {
         "New Bluetooth bond complete; saved controller kept"
     "one_fresh_gatt_retry" -> "Verifying the new bond once"
     "saved_controller_authenticated" -> "Saved controller authenticated"
+    "idempotency_busy" ->
+        "Too many recent actions are still protected. Wait a moment and retry."
+    "idempotency_unavailable" -> "Durable action storage is unavailable."
     else -> replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 

@@ -9,10 +9,12 @@ session.
 ## Supported surfaces
 
 - `mobile/android/` — direct-Bluetooth Android application.
-- `public-site/` — product information and the signed Android download.
+- `public-site/` — product information plus signed Android and firmware downloads.
 - `docs-site/` — the complete local-first user manual.
-- `flash-site/` — signed USB bootstrap and recovery.
-- `status-site/` — reachability checks for those static release surfaces.
+- `flash-site/` — immutable historical pre-0.20.3 Web Serial surface; never a
+  current migration, update, or recovery path.
+- `status-site/` — reachability checks for the current static release surfaces
+  and the explicitly historical USB origin.
 
 The product CI builds and tests only these surfaces plus the local Heltec
 firmware and its signed offline update package. It does not start containers,

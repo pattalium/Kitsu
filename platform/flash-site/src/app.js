@@ -6,6 +6,7 @@ import {
   reverifyArtifacts,
   sha256Hex,
 } from "./release.js";
+import { requireLegacyFlashLayout } from "./layout-gate.js";
 import {
   buildReplacementIntent,
   companionPackTransition,
@@ -40,6 +41,7 @@ let transport;
 let loader;
 let detectedChip;
 let detectedFlashSize;
+let installedFlashLayout;
 let verifiedRelease;
 let verifiedPack;
 let installedPack;
@@ -156,7 +158,8 @@ function replacementSelectionReady(pack = verifiedPack) {
 function updateControls() {
   const connected = Boolean(loader)
     && loader.chip?.CHIP_NAME === "ESP32-S3"
-    && detectedFlashSize === FLASH_PLAN.flashSize;
+    && detectedFlashSize === FLASH_PLAN.flashSize
+    && installedFlashLayout?.kind === "legacy";
   connectButton.disabled = !serialSupported || busy || Boolean(transport);
   disconnectButton.disabled = busy || !transport;
   refreshButton.disabled = busy;
@@ -190,6 +193,7 @@ async function closeTransport({ reset = true, announce = true } = {}) {
   serialPort = undefined;
   detectedChip = undefined;
   detectedFlashSize = undefined;
+  installedFlashLayout = undefined;
   installedPack = undefined;
   installedReplacementTransaction = undefined;
   updateControls();
@@ -228,6 +232,7 @@ async function connect() {
       serialPort = undefined;
       detectedChip = undefined;
       detectedFlashSize = undefined;
+      installedFlashLayout = undefined;
       installedPack = undefined;
       installedReplacementTransaction = undefined;
       updateControls();
@@ -241,6 +246,8 @@ async function connect() {
     if (detectedFlashSize !== FLASH_PLAN.flashSize) {
       throw new Error(`unsupported flash size ${detectedFlashSize}; 8MB required`);
     }
+    installedFlashLayout = await requireLegacyFlashLayout(loader);
+    append(`Partition-table gate passed: exact reviewed legacy layout ${installedFlashLayout.sha256}.`);
     try {
       installedReplacementTransaction = await inspectReplacementTransaction(loader);
       append(`Replacement transaction gate: ${replacementTransactionDescription()}.`);
@@ -269,8 +276,8 @@ async function connect() {
       );
     }
     if (packSelect.value === "preserve") await loadSelectedPack();
-    browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash verified through Espressif ROM loader. Current physical pack: ${installedPackDescription()}; ${replacementTransactionDescription()}.`;
-    append(`Device gate passed: ${detectedChip}; chip family ESP32-S3; flash ${detectedFlashSize}.`);
+    browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash and the exact reviewed legacy partition table verified through Espressif ROM loader. Current physical pack: ${installedPackDescription()}; ${replacementTransactionDescription()}.`;
+    append(`Device gate passed: ${detectedChip}; chip family ESP32-S3; flash ${detectedFlashSize}; legacy partition table exact.`);
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       append("Port selection was cancelled. Nothing was written.");
@@ -441,6 +448,10 @@ async function install() {
     if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== FLASH_PLAN.flashSize) {
       throw new Error("device identity gate is no longer valid");
     }
+    const currentFlashLayout = await requireLegacyFlashLayout(loader);
+    if (installedFlashLayout?.kind !== "legacy" || currentFlashLayout.sha256 !== installedFlashLayout.sha256) {
+      throw new Error("partition table changed after connection; reconnect and use the dedicated recovery path");
+    }
     const [latestRelease, latestPack] = await Promise.all([
       fetchVerifiedRelease(),
       packForInstall(selectedPackId, selectedPack),
@@ -570,6 +581,11 @@ async function install() {
         append("Destructive pet replacement cancelled. Nothing was written.");
         return;
       }
+    }
+
+    const finalFlashLayout = await requireLegacyFlashLayout(loader);
+    if (finalFlashLayout.sha256 !== currentFlashLayout.sha256) {
+      throw new Error("partition table changed before the first write; nothing was written");
     }
 
     setProgress(4, "Latest release verified; starting seven bounded writes");

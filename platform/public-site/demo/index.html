@@ -16,7 +16,7 @@
   <meta name="twitter:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
   <link rel="icon" href="/assets/kitsu-app-icon.png" />
   <script src="/theme.js"></script>
-  <link rel="stylesheet" href="/styles.css?sha256=9b2dcafd5e9f0fc8f78234c370f10557c95d512e468c4af84a94e98ad01a4252" />
+  <link rel="stylesheet" href="/styles.css?sha256=25f87e6c4422ebc67ad42244076efa84978407c9bc6f59e8c8015992cda12622" />
   <link rel="stylesheet" href="/demo/demo.css?sha256=a115f8a4202986a96da776b023861d3197cedd5307b8ff35b3638361d42ded03" />
   <script type="module" src="/demo/demo.js?sha256=eb1bdefbd5774a3b9e7d6dc87ff9c1961b5b194c4902891fe5917cac0f920fe5"></script>
   <title>Try Kitsu - interactive firmware demo</title>
@@ -89,7 +89,7 @@
           <header>
             <p class="eyebrow">Demo installer</p>
             <h3 id="flash-title">Start from an empty demo Heltec.</h3>
-            <p>Follow the same core-and-pet sequence as the real flasher. Automatic download mode comes first; PRG + RST is available as a manual fallback. The browser never opens a port.</p>
+            <p>This historical demo reproduces the pre-0.20.3 core-and-pet sequence in emulated storage. The browser never opens a port, and these steps are not recovery instructions for a migrated board.</p>
           </header>
           <ol class="firmware-procedure" aria-label="Kitsu and Fox installation steps">
             <li data-firmware-step="connect"><strong>Connect USB</strong><span>The demo cable is already connected.</span></li>
@@ -111,9 +111,9 @@
           <div class="flash-actions">
             <button class="demo-secondary-action" type="button" id="bootloader-assist">Simulate PRG + RST</button>
             <button class="demo-primary-action" type="button" id="flash-demo" disabled>Install Kitsu + Fox</button>
-            <a class="demo-real-link" href="https://flash.k32.run">Open the real flasher <span aria-hidden="true">↗</span></a>
+            <a class="demo-real-link" href="/#firmware">Get signed firmware guidance <span aria-hidden="true">↗</span></a>
           </div>
-          <p class="panel-boundary">Demo only. These controls reproduce the user-facing sequence inside emulated storage. They do not flash a physical board, request USB, accept files or codes, or write the Xtensa firmware binary. The real flasher writes and verifies the signed core, then installs your selected official pet in the same USB session.</p>
+          <p class="panel-boundary">Demo only. These controls reproduce a historical user-facing sequence inside emulated storage. They do not flash a physical board, request USB, accept files or codes, or write the Xtensa firmware binary. Do not use the retired seven-write flow on a migrated or unknown-layout board.</p>
         </section>
 
         <section class="demo-panel" id="device-panel" data-demo-panel="device" aria-labelledby="device-title" hidden>
@@ -203,7 +203,7 @@
 
   <footer>
     <div class="footer-brand"><strong>K32 Kitsu</strong><span>Local-first portrait radio companion</span></div>
-    <nav aria-label="Product links"><a href="/demo/" aria-current="page">Demo</a><a href="/unlock/">Unlock</a><a href="https://docs.k32.run">Manual</a><a href="https://flash.k32.run">Firmware</a><a href="/#download">Android</a><a href="https://github.com/pattalium/Kitsu">GitHub</a></nav>
+    <nav aria-label="Product links"><a href="/demo/" aria-current="page">Demo</a><a href="/unlock/">Unlock</a><a href="https://docs.k32.run">Manual</a><a href="/#firmware">Firmware</a><a href="/#download">Android</a><a href="https://github.com/pattalium/Kitsu">GitHub</a></nav>
     <nav aria-label="Policies and contact"><a href="/privacy/">Privacy</a><a href="/terms/">Terms</a><a href="/security/">Security</a><a href="/contact/">Contact</a></nav>
   </footer>
 </body>

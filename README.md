@@ -16,14 +16,18 @@ certificate runtime.
 
 - [Product and signed Android download](https://k32.run)
 - [Complete user manual](https://docs.k32.run)
-- [Signed USB/Web Serial bootstrap and recovery](https://flash.k32.run)
+- [Signed firmware package and update guidance](https://k32.run/#firmware)
 - [Public release-surface status](https://status.k32.run)
 - [Encounter and nearby-Kitsu enhancements](docs/enhancements.md)
 
 The product page exposes only the currently accepted, signed, local-first
-Android release. The firmware installer remains fail-closed until the matching
-local-only firmware finishes physical acceptance; an unaccepted candidate is
-never presented as a public stable release.
+Android release. Its firmware download card exposes only the exact accepted
+signed package; an unaccepted candidate is never presented as a public stable
+release.
+
+The historical seven-write Web Serial installer is only for its exact reviewed
+pre-0.20.3 source layout. It is not an update or recovery path for a migrated
+or unknown-layout board.
 
 ## What is included
 
@@ -33,7 +37,7 @@ never presented as a public stable release.
 | `platform/mobile/android/` | Direct-Bluetooth Android app for saved Kitsu selection, state, care, messages, MeshCore control, cleanup, and offline firmware import. |
 | `platform/public-site/` | Product website, policies, and signed Android release manifest. |
 | `platform/docs-site/` | User manual for pairing, controls, messages, updates, security, and recovery. |
-| `platform/flash-site/` | Web Serial bootstrap/recovery with signature, target, fixed-region, artifact, and readback verification. |
+| `platform/flash-site/` | Immutable historical pre-0.20.3 Web Serial surface; never a current migration, update, or recovery path. |
 | `platform/status-site/` | Reachability checks for the retained static distribution surfaces. |
 | `tools/package_kitsu_ble_firmware.mjs` | Strict offline `.kitsu-fw` assembler and ESP32-S3 image verifier. |
 
@@ -46,29 +50,25 @@ temporary audit is removed only when those services are retired.
 
 ## First use
 
-1. Open the browser firmware installer in current desktop Chrome or Edge. If
-   it reports that no accepted release is available, stop and wait for the
-   firmware release gate; do not substitute a local candidate.
-2. Connect a supported 8 MiB Heltec with a USB data cable.
-3. Install the signed Kitsu release. The installer writes and reads back the
-   reviewed rollback-enabled bootloader, partition table, both A/B application
-   slots, both clean OTA journals, and the isolated legacy-connectivity clear
-   image without full-chip erase.
-4. Install the production-signed Android APK from the product page.
-5. On Kitsu, hold PRG from Home, hold again while `CONNECT` is selected, then
+1. Confirm the Heltec is already prepared for the current 8 MiB dual-OTA
+   layout and runs the accepted 0.20.3 firmware. If it is still on 0.20.2 or
+   its layout is unknown, stop: that one-time transition is a private,
+   double-backed-up, physically supervised service procedure.
+2. Install the production-signed Android APK from the product page.
+3. On Kitsu, hold PRG from Home, hold again while `CONNECT` is selected, then
    hold on `BLUETOOTH` to open the bounded `PAIR PHONE` window.
-6. In Android, choose **Pair this phone**, compare the six-digit values, and
+4. In Android, choose **Pair this phone**, compare the six-digit values, and
    approve only when they match.
-7. Hold PRG for the system numeric-comparison prompt, then hold it again when
+5. Hold PRG for the system numeric-comparison prompt, then hold it again when
    Kitsu shows `PHONE READY` to grant the authenticated controller.
-8. Connect directly over Bluetooth. Airplane mode is supported after
+6. Connect directly over Bluetooth. Airplane mode is supported after
    Bluetooth is turned back on.
 
-After this one USB bootstrap, normal signed firmware updates are imported as a
-`.kitsu-fw` file in Android and transferred over the authenticated Bluetooth
-session to the inactive application slot. Transfer checkpoints, flash
-readback, SHA-256, ESP image validation, and bootloader rollback are enforced
-on the Heltec; no online service is involved.
+Normal signed firmware updates are downloaded from the product page, imported
+as a `.kitsu-fw` file in Android, and transferred over the authenticated
+Bluetooth session to the inactive application slot. Transfer checkpoints,
+flash readback, SHA-256, ESP image validation, and bootloader rollback are
+enforced on the Heltec; no online service is involved.
 
 The complete procedure and troubleshooting steps are in the
 [Getting started guide](https://docs.k32.run/getting-started/).
@@ -112,10 +112,11 @@ The device independently verifies the canonical Ed25519 manifest, exact image
 hash and ESP32-S3 structure, writes only the inactive application slot, and
 requires a healthy pending-verification boot before confirming it.
 
-The firmware remains deliberately owner-reflashable. The installer does not
-burn eFuses, enable Secure Boot or Flash Encryption, disable ROM download,
-lock debugging, or prevent whole-chip erase and restoration of stock MeshCore.
-Physical possession is therefore not presented as a tamper-proof boundary.
+The firmware remains deliberately owner-reflashable. The reviewed reflashable
+design does not burn eFuses, enable Secure Boot or Flash Encryption, disable
+ROM download, lock debugging, or prevent whole-chip erase and restoration of
+stock MeshCore. Physical possession is therefore not presented as a
+tamper-proof boundary.
 
 The exact build, package, partition, signing, and physical-acceptance contract
 is documented in [docs/reflashable_release.md](docs/reflashable_release.md).

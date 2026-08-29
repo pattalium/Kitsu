@@ -1,8 +1,25 @@
-# K32 Kitsu Web Serial installer
+# K32 Kitsu legacy-layout Web Serial recovery
 
 This static browser application uses Espressif's Apache-2.0 `esptool-js`
 runtime, bundled into the release by Vite. It does not load scripts, flash
 code, manifests, or keys from a CDN.
+
+This application is deliberately frozen to the exact reviewed pre-`0.20.3`
+partition layout. It is not the `0.20.2` to `0.20.3` migration tool and must
+never write a board that already has the 256 KiB NVS layout. On every
+connection it reads the complete physical partition-table sector; only the
+exact legacy 3,072-byte table SHA-256 with an erased 1 KiB sector tail is
+eligible. The same sector is read and classified again after owner
+confirmation and immediately before the first possible mutation. The exact
+`0.20.3` table, any unknown table, a short read, changed bytes, or non-erased
+tail fail closed with zero writes.
+
+The one-time storage transition is a separate private, table-last serial
+ceremony with two full-flash backups and a fresh pinned-IDF NVS mount oracle.
+After migration, ordinary field updates use Android and a signed `.kitsu-fw`
+package. The historical offsets below remain documented solely so this
+legacy-layout recovery implementation and its immutable signed manifest can
+be audited; they are not current-layout instructions.
 
 The release gate downloads `latest.json`, its raw 64-byte detached Ed25519
 signature, and the public SPKI from `updates.k32.run`. The SPKI must match the
@@ -11,8 +28,8 @@ accepted. All five unique artifact files are SHA-256 verified before an install 
 the latest signed manifest and artifacts are fetched again immediately before
 writing. All seven signed core regions are then read from flash and hash-verified.
 
-The signed v2 manifest and runtime both constrain the core phase to exactly
-seven writes, in order:
+For an eligible legacy-layout board only, the signed v2 manifest and runtime
+both constrain the core phase to exactly seven writes, in order:
 
 1. the reviewed rollback-enabled Kitsu bootloader at `0x000000`;
 2. the reviewed 3,072-byte Kitsu partition table at `0x008000`;
@@ -119,5 +136,7 @@ erase only the target flash sectors before programming them; `eraseAll` remains
 false.
 
 Run `npm ci` followed by `npm run check`. Deploy only `dist/`, never this source
-tree or `node_modules/`. Physical browser acceptance still requires a Heltec
-V3 connected to current desktop Chrome or Edge over HTTPS.
+tree or `node_modules/`. Physical browser acceptance still requires a legacy-
+layout Heltec V3 connected to current desktop Chrome or Edge over HTTPS. A
+migrated or unrecognized board must remain blocked and be directed to the
+signed Android OTA or the dedicated restore ceremony.

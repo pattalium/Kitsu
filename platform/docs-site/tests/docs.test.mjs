@@ -48,6 +48,8 @@ test("every manual page has working local branding and compact page navigation",
     assert.match(html, /rel="icon" type="image\/png" href="\/assets\/kitsu-app-icon\.png\?v=4f850b55"/, page);
     assert.match(html, /<img src="\/assets\/kitsu-app-icon\.png\?v=4f850b55" alt="" width="43" height="43"/, page);
     assert.match(html, /<link rel="stylesheet" href="\/styles\.css\?sha256=310bad3c0b7a164819080d23883de693ee4e7b517e8fd1e7f88ad9019acc13ea"/, page);
+    assert.match(html, /href="https:\/\/k32\.run\/#firmware">Firmware<\/a>/, page);
+    assert.doesNotMatch(html, /https:\/\/flash\.k32\.run/i, page);
     assert.doesNotMatch(html, /https:\/\/k32\.run\/assets\//, page);
     assert.match(html, /<aside class="sidebar" aria-label="Manual pages">/, page);
     assert.equal((html.match(/<details class="mobile-manual">/g) ?? []).length, 1, page);
@@ -164,19 +166,26 @@ test("release guidance explains signed resumable A/B OTA and recovery", async ()
   assert.match(updates, /inactive application slot/i);
   assert.match(updates, /64 KiB checkpoint/i);
   assert.match(updates, /30 seconds/i);
-  assert.match(updates, /public installer and download surface fail closed while a firmware candidate is still in physical acceptance/i);
+  assert.match(updates, /public firmware card fails closed while a candidate is still in physical acceptance/i);
   assert.match(updates, /do not substitute an unaccepted local candidate/i);
-  assert.match(home, /If it reports unavailable, no public firmware has passed the release gate yet/i);
+  assert.match(updates, /\.kitsu-fw<\/code> is application-only and cannot migrate a 0\.20\.2 legacy partition layout/i);
   assert.match(updates, /controller store, MeshCore state, and coredump<\/td><td>Preserved/i);
-  assert.match(gettingStarted, /physical-acceptance record bind the exact SHA-256/i);
-  assert.match(gettingStarted, /intentionally writes the reviewed rollback-enabled Kitsu bootloader/i);
-  assert.doesNotMatch(gettingStarted, /preserves the bootloader/i);
-  assert.match(updates, /one clean 4 KiB OTA-journal artifact/i);
-  assert.match(updates, /journal artifact to <code>0x33f000<\/code> and <code>0x66f000<\/code>/i);
-  assert.match(updates, /legacy-connectivity clear artifact/i);
-  assert.match(updates, /isolated retired region at <code>0x7b0000<\/code>/i);
-  assert.match(updates, /all seven regions/i);
-  assert.match(updates, /Unlike normal Bluetooth OTA, this USB bootstrap intentionally writes the bootloader and partition table/i);
+  assert.match(home, /accepted current-layout Kitsu/i);
+  assert.match(home, /historical browser flasher must not be used/i);
+  assert.match(gettingStarted, /already prepared for the accepted 0\.20\.3 layout/i);
+  assert.match(gettingStarted, /two private full-flash backups, a fresh real-IDF NVS oracle, and a table-last migration/i);
+  assert.match(updates, /complete 8 MiB flash is read and verified twice[\s\S]*different physical volumes/i);
+  assert.match(updates, /real pinned IDF 4\.4\.7[\s\S]*zero writes and zero erases/i);
+  assert.match(updates, /partition-table sector is the final flash mutation/i);
+  assert.match(updates, /writes the accepted legacy table last/i);
+  assert.match(updates, /Historical pre-0\.20\.3 only/i);
+  assert.match(updates, /must never install, migrate, repair, or recover firmware 0\.20\.3/i);
+  assert.match(troubleshooting, /historical firmware installer rejects this board/i);
+  assert.match(troubleshooting, /private, physically supervised migration\/restore ceremony/i);
+  assert.doesNotMatch(
+    `${home}${gettingStarted}${updates}${troubleshooting}`,
+    /https:\/\/flash\.k32\.run|0x33f000|0x66f000|0x340000|0x10000(?![0-9a-f])/i,
+  );
   assert.match(troubleshooting, /Reset interrupted update/i);
   assert.match(security, /Ed25519 update authority/i);
   assert.match(security, /A\/B update/i);
