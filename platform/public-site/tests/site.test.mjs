@@ -185,23 +185,23 @@ test("source landing instructions match the local-only device controls", async (
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
 });
 
-test("fails closed outside the exact Android 2.2.7 production contract", async () => {
+test("fails closed outside the exact Android 2.2.10 production contract", async () => {
   const [html, script, readme] = await Promise.all([
     readFile(path.join(root, "index.html"), "utf8"),
     readFile(path.join(root, "site.js"), "utf8"),
     readFile(path.join(root, "README.md"), "utf8"),
   ]);
   assert.match(html, /Install the signed Android app/i);
-  assert.match(html, /Kitsu Android 2\.2\.7 · version code 28/i);
+  assert.match(html, /Kitsu Android 2\.2\.10 · version code 31/i);
   assert.match(html, /Changing app tracks is a clean install/i);
   assert.match(html, /Forget authorization/i);
   assert.match(html, /Direct and Play builds cannot update one another/i);
   assert.match(script, /Download Android \$\{release\.version\}/);
   assert.match(script, /signed Android release could not be verified/i);
   assert.match(script, /REQUIRED_PACKAGE_ID = "ptl\.kitsu\.app"/);
-  assert.match(script, /REQUIRED_VERSION = "2\.2\.7"/);
-  assert.match(script, /REQUIRED_VERSION_CODE = 28/);
-  assert.match(readme, /exact Android 2\.2\.7 \/ version-code 28/i);
+  assert.match(script, /REQUIRED_VERSION = "2\.2\.10"/);
+  assert.match(script, /REQUIRED_VERSION_CODE = 31/);
+  assert.match(readme, /exact Android 2\.2\.10 \/ version-code 31/i);
   assert.match(readme, /do not cross-update/i);
   assert.doesNotMatch(html, /href=["'][^"']+\.apk["']/i);
   assert.doesNotMatch(`${html}${script}${readme}`, /https?:\/\/play\.google\.com/i);
@@ -684,7 +684,7 @@ test("keeps public release binaries outside text conversion", async () => {
   ]) assert.ok(lines.has(rule), `missing binary attribute: ${rule}`);
 });
 
-test("publishes the byte-exact signed local-first Android 2.2.7 release", async () => {
+test("publishes the byte-exact signed local-first Android 2.2.10 release", async () => {
   const manifestBytes = await readFile(path.join(root, "downloads", "latest.json"));
   const signature = await readFile(path.join(root, "downloads", "latest.json.sig"));
   const publicKeyPEM = await readFile(path.join(root, "downloads", "update-ed25519-public.pem"));
@@ -700,14 +700,14 @@ test("publishes the byte-exact signed local-first Android 2.2.7 release", async 
     channel: "stable",
     buildType: "release",
     packageId: "ptl.kitsu.app",
-    version: "2.2.7",
-    versionCode: 28,
+    version: "2.2.10",
+    versionCode: 31,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-android-2.2.7-f9a7de2413424a40739926cb5368f2cc.apk",
-    bytes: 2782827,
-    sha256: "f9a7de2413424a40739926cb5368f2cc9a12c3a211234d4f41a81407448a4641",
+    url: "/downloads/kitsu-android-2.2.10-6f089701db5bc7ed86976192ae66bc8a.apk",
+    bytes: 2799221,
+    sha256: "6f089701db5bc7ed86976192ae66bc8ac3a1c221d92dc405fb88fa6309cba6ee",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-29T05:11:35Z",
+    publishedAt: "2026-08-29T09:09:20Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -736,13 +736,25 @@ test("publishes the byte-exact signed local-first Android 2.2.7 release", async 
     "kitsu-android-2.1.6-da081f9d09e6e4cd5747cbc53c655344.apk",
     "kitsu-android-2.2.0-36fe0a87aba10939ea9f6d6ae9b58242.apk",
     "kitsu-android-2.2.1-6e521a5f4ff1db1c21ab6997436ec1a0.apk",
+    "kitsu-android-2.2.10-6f089701db5bc7ed86976192ae66bc8a.apk",
     "kitsu-android-2.2.3-5575ce664d9fd262ea705cb7b02676d5.apk",
     "kitsu-android-2.2.4-b23727da3603fdc5b35b3146fb8d3eb1.apk",
     "kitsu-android-2.2.5-4f0cc3bb5fd1059c9d6096a41350aa8f.apk",
     "kitsu-android-2.2.6-12f462cd3d938ef9c32c5a9e4709d4c2.apk",
-    "kitsu-android-2.2.7-f9a7de2413424a40739926cb5368f2cc.apk",
     "kitsu-k32-android-2.0.0.apk",
   ]);
+  for (const unpublishedVersion of ["2.2.7", "2.2.8", "2.2.9"]) {
+    assert.equal(
+      downloadEntries.some((entry) => entry.startsWith(`kitsu-android-${unpublishedVersion}-`)),
+      false,
+      `unpublished Android ${unpublishedVersion} APK must not be in the public tree`,
+    );
+    assert.equal(
+      downloadEntries.some((entry) => entry.startsWith(`android-stable-${unpublishedVersion}-`)),
+      false,
+      `unpublished Android ${unpublishedVersion} manifest must not be in the public tree`,
+    );
+  }
   assert.equal(downloadEntries.some((entry) => /private|keystore|\.jks$/i.test(entry)), false);
 });
 
@@ -877,7 +889,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/kitsu-android-2.2.4-b23727da3603fdc5b35b3146fb8d3eb1.apk",
     "downloads/kitsu-android-2.2.5-4f0cc3bb5fd1059c9d6096a41350aa8f.apk",
     "downloads/kitsu-android-2.2.6-12f462cd3d938ef9c32c5a9e4709d4c2.apk",
-    "downloads/kitsu-android-2.2.7-f9a7de2413424a40739926cb5368f2cc.apk",
+    "downloads/kitsu-android-2.2.10-6f089701db5bc7ed86976192ae66bc8a.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
     "downloads/android-stable-2.0.0-20260822t123928z.json",
     "downloads/android-stable-2.0.0-20260822t123928z.json.sig",

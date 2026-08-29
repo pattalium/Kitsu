@@ -17,7 +17,7 @@ accepted firmware release is available.
 
 The download card exposes only a signed local-first Android release. A valid
 historical manifest or APK may remain in `downloads/` for audit and rollback,
-but `site.js` exposes only the exact Android 2.2.7 / version-code 28 production
+but `site.js` exposes only the exact Android 2.2.10 / version-code 31 production
 contract. Install the accepted release directly from the browser on a supported
 Android device.
 
@@ -35,7 +35,7 @@ design. `downloads/latest.json.sig` is a raw 64-byte Ed25519 signature over the
 exact `downloads/latest.json` bytes.
 
 The browser accepts only a same-origin content-addressed APK path, the
-stable/release package `ptl.kitsu.app`, exact version 2.2.7 / code 28, bounded
+stable/release package `ptl.kitsu.app`, exact version 2.2.10 / code 31, bounded
 numeric fields, canonical lowercase SHA-256, the pinned direct-download APK
 certificate, and a valid manifest timestamp. Repository tests additionally
 verify the detached signature and hash the exact APK bytes.
@@ -57,6 +57,8 @@ prior 2.2.6 authority is
 `downloads/android-stable-2.2.6-20260829t015805z.json`. Each retains its raw
 detached signature. Historical APK and testing-preview bytes remain available
 for audit and rollback but are not advertised as the current download.
+Android 2.2.7 through 2.2.9 were never public release authorities, so their
+candidate manifests and APKs are intentionally absent from the public tree.
 
 The support card is a plain outbound HTTPS link to `https://ko-fi.com/pattalium`.
 Support is voluntary and grants no app feature, content, badge, or other
