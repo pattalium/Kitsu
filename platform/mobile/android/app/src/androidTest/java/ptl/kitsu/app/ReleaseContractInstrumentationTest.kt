@@ -67,9 +67,9 @@ class ReleaseContractInstrumentationTest {
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
         assertEquals(packageInfo.longVersionCode.toInt(), BuildConfig.VERSION_CODE)
         assertEquals(packageInfo.versionName, BuildConfig.VERSION_NAME)
-        assertEquals(31, BuildConfig.VERSION_CODE)
+        assertEquals(32, BuildConfig.VERSION_CODE)
         assertEquals(
-            if (context.packageName.endsWith(".debug")) "2.2.10-debug" else "2.2.10",
+            if (context.packageName.endsWith(".debug")) "2.2.11-debug" else "2.2.11",
             BuildConfig.VERSION_NAME,
         )
         assertTrue(
