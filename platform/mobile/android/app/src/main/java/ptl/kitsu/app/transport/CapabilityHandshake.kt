@@ -79,7 +79,10 @@ class CapabilityHandshake(private val random: SecureRandom = SecureRandom()) {
         val expectedDevice = proof(controllerRoot, DEVICE_PREFIX, controllerId, clientNonce, deviceNonce)
         val actualDevice = decodeFixed(deviceHello.proofB64, 32, "invalid_device_proof")
         if (!MessageDigest.isEqual(expectedDevice, actualDevice)) {
-            throw HandshakeException("auth_failed")
+            // Firmware deliberately answers an unknown controller ID with a
+            // well-formed hello carrying a random proof. Keep that definitive
+            // capability rejection distinct from malformed or missing traffic.
+            throw HandshakeException("controller_proof_rejected")
         }
 
         val clientProof = proof(controllerRoot, CLIENT_PREFIX, controllerId, clientNonce, deviceNonce)

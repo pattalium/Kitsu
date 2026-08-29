@@ -117,5 +117,32 @@ class CapabilityHandshakeTest {
         assertEquals("controller_rejected", failure.code)
     }
 
+    @Test fun wellFormedDeviceHelloWithWrongControllerProofIsAuthoritative() = runTest {
+        val deviceNonce = ByteArray(16) { (it + 9).toByte() }
+        val wrongProof = ByteArray(32) { (it + 41).toByte() }
+        val failure = runCatching {
+            CapabilityHandshake().perform(ByteArray(16) { 1 }, ByteArray(32) { 2 }) {
+                buildJsonObject {
+                    put("v", 1)
+                    put("type", "device_hello")
+                    put("device_nonce_b64", SecureEnvelopeSession.encodeUrl(deviceNonce))
+                    put("proof_b64", SecureEnvelopeSession.encodeUrl(wrongProof))
+                }.toString().toByteArray()
+            }
+        }.exceptionOrNull() as HandshakeException
+
+        assertEquals("controller_proof_rejected", failure.code)
+    }
+
+    @Test fun malformedDeviceHelloRemainsAmbiguousAuthenticationFailure() = runTest {
+        val failure = runCatching {
+            CapabilityHandshake().perform(ByteArray(16) { 1 }, ByteArray(32) { 2 }) {
+                """{"v":1,"type":"device_hello","unexpected":true}""".toByteArray()
+            }
+        }.exceptionOrNull() as HandshakeException
+
+        assertEquals("auth_failed", failure.code)
+    }
+
     private fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }
 }

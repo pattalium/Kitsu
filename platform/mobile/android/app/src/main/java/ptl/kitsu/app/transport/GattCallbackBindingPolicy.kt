@@ -47,6 +47,17 @@ internal object FreshBondGattRetryPolicy {
         shouldRetry(freshBond, retriesUsed, failureCode)
 }
 
+/** Preserves an active-link disconnect reason across an interrupted GATT write. */
+internal object GattWriteFailurePolicy {
+    private const val DISCONNECTED_WITHOUT_GATT_ERROR = -1
+
+    fun completionStatus(disconnectStatus: Int): Int =
+        disconnectStatus.takeIf { it != 0 } ?: DISCONNECTED_WITHOUT_GATT_ERROR
+
+    fun pairingFailure(lastGattFailureCode: String?): String =
+        lastGattFailureCode ?: "gatt_write_failed"
+}
+
 internal data class FreshBondGattResult<T>(
     val device: T,
     val result: ConnectResult,
@@ -77,10 +88,16 @@ internal object FreshBondGattConnector {
 
 /** Separates an explicit firmware rejection from ambiguous handshake loss. */
 internal object ControllerHandshakeFailurePolicy {
+    private val authorizationRejections = setOf(
+        "controller_rejected",
+        "controller_proof_rejected",
+    )
+
     fun code(handshakeCode: String?, distinguishPendingRejection: Boolean): String = when {
-        handshakeCode == "controller_rejected" && distinguishPendingRejection ->
+        handshakeCode != null && handshakeCode in authorizationRejections && distinguishPendingRejection ->
             "pending_controller_rejected"
-        handshakeCode == "controller_rejected" -> "controller_authorization_rejected"
+        handshakeCode != null && handshakeCode in authorizationRejections ->
+            "controller_authorization_rejected"
         else -> "controller_auth_failed"
     }
 }

@@ -444,7 +444,9 @@ class BleKitsuTransport(
                     val characteristic = writeCharacteristic
                         ?: throw PairingException(lastGattFailureCode ?: "gatt_disconnected")
                     if (!writeFrame(activeGatt, characteristic, encodeGattFrame(payload))) {
-                        throw PairingException("gatt_write_failed")
+                        throw PairingException(
+                            GattWriteFailurePolicy.pairingFailure(lastGattFailureCode),
+                        )
                     }
                 }
 
@@ -929,6 +931,12 @@ class BleKitsuTransport(
             when {
                 newState == BluetoothProfile.STATE_DISCONNECTED -> {
                     lastGattFailureCode = failureCode
+                    // A disconnect can race a chunk write. Resolve it now so the
+                    // pairing path can retain status 22 and apply its sole bounded
+                    // recovery instead of waiting five seconds for a generic timeout.
+                    writeCompletion?.complete(
+                        GattWriteFailurePolicy.completionStatus(status),
+                    )
                     this@BleKitsuTransport.gatt = null
                     negotiatedMtu = 23
                     writeCharacteristic = null

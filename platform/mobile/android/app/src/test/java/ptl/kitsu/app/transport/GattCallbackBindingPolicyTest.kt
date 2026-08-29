@@ -82,6 +82,37 @@ class GattCallbackBindingPolicyTest {
         ))
     }
 
+    @Test fun status22DuringPairRequestWriteRetainsItsBoundedRecoveryReason() {
+        val completionStatus = GattWriteFailurePolicy.completionStatus(22)
+        val failure = GattWriteFailurePolicy.pairingFailure(
+            GattStatusPolicy.connectionFailure(completionStatus),
+        )
+
+        assertEquals(22, completionStatus)
+        assertEquals("gatt_local_host_terminated", failure)
+        assertTrue(FreshBondGattRetryPolicy.shouldRetryBeforeGrant(
+            freshBond = true,
+            retriesUsed = 0,
+            failureCode = failure,
+            pairingPendingSeen = false,
+            candidateStored = false,
+        ))
+    }
+
+    @Test fun ordinaryWriteTimeoutRemainsGenericAndNeverEntersStatus22Recovery() {
+        val failure = GattWriteFailurePolicy.pairingFailure(null)
+
+        assertEquals("gatt_write_failed", failure)
+        assertFalse(FreshBondGattRetryPolicy.shouldRetryBeforeGrant(
+            freshBond = true,
+            retriesUsed = 0,
+            failureCode = failure,
+            pairingPendingSeen = false,
+            candidateStored = false,
+        ))
+        assertTrue(GattWriteFailurePolicy.completionStatus(0) != 0)
+    }
+
     @Test fun securedCccdAuthenticationFailuresBecomeAnActionableRepairCode() {
         assertEquals(
             "bluetooth_pairing_repair_required",
@@ -113,9 +144,30 @@ class GattCallbackBindingPolicyTest {
             ),
         )
         assertEquals(
+            "controller_authorization_rejected",
+            ControllerHandshakeFailurePolicy.code(
+                handshakeCode = "controller_proof_rejected",
+                distinguishPendingRejection = false,
+            ),
+        )
+        assertEquals(
+            "pending_controller_rejected",
+            ControllerHandshakeFailurePolicy.code(
+                handshakeCode = "controller_proof_rejected",
+                distinguishPendingRejection = true,
+            ),
+        )
+        assertEquals(
             "controller_auth_failed",
             ControllerHandshakeFailurePolicy.code(
                 handshakeCode = "handshake_timeout",
+                distinguishPendingRejection = false,
+            ),
+        )
+        assertEquals(
+            "controller_auth_failed",
+            ControllerHandshakeFailurePolicy.code(
+                handshakeCode = "auth_failed",
                 distinguishPendingRejection = false,
             ),
         )
