@@ -45,10 +45,14 @@ object FirmwareUpdatePackageReader {
     private val json = Json { ignoreUnknownKeys = false; explicitNulls = false }
     private val magic = "KITSUFW1".toByteArray(Charsets.US_ASCII)
     private val releaseId = Regex("^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$")
-    private val version = Regex(
-        "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?$",
-    )
     private val digest = Regex("^[0-9a-f]{64}$")
+
+    private data class BoundedSemVer(
+        val major: Long,
+        val minor: Long,
+        val patch: Long,
+        val hasPrerelease: Boolean,
+    )
 
     fun read(input: InputStream, imageFile: File): VerifiedFirmwarePackage {
         try {
@@ -60,7 +64,7 @@ object FirmwareUpdatePackageReader {
             val imageLength = header.u32(16)
             if (manifestLength !in 1..MAX_MANIFEST_BYTES) fail("invalid_manifest_length")
             if (signatureLength != SIGNATURE_BYTES || flags != 0) fail("invalid_package_header")
-            if (imageLength !in 1..MAX_IMAGE_BYTES) fail("invalid_image_length")
+            if (imageLength !in 1..MAX_SUPPORTED_IMAGE_BYTES) fail("invalid_image_length")
 
             val manifestBytes = input.readExact(manifestLength, "truncated_manifest")
             val signature = input.readExact(signatureLength, "truncated_signature")
@@ -102,15 +106,16 @@ object FirmwareUpdatePackageReader {
         raw: ByteArray,
         headerImageBytes: Int,
     ) {
+        val declaredImageLimit = maximumImageBytes(value.partitionBytes)
         if (value.schema != MANIFEST_SCHEMA ||
             !releaseId.matches(value.releaseId) ||
             !isSupportedFirmwareVersion(value.firmwareVersion) ||
             value.deviceClass != DEVICE_CLASS ||
             value.imageFormat != IMAGE_FORMAT ||
             value.imageBytes != headerImageBytes ||
-            value.imageBytes !in 1..MAX_IMAGE_BYTES ||
+            declaredImageLimit == null ||
+            value.imageBytes !in 1..declaredImageLimit ||
             !digest.matches(value.imageSha256) ||
-            value.partitionBytes != PARTITION_BYTES ||
             value.chunkBytes != CHUNK_BYTES ||
             !value.rollback
         ) fail("unsupported_manifest")
@@ -120,7 +125,135 @@ object FirmwareUpdatePackageReader {
     }
 
     internal fun isSupportedFirmwareVersion(value: String): Boolean =
-        version.matches(value) && value.toByteArray(Charsets.US_ASCII).size in 1..32
+        parseBoundedSemVer(value) != null
+
+    /**
+     * The signed manifest names the physical OTA-slot size; Android never
+     * derives or guesses a flash address. Both released A/B layouts remain
+     * importable, while the target firmware independently requires the size
+     * that matches its own partition table.
+     */
+    internal fun maximumImageBytes(partitionBytes: Int): Int? = when (partitionBytes) {
+        LEGACY_PARTITION_BYTES, CURRENT_PARTITION_BYTES -> partitionBytes - JOURNAL_BYTES
+        else -> null
+    }
+
+    internal fun isSupportedFirmwareLayout(partitionBytes: Int, imageBytes: Int): Boolean =
+        maximumImageBytes(partitionBytes)?.let { imageBytes in 1..it } == true
+
+    /**
+     * Firmware 0.20.3 is the serial-only migration boundary to the 3 MiB A/B
+     * layout. The authenticated update-status receipt reports the running
+     * firmware version, so a mismatched package can be rejected before begin.
+     */
+    internal fun isLayoutCompatibleWithDevice(
+        firmwareVersion: String?,
+        partitionBytes: Int,
+    ): Boolean {
+        val parsed = parseBoundedSemVer(firmwareVersion) ?: return false
+        val baseComparison = compareValuesBy(
+            parsed,
+            BoundedSemVer(0L, 20L, 3L, false),
+            { it.major },
+            { it.minor },
+            { it.patch },
+        )
+        // 0.20.3 prereleases precede the final serial-migration release and
+        // therefore remain legacy. Build metadata does not change precedence.
+        val migrated = baseComparison > 0 ||
+            (baseComparison == 0 && !parsed.hasPrerelease)
+        return partitionBytes == if (migrated) CURRENT_PARTITION_BYTES else LEGACY_PARTITION_BYTES
+    }
+
+    private fun parseBoundedSemVer(value: String?): BoundedSemVer? {
+        if (value.isNullOrEmpty() || value.length > MAX_VERSION_BYTES ||
+            value.any { it.code > 0x7f }
+        ) {
+            return null
+        }
+
+        val suffixStart = value.indexOfFirst { it == '-' || it == '+' }
+        val coreEnd = suffixStart.takeIf { it >= 0 } ?: value.length
+        val core = value.substring(0, coreEnd)
+        val firstDot = core.indexOf('.')
+        val secondDot = if (firstDot >= 0) core.indexOf('.', firstDot + 1) else -1
+        if (firstDot <= 0 || secondDot <= firstDot + 1 ||
+            secondDot == core.lastIndex || core.indexOf('.', secondDot + 1) >= 0
+        ) {
+            return null
+        }
+        val major = parseCoreNumber(core.substring(0, firstDot)) ?: return null
+        val minor = parseCoreNumber(core.substring(firstDot + 1, secondDot)) ?: return null
+        val patch = parseCoreNumber(core.substring(secondDot + 1)) ?: return null
+
+        var hasPrerelease = false
+        if (suffixStart >= 0) {
+            when (value[suffixStart]) {
+                '-' -> {
+                    hasPrerelease = true
+                    val buildStart = value.indexOf('+', suffixStart + 1)
+                    val prereleaseEnd = buildStart.takeIf { it >= 0 } ?: value.length
+                    if (!validIdentifiers(
+                            value.substring(suffixStart + 1, prereleaseEnd),
+                            rejectNumericLeadingZero = true,
+                        )
+                    ) {
+                        return null
+                    }
+                    if (buildStart >= 0 && !validIdentifiers(
+                            value.substring(buildStart + 1),
+                            rejectNumericLeadingZero = false,
+                        )
+                    ) {
+                        return null
+                    }
+                }
+                '+' -> if (!validIdentifiers(
+                        value.substring(suffixStart + 1),
+                        rejectNumericLeadingZero = false,
+                    )
+                ) {
+                    return null
+                }
+            }
+        }
+        return BoundedSemVer(major, minor, patch, hasPrerelease)
+    }
+
+    private fun parseCoreNumber(value: String): Long? {
+        if (value.isEmpty() || value.any { it !in '0'..'9' } ||
+            (value.length > 1 && value[0] == '0')
+        ) {
+            return null
+        }
+        return value.toLongOrNull()
+    }
+
+    private fun validIdentifiers(value: String, rejectNumericLeadingZero: Boolean): Boolean {
+        if (value.isEmpty()) return false
+        var start = 0
+        while (start <= value.length) {
+            val dot = value.indexOf('.', start)
+            val end = dot.takeIf { it >= 0 } ?: value.length
+            if (end == start) return false
+            val identifier = value.substring(start, end)
+            if (identifier.any { character ->
+                    character !in '0'..'9' && character !in 'A'..'Z' &&
+                        character !in 'a'..'z' && character != '-'
+                }
+            ) {
+                return false
+            }
+            if (rejectNumericLeadingZero && identifier.length > 1 &&
+                identifier[0] == '0' && identifier.all { it in '0'..'9' }
+            ) {
+                return false
+            }
+            if (dot < 0) return true
+            start = dot + 1
+        }
+        return false
+    }
 
     private fun verifyManifestSignature(manifest: ByteArray, signature: ByteArray) {
         val keyBytes = Base64.getDecoder().decode(UPDATE_AUTHORITY_SPKI_B64)
@@ -253,9 +386,12 @@ object FirmwareUpdatePackageReader {
     const val MANIFEST_SCHEMA = "kitsu.ble-firmware.v1"
     const val DEVICE_CLASS = "heltec-wifi-lora-32-v3-esp32s3-8mb"
     const val IMAGE_FORMAT = "esp32s3-app"
-    const val PARTITION_BYTES = 3_342_336
+    const val LEGACY_PARTITION_BYTES = 0x330000
+    const val CURRENT_PARTITION_BYTES = 0x300000
+    const val JOURNAL_BYTES = 0x1000
     const val CHUNK_BYTES = 4_096
-    const val MAX_IMAGE_BYTES = 0x32F000
+    const val MAX_SUPPORTED_IMAGE_BYTES = LEGACY_PARTITION_BYTES - JOURNAL_BYTES
+    private const val MAX_VERSION_BYTES = 32
     private const val HEADER_BYTES = 20
     private const val MAX_MANIFEST_BYTES = 1_024
     private const val SIGNATURE_BYTES = 64

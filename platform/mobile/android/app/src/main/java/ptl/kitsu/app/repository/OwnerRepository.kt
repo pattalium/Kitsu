@@ -49,6 +49,7 @@ import ptl.kitsu.app.transport.FirmwareMessageApiPolicy
 import ptl.kitsu.app.transport.TransportException
 import ptl.kitsu.app.update.FirmwareInstallProgress
 import ptl.kitsu.app.update.FirmwareInstallStage
+import ptl.kitsu.app.update.FirmwareUpdatePackageReader
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import ptl.kitsu.app.update.VerifiedFirmwarePackage
 import java.io.FileInputStream
@@ -1263,6 +1264,13 @@ class OwnerRepository(
         val total = packageFile.manifest.imageBytes
         onProgress(FirmwareInstallProgress(FirmwareInstallStage.PREPARING, packageFile.manifest.firmwareVersion, 0, total))
         var status = coordinator.withTransport { it.firmwareUpdateStatus() }
+        if (!FirmwareUpdatePackageReader.isLayoutCompatibleWithDevice(
+                status.firmwareVersion,
+                packageFile.manifest.partitionBytes,
+            )
+        ) {
+            throw TransportException("firmware_layout_mismatch")
+        }
         if (status.state == "pending_verify") {
             validateUpdateBinding(status, packageFile.updateId, total)
             onProgress(FirmwareInstallProgress(FirmwareInstallStage.REBOOTING, packageFile.manifest.firmwareVersion, total, total))

@@ -41,6 +41,9 @@ internal const val KITSU_SUPPORT_URL = "https://ko-fi.com/pattalium"
 internal const val KITSU_UNLOCK_URL = "https://k32.run/unlock/"
 private const val SENSITIVE_CLIPBOARD_EXTRA = "android.content.extra.IS_SENSITIVE"
 
+/** Document providers report no consistent MIME type for `.kitsu-fw`. */
+internal fun firmwarePackagePickerMimeTypes(): Array<String> = arrayOf("*/*")
+
 internal fun kitsuSupportIntent(): Intent = Intent(
     Intent.ACTION_VIEW,
     Uri.parse(KITSU_SUPPORT_URL),
@@ -186,7 +189,7 @@ class MainActivity : ComponentActivity() {
                 onOpenFirmwarePackage = {
                     // File providers do not agree on a MIME type for `.kitsu-fw`; the strict
                     // signed container reader is the authority after the user selects one URI.
-                    firmwarePackageLauncher.launch(arrayOf("*/*"))
+                    firmwarePackageLauncher.launch(firmwarePackagePickerMimeTypes())
                 },
                 onOpenAppSettings = {
                     startActivity(
