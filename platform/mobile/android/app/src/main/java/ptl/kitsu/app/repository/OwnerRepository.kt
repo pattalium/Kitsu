@@ -84,6 +84,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -228,81 +229,83 @@ class OwnerRepository(
         scope.launch {
             coordinator.state.collect { connection ->
                 ownerDataMutex.withLock {
-                    mutableState.value = mutableState.value.copy(
-                    connection = connection,
-                    encounterCatalog = if (connection.connected) {
-                        mutableState.value.encounterCatalog
-                    } else emptyList(),
-                    encounterCatalogSupported = connection.connected &&
-                        mutableState.value.encounterCatalogSupported,
-                    encounterCatalogErrorCode = if (connection.connected) {
-                        mutableState.value.encounterCatalogErrorCode
-                    } else null,
-                    encounterDiscoverySupported = connection.connected &&
-                        mutableState.value.encounterDiscoverySupported,
-                    encounterDiscoveryErrorCode = if (connection.connected) {
-                        mutableState.value.encounterDiscoveryErrorCode
-                    } else null,
-                    nearbyKitsu = if (connection.connected) {
-                        mutableState.value.nearbyKitsu
-                    } else emptyList(),
-                    nearbyKitsuSupported = connection.connected &&
-                        mutableState.value.nearbyKitsuSupported,
-                    nearbyInteractionKinds = if (connection.connected) {
-                        mutableState.value.nearbyInteractionKinds
-                    } else emptySet(),
-                    nearbyKitsuErrorCode = if (connection.connected) {
-                        mutableState.value.nearbyKitsuErrorCode
-                    } else null,
-                    funState = if (connection.connected) mutableState.value.funState else null,
-                    funSupported = connection.connected && mutableState.value.funSupported,
-                    funErrorCode = if (connection.connected) mutableState.value.funErrorCode else null,
-                    funMutationInFlight = connection.connected && mutableState.value.funMutationInFlight,
-                    companionProfile = if (connection.connected) {
-                        mutableState.value.companionProfile
-                    } else null,
-                    companionProfileSupported = connection.connected &&
-                        mutableState.value.companionProfileSupported,
-                    companionProfileErrorCode = if (connection.connected) {
-                        mutableState.value.companionProfileErrorCode
-                    } else null,
-                    companionProfileMutationInFlight = connection.connected &&
-                        mutableState.value.companionProfileMutationInFlight,
-                    focusState = if (connection.connected) mutableState.value.focusState else null,
-                    focusSupported = connection.connected && mutableState.value.focusSupported,
-                    focusErrorCode = if (connection.connected) {
-                        mutableState.value.focusErrorCode
-                    } else null,
-                    focusMutationInFlight = connection.connected &&
-                        mutableState.value.focusMutationInFlight,
-                    walkState = if (connection.connected) mutableState.value.walkState else null,
-                    walkSupported = connection.connected && mutableState.value.walkSupported,
-                    walkErrorCode = if (connection.connected) {
-                        mutableState.value.walkErrorCode
-                    } else null,
-                    walkMutationInFlight = connection.connected &&
-                        mutableState.value.walkMutationInFlight,
-                    petPresentation = if (connection.connected) {
-                        mutableState.value.petPresentation
-                    } else null,
-                    petPresentationFrame = if (connection.connected) {
-                        mutableState.value.petPresentationFrame
-                    } else null,
-                    petPresentationErrorCode = if (connection.connected) {
-                        mutableState.value.petPresentationErrorCode
-                    } else null,
-                    petPresentationInFlight = connection.connected &&
-                        mutableState.value.petPresentationInFlight,
-                    messageJournalSession = if (connection.connected) {
-                        mutableState.value.messageJournalSession
-                    } else null,
-                    messageJournalRevision = if (connection.connected) {
-                        mutableState.value.messageJournalRevision
-                    } else null,
-                    messageMarkReadSupported = if (connection.connected) {
-                        mutableState.value.messageMarkReadSupported
-                    } else false,
-                )
+                    mutableState.update { current ->
+                        current.copy(
+                            connection = connection,
+                            encounterCatalog = if (connection.connected) {
+                                current.encounterCatalog
+                            } else emptyList(),
+                            encounterCatalogSupported = connection.connected &&
+                                current.encounterCatalogSupported,
+                            encounterCatalogErrorCode = if (connection.connected) {
+                                current.encounterCatalogErrorCode
+                            } else null,
+                            encounterDiscoverySupported = connection.connected &&
+                                current.encounterDiscoverySupported,
+                            encounterDiscoveryErrorCode = if (connection.connected) {
+                                current.encounterDiscoveryErrorCode
+                            } else null,
+                            nearbyKitsu = if (connection.connected) {
+                                current.nearbyKitsu
+                            } else emptyList(),
+                            nearbyKitsuSupported = connection.connected &&
+                                current.nearbyKitsuSupported,
+                            nearbyInteractionKinds = if (connection.connected) {
+                                current.nearbyInteractionKinds
+                            } else emptySet(),
+                            nearbyKitsuErrorCode = if (connection.connected) {
+                                current.nearbyKitsuErrorCode
+                            } else null,
+                            funState = if (connection.connected) current.funState else null,
+                            funSupported = connection.connected && current.funSupported,
+                            funErrorCode = if (connection.connected) current.funErrorCode else null,
+                            funMutationInFlight = connection.connected && current.funMutationInFlight,
+                            companionProfile = if (connection.connected) {
+                                current.companionProfile
+                            } else null,
+                            companionProfileSupported = connection.connected &&
+                                current.companionProfileSupported,
+                            companionProfileErrorCode = if (connection.connected) {
+                                current.companionProfileErrorCode
+                            } else null,
+                            companionProfileMutationInFlight = connection.connected &&
+                                current.companionProfileMutationInFlight,
+                            focusState = if (connection.connected) current.focusState else null,
+                            focusSupported = connection.connected && current.focusSupported,
+                            focusErrorCode = if (connection.connected) {
+                                current.focusErrorCode
+                            } else null,
+                            focusMutationInFlight = connection.connected &&
+                                current.focusMutationInFlight,
+                            walkState = if (connection.connected) current.walkState else null,
+                            walkSupported = connection.connected && current.walkSupported,
+                            walkErrorCode = if (connection.connected) {
+                                current.walkErrorCode
+                            } else null,
+                            walkMutationInFlight = connection.connected &&
+                                current.walkMutationInFlight,
+                            petPresentation = if (connection.connected) {
+                                current.petPresentation
+                            } else null,
+                            petPresentationFrame = if (connection.connected) {
+                                current.petPresentationFrame
+                            } else null,
+                            petPresentationErrorCode = if (connection.connected) {
+                                current.petPresentationErrorCode
+                            } else null,
+                            petPresentationInFlight = connection.connected &&
+                                current.petPresentationInFlight,
+                            messageJournalSession = if (connection.connected) {
+                                current.messageJournalSession
+                            } else null,
+                            messageJournalRevision = if (connection.connected) {
+                                current.messageJournalRevision
+                            } else null,
+                            messageMarkReadSupported = if (connection.connected) {
+                                current.messageMarkReadSupported
+                            } else false,
+                        )
+                    }
                 }
             }
         }
@@ -324,14 +327,16 @@ class OwnerRepository(
         if (mutableState.value.pairing || mutableState.value.repairingBluetoothPairing) return
         val selected = mutableState.value.activeDeviceAddress ?: credentials.bondedCompanion()?.deviceAddress
         if (selected == null) {
-            mutableState.value = mutableState.value.copy(loading = false, errorCode = null)
+            mutableState.update { it.copy(loading = false, errorCode = null) }
             return
         }
         stopEvents()
-        mutableState.value = mutableState.value.copy(loading = true, errorCode = null)
+        mutableState.update { it.copy(loading = true, errorCode = null) }
         val connection = coordinator.connect(userInitiated)
         if (!connection.connected) {
-            mutableState.value = mutableState.value.copy(loading = false, errorCode = connection.detail)
+            mutableState.update {
+                it.copy(loading = false, errorCode = connection.detail)
+            }
             return
         }
         // Register the replay=0 notification collector before the first live read.

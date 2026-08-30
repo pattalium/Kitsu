@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import re
 import subprocess
 import tempfile
@@ -95,13 +96,16 @@ def test_compile_guard_rejects_one_way_features() -> None:
 
 
 def test_compile_guard_executes_for_every_forbidden_configuration() -> None:
+    compiler_name = "xtensa-esp32s3-elf-g++.exe" if os.name == "nt" else (
+        "xtensa-esp32s3-elf-g++"
+    )
     compiler = (
         Path.home()
         / ".platformio"
         / "packages"
         / "toolchain-xtensa-esp32s3"
         / "bin"
-        / "xtensa-esp32s3-elf-g++.exe"
+        / compiler_name
     )
     assert compiler.is_file(), compiler
     forbidden = (

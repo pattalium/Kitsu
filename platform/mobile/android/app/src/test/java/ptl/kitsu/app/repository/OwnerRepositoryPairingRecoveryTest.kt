@@ -167,29 +167,40 @@ class OwnerRepositoryPairingRecoveryTest {
     }
 
     @Test fun publicConnectInvalidatesAuthoritativeMissingProof() = runBlocking {
-        val fixture = fixture(
-            ConnectResult.Failed("controller_authorization_rejected"),
-            ConnectResult.Failed("controller_auth_failed"),
-            ConnectResult.Failed("controller_auth_failed"),
-        )
-        try {
-            assertEquals(
-                BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING,
-                pairingFailure { fixture.repository.repairBluetoothPairing(PROFILE.deviceAddress) },
+        // The repository lifecycle and coordinator collector run on separate dispatchers.
+        repeat(100) { iteration ->
+            val fixture = fixture(
+                ConnectResult.Failed("controller_authorization_rejected"),
+                ConnectResult.Failed("controller_auth_failed"),
+                ConnectResult.Failed("controller_auth_failed"),
             )
+            try {
+                assertEquals(
+                    BluetoothPairingRepairPolicy.SAVED_CONTROLLER_MISSING,
+                    pairingFailure { fixture.repository.repairBluetoothPairing(PROFILE.deviceAddress) },
+                )
 
-            fixture.repository.connectAndRefresh(userInitiated = true)
-            assertEquals("controller_auth_failed", fixture.repository.state.value.errorCode)
-            assertEquals(
-                "controller_auth_failed",
-                transportFailure { fixture.repository.forgetController(PROFILE.deviceAddress) },
-            )
+                fixture.repository.connectAndRefresh(userInitiated = true)
+                val afterPublicConnect = fixture.repository.state.value
+                assertEquals(
+                    "iteration=$iteration connectCount=${fixture.transport.connectCount} " +
+                        "loading=${afterPublicConnect.loading} " +
+                        "repairing=${afterPublicConnect.repairingBluetoothPairing} " +
+                        "connection=${afterPublicConnect.connection.detail}",
+                    "controller_auth_failed",
+                    afterPublicConnect.errorCode,
+                )
+                assertEquals(
+                    "controller_auth_failed",
+                    transportFailure { fixture.repository.forgetController(PROFILE.deviceAddress) },
+                )
 
-            assertEquals(3, fixture.transport.connectCount)
-            assertEquals(PROFILE, fixture.credentials.active())
-            assertEquals(0, fixture.cache.clearCount)
-        } finally {
-            fixture.close()
+                assertEquals(3, fixture.transport.connectCount)
+                assertEquals(PROFILE, fixture.credentials.active())
+                assertEquals(0, fixture.cache.clearCount)
+            } finally {
+                fixture.close()
+            }
         }
     }
 
