@@ -352,7 +352,7 @@ class OwnerRepositoryPetFeatureTest {
         frameVisible = true,
         pack = PetPresentationPack(
             valid = true,
-            name = "FOX GIRL",
+            name = "TEST PACK",
             id = 7,
             revision = 3,
             totalBytes = 64L + 48L * frameBytes.size,

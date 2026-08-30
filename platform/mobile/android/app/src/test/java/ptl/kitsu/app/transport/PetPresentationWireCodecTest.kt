@@ -126,7 +126,7 @@ class PetPresentationWireCodecTest {
     }
 
     private fun validState(digest: String = "11".repeat(32)): String =
-        """{"ok":true,"schema":1,"session_id":7,"captured_at_ms":123,"surface":"pet","display_awake":true,"frame_visible":true,"pack":{"valid":true,"name":"FOX GIRL","id":1234,"revision":3,"total_bytes":24976,"payload_crc32":12,"header_crc32":34,"format":1,"width":64,"height":64,"frame_count":48,"appearance":2},"animation":{"active":true,"finite":false,"requested_role":"idle","resolved_role":"idle","playback":"loop","token":9,"elapsed_ms":42},"frame":{"available":true,"encoding":"xbm_row_major_lsb_first","bytes":512,"sha256":"$digest"}}"""
+        """{"ok":true,"schema":1,"session_id":7,"captured_at_ms":123,"surface":"pet","display_awake":true,"frame_visible":true,"pack":{"valid":true,"name":"TEST PACK","id":1234,"revision":3,"total_bytes":24976,"payload_crc32":12,"header_crc32":34,"format":1,"width":64,"height":64,"frame_count":48,"appearance":2},"animation":{"active":true,"finite":false,"requested_role":"idle","resolved_role":"idle","playback":"loop","token":9,"elapsed_ms":42},"frame":{"available":true,"encoding":"xbm_row_major_lsb_first","bytes":512,"sha256":"$digest"}}"""
 
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02X".format(it) }
