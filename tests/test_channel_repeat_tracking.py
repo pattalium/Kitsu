@@ -249,7 +249,7 @@ class MessagesV3CompatibilitySourceTests(unittest.TestCase):
         self.assertIn("buildMessagesV3", handler)
         # This capability is exposed only once the coordinated v3 release is
         # promoted; strict 0.15.x companions continue to request messages.v2.
-        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.4"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.5"', MAIN)
         self.assertIn(
             'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
             MAIN,

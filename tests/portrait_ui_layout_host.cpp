@@ -382,7 +382,7 @@ void testStatusPages() {
       {"SCORE 65535", 111, 1},
   };
   const Label diagnostics[] = {
-      {"KITSU", 5, 2},   {"0.20.4", 27, 1}, {"KTFFFF", 43, 1},
+      {"KITSU", 5, 2},   {"0.20.5", 27, 1}, {"KTFFFF", 43, 1},
       {"OLED ERR", 59, 1}, {"MESH ERR", 75, 1},
       {"STORE ERR", 91, 1}, {"NO PACK", 107, 1},
   };

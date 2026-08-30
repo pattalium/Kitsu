@@ -882,17 +882,24 @@ def test_runner_pins_candidate_and_reviewed_runtime() -> None:
     assert "esptool411-runtime" not in normalized
     assert "%userprofile%\\.platformio" not in normalized
     if os.name == "nt":
-        python = ROOT.parent / "platformio-core-runtime" / "Scripts" / "python.exe"
-        tool = (
-            ROOT.parent.parent
-            / "private"
-            / "tooling"
-            / "platformio-core"
-            / "packages"
-            / "tool-esptoolpy"
-            / "esptool.py"
-        )
-        completed = run([str(python), str(tool), "version"], success=True)
+        audit_python = os.environ.get("KITSU_REFLASHABLE_AUDIT_PYTHON")
+        if audit_python:
+            python = Path(audit_python).resolve()
+            assert python.is_file(), f"missing CI audit Python: {python}"
+            command = [str(python), "-m", "esptool", "version"]
+        else:
+            python = ROOT.parent / "platformio-core-runtime" / "Scripts" / "python.exe"
+            tool = (
+                ROOT.parent.parent
+                / "private"
+                / "tooling"
+                / "platformio-core"
+                / "packages"
+                / "tool-esptoolpy"
+                / "esptool.py"
+            )
+            command = [str(python), str(tool), "version"]
+        completed = run(command, success=True)
         assert "4.11.0" in completed.stdout
 
 

@@ -35,25 +35,25 @@ def raises_value_error(callback, expected: str) -> None:
 def main() -> None:
     guard = load_guard()
     marker = (
-        b"KITSU-ID1|schema=1|length=0331|version=0.20.4|"
+        b"KITSU-ID1|schema=1|length=0331|version=0.20.5|"
         b"device_class=heltec-v3.2|layout=kitsu-8m-dual-ota-3m-v1|"
         b"flash=00800000|nvs=00009000/00040000|"
         b"otadata=00049000/00002000|"
         b"app0=00050000|app1=00350000|slot=00300000|"
         b"journal=00001000|max=002ff000|"
         b"spiffs=00670000/00140000|conn=007b0000/00040000|"
-        b"coredump=007f0000/00010000|crc32=c1e61d12|end\x00"
+        b"coredump=007f0000/00010000|crc32=2275f192|end\x00"
     )
     identity = guard.parse_identity(b"\xe9fixture" + marker + b"tail")
-    assert identity["firmware_version"] == "0.20.4"
+    assert identity["firmware_version"] == "0.20.5"
     assert identity["partition_bytes"] == 0x300000
-    assert guard.source_version(ROOT / "src" / "main.cpp") == "0.20.4"
+    assert guard.source_version(ROOT / "src" / "main.cpp") == "0.20.5"
     raises_value_error(
         lambda: guard.parse_identity(marker + marker),
         "exactly one",
     )
     raises_value_error(
-        lambda: guard.parse_identity(marker.replace(b"c1e61d12", b"00000000")),
+        lambda: guard.parse_identity(marker.replace(b"2275f192", b"00000000")),
         "CRC32",
     )
     nm_output = "\n".join((

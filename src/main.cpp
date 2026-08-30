@@ -57,7 +57,7 @@
 namespace {
 
 constexpr char FIRMWARE_NAME[] = "Kitsu868";
-#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.4"
+#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.5"
 constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;
 // Signed update tooling locates exactly one copy of this fixed-format marker
 // in the final ESP application.  Keeping it referenced by the boot diagnostic
@@ -72,7 +72,7 @@ constexpr char FIRMWARE_IDENTITY[] =
     "|app0=00050000|app1=00350000|slot=00300000"
     "|journal=00001000|max=002ff000"
     "|spiffs=00670000/00140000|conn=007b0000/00040000"
-    "|coredump=007f0000/00010000|crc32=c1e61d12|end";
+    "|coredump=007f0000/00010000|crc32=2275f192|end";
 static_assert(sizeof(FIRMWARE_IDENTITY) == 331U,
               "firmware identity length field changed");
 static_assert(kitsu868::connectivity::kKitsuFlashBytes == 0x800000UL,

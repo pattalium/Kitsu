@@ -205,7 +205,7 @@ class AdvertRepeatTrackerSourceTests(unittest.TestCase):
         self.assertIn("takeFloodAdvertStatusChanged()", TRANSPORT_HEADER)
         self.assertIn("mesh_last_flood_advert_v2", state)
         self.assertIn("repeat_sources_truncated", state)
-        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.4"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.5"', MAIN)
         self.assertIn(
             'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
             MAIN,

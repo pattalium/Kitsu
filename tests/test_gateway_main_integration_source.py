@@ -360,7 +360,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn(
             "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
         )
-        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.4"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.5"', MAIN)
         self.assertIn(
             'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
             MAIN,

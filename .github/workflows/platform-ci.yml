@@ -121,6 +121,8 @@ jobs:
           python tools\test_kitsu_reflashable_profile.py || exit /b 1
       - name: Owner-reflashable and no-eFuse release audits
         shell: cmd
+        env:
+          KITSU_REFLASHABLE_AUDIT_PYTHON: ${{ github.workspace }}\..\esptool411-runtime\Scripts\python.exe
         run: |
           call tools\test_kitsu_reflashable_profile.cmd || exit /b 1
           call tools\test_package_kitsu_reflashable.cmd || exit /b 1
@@ -217,7 +219,10 @@ jobs:
         with:
           node-version: "22"
       - name: Public release and policy tests
-        run: node --test platform/public-site/tests/site.test.mjs
+        run: >-
+          node --test
+          platform/public-site/tests/site.test.mjs
+          platform/public-site/tests/firmware-release.test.mjs
       - name: Static manual contract tests
         run: node --test platform/docs-site/tests/docs.test.mjs
       - name: Cross-surface status, recovery, and encoding tests
