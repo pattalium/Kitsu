@@ -25,7 +25,7 @@ class EncounterFieldGuideTest {
     }
 
     @Test
-    fun recordsBecomeSeenOrOwnedAndRetainCountAndLatestAvailableSource() {
+    fun savedCodesBecomeOwnedAndRetainCountAndLatestAvailableSource() {
         val records = listOf(
             encounter(
                 codeId = "frog:first",
@@ -62,12 +62,12 @@ class EncounterFieldGuideTest {
         val otter = guide.named("Otter")
         val turtle = guide.named("Turtle")
 
-        assertEquals(FieldGuideDiscovery.SEEN, frog.discovery)
+        assertEquals(FieldGuideDiscovery.OWNED, frog.discovery)
         assertEquals(2, frog.encounterCount)
         assertEquals(20L, frog.lastEncounterEpoch)
         assertEquals("mesh_repeater", frog.lastSource)
         assertEquals(FieldGuideDiscovery.OWNED, redPanda.discovery)
-        assertEquals(FieldGuideDiscovery.SEEN, ferret.discovery)
+        assertEquals(FieldGuideDiscovery.OWNED, ferret.discovery)
         assertEquals(FieldGuideDiscovery.OWNED, otter.discovery)
         assertEquals(0, otter.encounterCount)
         assertEquals(FieldGuideDiscovery.UNSEEN, turtle.discovery)
@@ -76,14 +76,13 @@ class EncounterFieldGuideTest {
     }
 
     @Test
-    fun installedEncounterIsOwnedEvenWhenLegacyRecordWasNotMarkedRedeemed() {
+    fun matchingCodeIsOwnedWithoutRedemptionOrInstallation() {
         val guide = EncounterFieldGuidePolicy.build(
             records = listOf(
                 encounter(
-                    codeId = "installed",
+                    codeId = "saved-code",
                     packId = 0x86F3BB5DL,
                     acquiredAt = 50,
-                    installed = true,
                 ),
             ),
             activePackId = null,
@@ -115,7 +114,7 @@ class EncounterFieldGuideTest {
         )
 
         val frog = guide.named("Frog")
-        assertEquals(FieldGuideDiscovery.SEEN, frog.discovery)
+        assertEquals(FieldGuideDiscovery.OWNED, frog.discovery)
         assertEquals(2, frog.encounterCount)
         assertEquals("mesh_peer", frog.lastSource)
 
@@ -142,7 +141,7 @@ class EncounterFieldGuideTest {
             activePackId = null,
             discoveryRecords = authoritativeZero,
         ).named("Ferret")
-        assertEquals(FieldGuideDiscovery.SEEN, withDeviceLedger.discovery)
+        assertEquals(FieldGuideDiscovery.OWNED, withDeviceLedger.discovery)
         assertEquals(0, withDeviceLedger.encounterCount)
     }
 

@@ -307,8 +307,13 @@ struct KitsuBleGattLink::Impl {
       portEXIT_CRITICAL(&mux);
       return;
     }
+    // A client can receive the final response notification before a delayed
+    // NOTIFY_TX callback is retired by loop().  Accept one next frame into the
+    // independent RX buffer during that interval.  frameReady keeps this queue
+    // bounded to one request, and loop() will not deliver it until
+    // requestInFlight clears.
     if (!encrypted || !authenticated || !bonded || !notifySubscribed ||
-        requestInFlight || frameReady || inputBytes == 0U) {
+        frameReady || inputBytes == 0U) {
       requestDisconnectLocked(BleLinkEvent::ProtocolViolation);
       portEXIT_CRITICAL(&mux);
       return;

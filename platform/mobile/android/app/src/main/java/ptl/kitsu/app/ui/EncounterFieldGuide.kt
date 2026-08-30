@@ -75,7 +75,7 @@ internal object EncounterFieldGuidePolicy {
                 (record.packId == null && record.creatureName.normalizedName() == creature.name.normalizedName())
         }
         val discovery = discoveryByPack[creature.packId]
-        val owned = activePackId == creature.packId || matching.any { it.redeemed || it.installed }
+        val owned = activePackId == creature.packId || matching.isNotEmpty()
         val lastEncounter = matching.maxByOrNull(EncounterUnlockCode::acquiredAtEpoch)
         val codeLastSource = matching.asSequence()
             .filter { !it.source.isNullOrBlank() }
@@ -263,7 +263,7 @@ private fun FieldGuideCreatureCard(entry: FieldGuideEntry) {
                 Text(
                     when (entry.encounterCount) {
                         0 -> if (entry.discovery == FieldGuideDiscovery.OWNED) {
-                            "Current Kitsu pack · no saved encounters yet"
+                            "Owned · no encounters recorded yet"
                         } else {
                             "No encounters recorded"
                         }

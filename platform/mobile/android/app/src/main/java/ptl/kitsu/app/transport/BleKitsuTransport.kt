@@ -115,6 +115,18 @@ data class BleGattConfiguration(
     val notify: UUID,
 )
 
+internal const val AUTHENTICATED_RESPONSE_QUIET_PERIOD_MILLIS = 250L
+
+internal suspend fun <T> Mutex.withResponseQuietPeriod(
+    request: suspend () -> T,
+): T = withLock {
+    val response = request()
+    // Firmware releases its single in-flight request only after NOTIFY_TX is
+    // retired. Keep serialization through that short controller callback gap.
+    delay(AUTHENTICATED_RESPONSE_QUIET_PERIOD_MILLIS)
+    response
+}
+
 class BleKitsuTransport(
     private val context: Context,
     private val credentials: CredentialStore,
@@ -1322,7 +1334,7 @@ class BleKitsuTransport(
         if (hadActiveLink) disconnectObserver?.invoke(code)
     }
 
-    private suspend fun request(op: String, body: JsonObject): ByteArray = requestMutex.withLock {
+    private suspend fun request(op: String, body: JsonObject): ByteArray = requestMutex.withResponseQuietPeriod {
         val activeGatt = gatt ?: throw TransportException("not_connected")
         val characteristic = writeCharacteristic ?: throw TransportException("not_connected")
         val session = envelopeSession ?: throw TransportException("session_not_authenticated")

@@ -31,13 +31,17 @@ constexpr uint16_t kThirdHandle = 13U;
 
 class TestDelegate final : public BleFrameDelegate {
  public:
-  void onBleFrame(const uint8_t*, size_t) override { ++frameCount; }
+  void onBleFrame(const uint8_t* frame, size_t frameBytes) override {
+    ++frameCount;
+    frames.emplace_back(frame, frame + frameBytes);
+  }
   void onBleLinkEvent(BleLinkEvent event,
                       const BleLinkStatus& status) override {
     events.emplace_back(event, status);
   }
 
   size_t frameCount = 0U;
+  std::vector<std::vector<uint8_t>> frames{};
   std::vector<std::pair<BleLinkEvent, BleLinkStatus>> events{};
 };
 
@@ -297,6 +301,76 @@ void testNotifyFalseWithoutCallbackRetriesWithoutAdvancing() {
   assert(fixture.server->disconnectCalls.empty());
 }
 
+void testOneNextRequestQueuesDuringDelayedNotifyAndFurtherPipeliningCloses() {
+  Fixture fixture;
+  fixture.secureAndSubscribe(kFirstHandle, 50U);
+  fixture.tx->notifyResult = true;
+  fixture.tx->statusOnNotify = false;
+
+  static const uint8_t firstFrame[] = {
+      0U, 0U, 0U, 3U, 'o', 'n', 'e',
+  };
+  static const uint8_t secondFrame[] = {
+      0U, 0U, 0U, 3U, 't', 'w', 'o',
+  };
+  static const uint8_t thirdFrame[] = {
+      0U, 0U, 0U, 5U, 't', 'h', 'r', 'e', 'e',
+  };
+  static const uint8_t fourthFrame[] = {
+      0U, 0U, 0U, 4U, 'f', 'o', 'u', 'r',
+  };
+  static const uint8_t response[] = {'{', '}'};
+
+  fixture.rx->simulateWrite(kFirstHandle, firstFrame, sizeof(firstFrame));
+  fixture.link.loop(51U);
+  assert(fixture.delegate.frameCount == 1U);
+  assert(fixture.delegate.frames[0] ==
+         std::vector<uint8_t>(firstFrame + 4U,
+                              firstFrame + sizeof(firstFrame)));
+  assert(fixture.link.queueFrame(response, sizeof(response)));
+  fixture.link.loop(52U);
+  assert(fixture.tx->notifiedValues.size() == 1U);
+  assert(fixture.link.status(52U).requestInFlight);
+
+  // A delayed NOTIFY_TX must not turn the client's next sequential request
+  // into a protocol violation.  Exercise the same fragmented writes Android
+  // uses when a frame is larger than the negotiated ATT payload.
+  fixture.rx->simulateWrite(kFirstHandle, secondFrame, 5U);
+  fixture.rx->simulateWrite(kFirstHandle, secondFrame + 5U,
+                            sizeof(secondFrame) - 5U);
+  fixture.link.loop(53U);
+  assert(fixture.delegate.frameCount == 1U);
+  assert(fixture.server->disconnectCalls.empty());
+  assert(!hasEvent(fixture.delegate, BleLinkEvent::ProtocolViolation));
+
+  // The queued request remains blocked for the loop turn that retires the
+  // response.  It is delivered exactly once on the following turn.
+  fixture.tx->simulateStatus(0);
+  fixture.link.loop(54U);
+  assert(fixture.delegate.frameCount == 1U);
+  assert(!fixture.link.status(54U).requestInFlight);
+  fixture.link.loop(55U);
+  assert(fixture.delegate.frameCount == 2U);
+  assert(fixture.delegate.frames[1] ==
+         std::vector<uint8_t>(secondFrame + 4U,
+                              secondFrame + sizeof(secondFrame)));
+
+  // The allowance is bounded to one waiting frame.  While the second
+  // response drains, the third frame may wait but a fourth is true
+  // pipelining and remains a protocol violation.
+  assert(fixture.link.queueFrame(response, sizeof(response)));
+  fixture.link.loop(56U);
+  assert(fixture.tx->notifiedValues.size() == 2U);
+  fixture.rx->simulateWrite(kFirstHandle, thirdFrame, sizeof(thirdFrame));
+  assert(!hasEvent(fixture.delegate, BleLinkEvent::ProtocolViolation));
+  fixture.rx->simulateWrite(kFirstHandle, fourthFrame, sizeof(fourthFrame));
+  fixture.link.loop(57U);
+  assert(fixture.server->disconnectCalls.size() == 1U);
+  assert(fixture.server->disconnectCalls.back() == kFirstHandle);
+  assert(hasEvent(fixture.delegate, BleLinkEvent::ProtocolViolation));
+  assert(fixture.delegate.frameCount == 2U);
+}
+
 void testRetryableNotifyStatusIsBoundedAndNeverProtocolViolation() {
   Fixture fixture;
   fixture.secureAndSubscribe(kFirstHandle, 100U);
@@ -510,6 +584,7 @@ int main() {
   testWindowAndSingleConnectionSurviveDisconnectReconnect();
   testNotifySuccessUsesInternalNonzeroHandleToken();
   testNotifyFalseWithoutCallbackRetriesWithoutAdvancing();
+  testOneNextRequestQueuesDuringDelayedNotifyAndFurtherPipeliningCloses();
   testRetryableNotifyStatusIsBoundedAndNeverProtocolViolation();
   testTerminalNotifyStatusAndMissingCallbackTimeout();
   testGenerationClearsStaleDisconnectAndQueuedFailure();
