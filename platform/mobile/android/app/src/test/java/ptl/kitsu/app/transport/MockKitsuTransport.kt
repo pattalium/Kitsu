@@ -4,6 +4,7 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
+import ptl.kitsu.app.model.CompanionProfile
 import ptl.kitsu.app.model.ENCOUNTER_CATALOG_SCHEMA
 import ptl.kitsu.app.model.ENCOUNTER_NEIGHBORS_SCHEMA
 import ptl.kitsu.app.model.EventEnvelope
@@ -13,6 +14,8 @@ import ptl.kitsu.app.model.EncounterDiscoveryRecord
 import ptl.kitsu.app.model.ExpeditionDuration
 import ptl.kitsu.app.model.ExpeditionFunState
 import ptl.kitsu.app.model.ExpeditionStatus
+import ptl.kitsu.app.model.FocusSessionState
+import ptl.kitsu.app.model.FocusStartCommand
 import ptl.kitsu.app.model.FUN_STATE_SCHEMA
 import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.HistoryEntry
@@ -34,9 +37,17 @@ import ptl.kitsu.app.model.PartyRole
 import ptl.kitsu.app.model.PartySignalChoice
 import ptl.kitsu.app.model.Peer
 import ptl.kitsu.app.model.PeerPage
+import ptl.kitsu.app.model.PetPresentationChunk
+import ptl.kitsu.app.model.PetPresentationState
 import ptl.kitsu.app.model.PUBLIC_ENCOUNTER_CATALOG
 import ptl.kitsu.app.model.StoryFunState
 import ptl.kitsu.app.model.StoryStatus
+import ptl.kitsu.app.model.WalkAdventureState
+import ptl.kitsu.app.model.WalkDecisionCommand
+import ptl.kitsu.app.model.WalkLocationCommand
+import ptl.kitsu.app.model.WalkPrivacy
+import ptl.kitsu.app.model.WalkStartCommand
+import ptl.kitsu.app.model.WalkSyncCommand
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -57,12 +68,23 @@ class MockKitsuTransport(
     var meshConfigurationCount = 0
     var messagesCallCount = 0
     var encounterDiscoveryCallCount = 0
+    var companionProfileCallCount = 0
+    var focusStateCallCount = 0
+    var walkStateCallCount = 0
+    var companionProfileMutationCount = 0
+    var focusMutationCount = 0
+    var walkMutationCount = 0
+    var petPresentationOpenCount = 0
+    var petPresentationReadCount = 0
+    var petPresentationCloseCount = 0
     var mockChannels = listOf(MeshChannel(0, true, "Public"))
     var mockMessagePage: MessagePage? = null
     var beforeStatus: (suspend () -> Unit)? = null
     var beforeMessages: (suspend () -> Unit)? = null
     var beforeNeighborInteraction: (suspend () -> Unit)? = null
     var beforeFunMutation: (suspend () -> Unit)? = null
+    var beforePetMutation: (suspend () -> Unit)? = null
+    var beforePetPresentationOpen: (suspend () -> Unit)? = null
     var mockEncounterDiscoveryPage = EncounterDiscoveryPage(
         schema = "kitsu.encounter-discovery.v1",
         items = PUBLIC_ENCOUNTER_CATALOG.map { creature ->
@@ -135,6 +157,14 @@ class MockKitsuTransport(
         ),
     )
     var mockFunMutationResult: FunState? = null
+    var mockCompanionProfile: CompanionProfile? = null
+    var mockCompanionProfileMutationResult: CompanionProfile? = null
+    var mockFocusState: FocusSessionState? = null
+    var mockFocusMutationResult: FocusSessionState? = null
+    var mockWalkState: WalkAdventureState? = null
+    var mockWalkMutationResult: WalkAdventureState? = null
+    var mockPetPresentationState: PetPresentationState? = null
+    var mockPetPresentationFrame: ByteArray? = null
 
     override suspend fun nearbyKitsu() = mockNearbyKitsuPage
     override suspend fun neighborInteraction(
@@ -153,6 +183,69 @@ class MockKitsuTransport(
         val result = mockFunMutationResult ?: mockFunState
         beforeFunMutation?.invoke()
         return result
+    }
+    override suspend fun companionProfile(): CompanionProfile {
+        companionProfileCallCount += 1
+        return mockCompanionProfile ?: throw TransportException("mock_companion_profile_missing")
+    }
+    override suspend fun setCompanionNickname(nickname: String): CompanionProfile =
+        mutateCompanionProfile()
+    override suspend fun answerCompanionRequest(accept: Boolean): CompanionProfile =
+        mutateCompanionProfile()
+    override suspend fun answerCompanionQuestion(choice: Int): CompanionProfile =
+        mutateCompanionProfile()
+    override suspend fun focusState(): FocusSessionState {
+        focusStateCallCount += 1
+        return mockFocusState ?: throw TransportException("mock_focus_state_missing")
+    }
+    override suspend fun startFocus(command: FocusStartCommand): FocusSessionState = mutateFocus()
+    override suspend fun stopFocus(sessionId: Long): FocusSessionState = mutateFocus()
+    override suspend fun cancelFocus(sessionId: Long): FocusSessionState = mutateFocus()
+    override suspend fun acknowledgeFocus(sessionId: Long): FocusSessionState = mutateFocus()
+    override suspend fun walkState(): WalkAdventureState {
+        walkStateCallCount += 1
+        return mockWalkState ?: throw TransportException("mock_walk_state_missing")
+    }
+    override suspend fun startWalk(command: WalkStartCommand): WalkAdventureState = mutateWalk()
+    override suspend fun syncWalk(command: WalkSyncCommand): WalkAdventureState = mutateWalk()
+    override suspend fun updateWalkLocation(command: WalkLocationCommand): WalkAdventureState = mutateWalk()
+    override suspend fun decideWalk(command: WalkDecisionCommand): WalkAdventureState = mutateWalk()
+    override suspend fun finishWalk(routeId: Long): WalkAdventureState = mutateWalk()
+    override suspend fun acknowledgeWalk(routeId: Long): WalkAdventureState = mutateWalk()
+    override suspend fun setWalkPrivacy(mode: WalkPrivacy): WalkAdventureState = mutateWalk()
+    override suspend fun setWalkHome(zoneToken: Long): WalkAdventureState = mutateWalk()
+    override suspend fun openPetPresentation(sessionId: Long): PetPresentationState {
+        petPresentationOpenCount += 1
+        beforePetPresentationOpen?.invoke()
+        return mockPetPresentationState?.copy(sessionId = sessionId)
+            ?: throw TransportException("mock_pet_presentation_missing")
+    }
+    override suspend fun readPetPresentation(
+        sessionId: Long,
+        offset: Int,
+        bytes: Int,
+        expectedFrameBytes: Int,
+        expectedFrameSha256: String,
+    ): PetPresentationChunk {
+        petPresentationReadCount += 1
+        val frame = mockPetPresentationFrame
+            ?: throw TransportException("mock_pet_presentation_frame_missing")
+        if (frame.size != expectedFrameBytes || offset !in 0..frame.size ||
+            bytes !in 1..PetPresentationWireCodec.MAX_CHUNK_BYTES || offset + bytes > frame.size
+        ) throw TransportException("mock_pet_presentation_read_invalid")
+        val nextOffset = offset + bytes
+        return PetPresentationChunk(
+            sessionId = sessionId,
+            offset = offset,
+            nextOffset = nextOffset,
+            complete = nextOffset == frame.size,
+            frameSha256 = expectedFrameSha256,
+            data = frame.copyOfRange(offset, nextOffset),
+        )
+    }
+    override suspend fun closePetPresentation(sessionId: Long): Boolean {
+        petPresentationCloseCount += 1
+        return true
     }
     override suspend fun configureMesh(enabled: Boolean): MeshConfigurationReceipt {
         meshConfigurationCount++
@@ -184,6 +277,27 @@ class MockKitsuTransport(
     override suspend fun rebootFirmwareUpdate(updateId: String) =
         updateReceipt("ready_to_reboot", updateId, 1, 1).copy(scheduled = true)
     override suspend fun abortFirmwareUpdate(updateId: String) = updateReceipt("idle", null, 0, 0)
+
+    private suspend fun mutateCompanionProfile(): CompanionProfile {
+        companionProfileMutationCount += 1
+        beforePetMutation?.invoke()
+        return mockCompanionProfileMutationResult ?: mockCompanionProfile
+            ?: throw TransportException("mock_companion_profile_missing")
+    }
+
+    private suspend fun mutateFocus(): FocusSessionState {
+        focusMutationCount += 1
+        beforePetMutation?.invoke()
+        return mockFocusMutationResult ?: mockFocusState
+            ?: throw TransportException("mock_focus_state_missing")
+    }
+
+    private suspend fun mutateWalk(): WalkAdventureState {
+        walkMutationCount += 1
+        beforePetMutation?.invoke()
+        return mockWalkMutationResult ?: mockWalkState
+            ?: throw TransportException("mock_walk_state_missing")
+    }
 
     private fun updateReceipt(state: String, id: String?, imageBytes: Int, nextOffset: Int) = FirmwareUpdateReceipt(
         ok = true,

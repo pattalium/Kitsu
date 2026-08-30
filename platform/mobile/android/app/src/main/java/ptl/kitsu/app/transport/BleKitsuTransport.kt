@@ -24,8 +24,25 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
+import ptl.kitsu.app.model.ADVENTURE_HOME_SET_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_PRIVACY_SET_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_STATE_GET_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_WALK_ACK_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_WALK_DECIDE_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_WALK_FINISH_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_WALK_LOCATION_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_WALK_START_OPERATION
+import ptl.kitsu.app.model.ADVENTURE_WALK_SYNC_OPERATION
 import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionReceipt
+import ptl.kitsu.app.model.COMPANION_NICKNAME_SET_OPERATION
+import ptl.kitsu.app.model.COMPANION_PRESENTATION_CLOSE_OPERATION
+import ptl.kitsu.app.model.COMPANION_PRESENTATION_OPEN_OPERATION
+import ptl.kitsu.app.model.COMPANION_PRESENTATION_READ_OPERATION
+import ptl.kitsu.app.model.COMPANION_PROFILE_GET_OPERATION
+import ptl.kitsu.app.model.COMPANION_QUESTION_ANSWER_OPERATION
+import ptl.kitsu.app.model.COMPANION_REQUEST_ANSWER_OPERATION
+import ptl.kitsu.app.model.CompanionProfile
 import ptl.kitsu.app.model.ControllerForgetReceipt
 import ptl.kitsu.app.model.ENCOUNTER_CODES_OPERATION
 import ptl.kitsu.app.model.ENCOUNTER_CATALOG_OPERATION
@@ -37,6 +54,13 @@ import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.EncounterDiscoveryPage
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.ExpeditionDuration
+import ptl.kitsu.app.model.FOCUS_ACK_OPERATION
+import ptl.kitsu.app.model.FOCUS_CANCEL_OPERATION
+import ptl.kitsu.app.model.FOCUS_START_OPERATION
+import ptl.kitsu.app.model.FOCUS_STATE_GET_OPERATION
+import ptl.kitsu.app.model.FOCUS_STOP_OPERATION
+import ptl.kitsu.app.model.FocusSessionState
+import ptl.kitsu.app.model.FocusStartCommand
 import ptl.kitsu.app.model.FUN_EXPEDITION_CLAIM_OPERATION
 import ptl.kitsu.app.model.FUN_EXPEDITION_START_OPERATION
 import ptl.kitsu.app.model.FUN_PARTY_BEGIN_OPERATION
@@ -63,8 +87,17 @@ import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.PeerPage
 import ptl.kitsu.app.model.PartyJoinCommand
 import ptl.kitsu.app.model.PartyRoundCommand
+import ptl.kitsu.app.model.PetPresentationChunk
+import ptl.kitsu.app.model.PetPresentationState
 import ptl.kitsu.app.model.StoryTrigger
+import ptl.kitsu.app.model.WalkAdventureState
+import ptl.kitsu.app.model.WalkDecisionCommand
+import ptl.kitsu.app.model.WalkLocationCommand
+import ptl.kitsu.app.model.WalkPrivacy
+import ptl.kitsu.app.model.WalkStartCommand
+import ptl.kitsu.app.model.WalkSyncCommand
 import ptl.kitsu.app.pairing.ControllerPairingProgress
+import ptl.kitsu.app.pairing.ControllerPairingFlow
 import ptl.kitsu.app.pairing.ControllerPairingProtocol
 import ptl.kitsu.app.pairing.ControllerPairingService
 import ptl.kitsu.app.pairing.ControllerPairingStage
@@ -74,6 +107,8 @@ import ptl.kitsu.app.pairing.BluetoothPairingRepairStage
 import ptl.kitsu.app.pairing.PairingChannel
 import ptl.kitsu.app.pairing.PairingException
 import ptl.kitsu.app.security.BondedCompanion
+import ptl.kitsu.app.security.ControllerAccessPolicy
+import ptl.kitsu.app.security.ControllerRole
 import ptl.kitsu.app.security.CredentialStore
 import ptl.kitsu.app.security.MAX_SAVED_KITSU
 import ptl.kitsu.app.security.SafeLog
@@ -188,12 +223,14 @@ class BleKitsuTransport(
     @Volatile private var pairingJob: Job? = null
     @Volatile private var envelopeSession: SecureEnvelopeSession? = null
     @Volatile private var connectedDeviceAddress: String? = null
+    @Volatile private var connectedControllerRole: ControllerRole? = null
     @Volatile private var lastGattFailureCode: String? = null
     @Volatile private var clockSyncWarning: String? = null
     @Volatile private var disconnectObserver: ((String) -> Unit)? = null
     @Volatile private var meshOneShotReady = false
     @Volatile private var messageProtocolVersion = 1
     @Volatile private var messageMarkReadAvailable = false
+    @Volatile private var petFeatureApiAvailable = false
     private var failedProofs = 0
     private var proofBackoffUntilMillis = 0L
 
@@ -207,6 +244,7 @@ class BleKitsuTransport(
         val missing = missingPermissions()
         if (missing.isNotEmpty()) return ConnectResult.PermissionRequired(missing)
         if (isConnectedTo(profile.deviceAddress)) {
+            if (profile.role == ControllerRole.CARETAKER) return ConnectResult.Connected
             return try {
                 synchronizeClock()
                 ConnectResult.Connected
@@ -227,6 +265,7 @@ class BleKitsuTransport(
 
         messageProtocolVersion = 1
         messageMarkReadAvailable = false
+        petFeatureApiAvailable = false
         return try {
             connectWithPermission(profile)
         } catch (cancelled: CancellationException) {
@@ -244,6 +283,25 @@ class BleKitsuTransport(
     override suspend fun pairController(
         label: String,
         onProgress: (ControllerPairingProgress) -> Unit,
+    ): BondedCompanion = pairControllerForFlow(
+        label = label,
+        flow = ControllerPairingFlow.OWNER,
+        onProgress = onProgress,
+    )
+
+    override suspend fun pairCaretakerController(
+        label: String,
+        onProgress: (ControllerPairingProgress) -> Unit,
+    ): BondedCompanion = pairControllerForFlow(
+        label = label,
+        flow = ControllerPairingFlow.CARETAKER,
+        onProgress = onProgress,
+    )
+
+    private suspend fun pairControllerForFlow(
+        label: String,
+        flow: ControllerPairingFlow,
+        onProgress: (ControllerPairingProgress) -> Unit,
     ): BondedCompanion = pairingMutex.withLock {
         if (credentials.pendingBondedCompanion() != null) {
             throw PairingException("pairing_finish_required")
@@ -254,11 +312,20 @@ class BleKitsuTransport(
             ?: throw PairingException("pairing_failed")
         pairingJob = activeJob
         try {
-            val result = pairControllerWithPermission(label) { progress ->
+            val result = pairControllerWithPermission(label, flow) { progress ->
                 runCatching { onProgress(progress) }
             }
             runCatching {
-                onProgress(ControllerPairingProgress(ControllerPairingStage.COMPLETE, "controller_paired"))
+                onProgress(
+                    ControllerPairingProgress(
+                        ControllerPairingStage.COMPLETE,
+                        if (flow == ControllerPairingFlow.CARETAKER) {
+                            "caretaker_paired"
+                        } else {
+                            "controller_paired"
+                        },
+                    ),
+                )
             }
             result
         } catch (failure: CancellationException) {
@@ -406,6 +473,7 @@ class BleKitsuTransport(
     @SuppressLint("MissingPermission")
     private suspend fun pairControllerWithPermission(
         label: String,
+        flow: ControllerPairingFlow,
         report: (ControllerPairingProgress) -> Unit,
     ): BondedCompanion {
         disconnect()
@@ -413,7 +481,16 @@ class BleKitsuTransport(
         if (!adapter.isEnabled) throw PairingException("bluetooth_disabled")
         scanPrerequisiteError()?.let { throw PairingException(it) }
 
-        report(ControllerPairingProgress(ControllerPairingStage.SCANNING, "scanning_pair_phone"))
+        report(
+            ControllerPairingProgress(
+                ControllerPairingStage.SCANNING,
+                if (flow == ControllerPairingFlow.CARETAKER) {
+                    "scanning_pair_caretaker"
+                } else {
+                    "scanning_pair_phone"
+                },
+            ),
+        )
         val device = when (val scan = scanForPairingCandidate()) {
             is DeviceScan.Found -> scan.device
             DeviceScan.Absent -> throw PairingException("pairing_device_absent")
@@ -506,6 +583,7 @@ class BleKitsuTransport(
                             displayName = displayName,
                             controllerIdB64 = grant.controllerIdB64,
                             controllerRootB64 = grant.rootB64,
+                            role = grant.role,
                         )
                         credentials.savePendingBondedCompanion(candidate)
                         stored = candidate
@@ -531,6 +609,7 @@ class BleKitsuTransport(
                             ),
                         )
                     },
+                    flow = flow,
                 )
                 val verified = stored ?: throw PairingException("credential_store_failed")
                 credentials.promotePendingBondedCompanion(verified)
@@ -760,6 +839,7 @@ class BleKitsuTransport(
                 false
             } else {
                 connectedDeviceAddress = profile.deviceAddress
+                connectedControllerRole = profile.role
                 true
             }
         }
@@ -768,20 +848,22 @@ class BleKitsuTransport(
             disconnect()
             return ConnectResult.Failed(code)
         }
-        try {
-            synchronizeClock()
-        } catch (cancelled: CancellationException) {
-            disconnect()
-            throw cancelled
-        } catch (failure: Throwable) {
-            val code = ClockSyncFailurePolicy.code(failure)
-            SafeLog.warn("ble_clock", code, failure)
-            val result = ClockSyncFailurePolicy.connectResult(
-                lastGattFailureCode ?: code,
-                authenticatedSessionActive = isConnectedTo(profile.deviceAddress),
-            )
-            if (result != ConnectResult.Connected) disconnect()
-            return result
+        if (profile.role == ControllerRole.OWNER) {
+            try {
+                synchronizeClock()
+            } catch (cancelled: CancellationException) {
+                disconnect()
+                throw cancelled
+            } catch (failure: Throwable) {
+                val code = ClockSyncFailurePolicy.code(failure)
+                SafeLog.warn("ble_clock", code, failure)
+                val result = ClockSyncFailurePolicy.connectResult(
+                    lastGattFailureCode ?: code,
+                    authenticatedSessionActive = isConnectedTo(profile.deviceAddress),
+                )
+                if (result != ConnectResult.Connected) disconnect()
+                return result
+            }
         }
         SafeLog.info("ble_connected", mapOf("device" to profile.displayName))
         return ConnectResult.Connected
@@ -1048,9 +1130,11 @@ class BleKitsuTransport(
                             notifyCharacteristic = null
                             envelopeSession = null
                             connectedDeviceAddress = null
+                            connectedControllerRole = null
                             meshOneShotReady = false
                             messageProtocolVersion = 1
                             messageMarkReadAvailable = false
+                            petFeatureApiAvailable = false
                             frameDecoder.clear()
                             pairingFrameDecoder.clear()
                             frameTimeoutGeneration += 1L
@@ -1314,6 +1398,7 @@ class BleKitsuTransport(
         activeGattGeneration += 1L
         handshakeTransition.clear()
         connectedDeviceAddress = null
+        connectedControllerRole = null
         lastGattFailureCode = code
         writeCharacteristic = null
         notifyCharacteristic = null
@@ -1322,6 +1407,7 @@ class BleKitsuTransport(
         meshOneShotReady = false
         messageProtocolVersion = 1
         messageMarkReadAvailable = false
+        petFeatureApiAvailable = false
         frameDecoder.clear()
         pairingFrameDecoder.clear()
         frameTimeoutGeneration += 1
@@ -1478,6 +1564,10 @@ class BleKitsuTransport(
     }
 
     private suspend fun successfulPayload(op: String, body: JsonObject): ByteArray {
+        val role = connectedControllerRole ?: throw TransportException("not_connected")
+        if (!ControllerAccessPolicy.allowsOperation(role, op)) {
+            throw TransportException("controller_role_denied")
+        }
         val response = request(op, body)
         FirmwareBlePayloadMapper.rejectionCode(response)?.let { throw TransportException(it) }
         return response
@@ -1500,12 +1590,14 @@ class BleKitsuTransport(
             meshOneShotReady = it.mesh.oneShotReady
             messageProtocolVersion = FirmwareMessageApiPolicy.protocolVersion(it.firmwareVersion)
             messageMarkReadAvailable = FirmwareMessageApiPolicy.supportsMarkRead(it.firmwareVersion)
+            petFeatureApiAvailable = FirmwarePetFeatureApiPolicy.supportsV1(it.firmwareVersion)
         }
     } catch (failure: Throwable) {
         // Unknown versioned operations are fatal on older firmware. A failed/absent
         // authenticated version claim therefore always falls back to v1.
         messageProtocolVersion = 1
         messageMarkReadAvailable = false
+        petFeatureApiAvailable = false
         throw failure
     }
 
@@ -1672,6 +1764,189 @@ class BleKitsuTransport(
     private suspend fun funRequest(operation: String, body: JsonObject): FunState =
         FunWireCodec.state(successfulPayload(operation, body))
 
+    override suspend fun companionProfile(): CompanionProfile = companionProfileRequest(
+        COMPANION_PROFILE_GET_OPERATION,
+        PetFeatureWireCodec.emptyBody(),
+    )
+
+    override suspend fun setCompanionNickname(nickname: String): CompanionProfile =
+        companionProfileRequest(
+            COMPANION_NICKNAME_SET_OPERATION,
+            PetFeatureWireCodec.nicknameBody(nickname),
+        )
+
+    override suspend fun answerCompanionRequest(accept: Boolean): CompanionProfile =
+        companionProfileRequest(
+            COMPANION_REQUEST_ANSWER_OPERATION,
+            PetFeatureWireCodec.requestAnswerBody(accept),
+        )
+
+    override suspend fun answerCompanionQuestion(choice: Int): CompanionProfile =
+        companionProfileRequest(
+            COMPANION_QUESTION_ANSWER_OPERATION,
+            PetFeatureWireCodec.questionAnswerBody(choice),
+        )
+
+    override suspend fun focusState(): FocusSessionState = focusRequest(
+        FOCUS_STATE_GET_OPERATION,
+        PetFeatureWireCodec.emptyBody(),
+    )
+
+    override suspend fun startFocus(command: FocusStartCommand): FocusSessionState = focusRequest(
+        FOCUS_START_OPERATION,
+        PetFeatureWireCodec.focusStartBody(command),
+    )
+
+    override suspend fun stopFocus(sessionId: Long): FocusSessionState = focusRequest(
+        FOCUS_STOP_OPERATION,
+        PetFeatureWireCodec.focusSessionBody(sessionId),
+    )
+
+    override suspend fun cancelFocus(sessionId: Long): FocusSessionState = focusRequest(
+        FOCUS_CANCEL_OPERATION,
+        PetFeatureWireCodec.focusSessionBody(sessionId),
+    )
+
+    override suspend fun acknowledgeFocus(sessionId: Long): FocusSessionState = focusRequest(
+        FOCUS_ACK_OPERATION,
+        PetFeatureWireCodec.focusSessionBody(sessionId),
+    )
+
+    override suspend fun walkState(): WalkAdventureState = walkRequest(
+        ADVENTURE_STATE_GET_OPERATION,
+        PetFeatureWireCodec.emptyBody(),
+    )
+
+    override suspend fun startWalk(command: WalkStartCommand): WalkAdventureState = walkRequest(
+        ADVENTURE_WALK_START_OPERATION,
+        PetFeatureWireCodec.walkStartBody(command),
+    )
+
+    override suspend fun syncWalk(command: WalkSyncCommand): WalkAdventureState = walkRequest(
+        ADVENTURE_WALK_SYNC_OPERATION,
+        PetFeatureWireCodec.walkSyncBody(command),
+    )
+
+    override suspend fun updateWalkLocation(command: WalkLocationCommand): WalkAdventureState =
+        walkRequest(
+            ADVENTURE_WALK_LOCATION_OPERATION,
+            PetFeatureWireCodec.walkLocationBody(command),
+        )
+
+    override suspend fun decideWalk(command: WalkDecisionCommand): WalkAdventureState = walkRequest(
+        ADVENTURE_WALK_DECIDE_OPERATION,
+        PetFeatureWireCodec.walkDecisionBody(command),
+    )
+
+    override suspend fun finishWalk(routeId: Long): WalkAdventureState = walkRequest(
+        ADVENTURE_WALK_FINISH_OPERATION,
+        PetFeatureWireCodec.walkRouteBody(routeId),
+    )
+
+    override suspend fun acknowledgeWalk(routeId: Long): WalkAdventureState = walkRequest(
+        ADVENTURE_WALK_ACK_OPERATION,
+        PetFeatureWireCodec.walkRouteBody(routeId),
+    )
+
+    override suspend fun setWalkPrivacy(mode: WalkPrivacy): WalkAdventureState = walkRequest(
+        ADVENTURE_PRIVACY_SET_OPERATION,
+        PetFeatureWireCodec.walkPrivacyBody(mode),
+    )
+
+    override suspend fun setWalkHome(zoneToken: Long): WalkAdventureState = walkRequest(
+        ADVENTURE_HOME_SET_OPERATION,
+        PetFeatureWireCodec.walkHomeBody(zoneToken),
+    )
+
+    override suspend fun openPetPresentation(sessionId: Long): PetPresentationState {
+        val payload = petFeaturePayload(
+            COMPANION_PRESENTATION_OPEN_OPERATION,
+            PetPresentationWireCodec.openBody(sessionId),
+        )
+        return try {
+            PetPresentationWireCodec.state(payload, expectedSessionId = sessionId)
+        } catch (failure: Throwable) {
+            withContext(NonCancellable) {
+                runCatching { closePetPresentation(sessionId) }
+            }
+            throw failure
+        } finally {
+            payload.fill(0)
+        }
+    }
+
+    override suspend fun readPetPresentation(
+        sessionId: Long,
+        offset: Int,
+        bytes: Int,
+        expectedFrameBytes: Int,
+        expectedFrameSha256: String,
+    ): PetPresentationChunk {
+        val payload = petFeaturePayload(
+            COMPANION_PRESENTATION_READ_OPERATION,
+            PetPresentationWireCodec.readBody(sessionId, offset, bytes, expectedFrameSha256),
+        )
+        return try {
+            PetPresentationWireCodec.chunk(
+                payload = payload,
+                expectedSessionId = sessionId,
+                expectedOffset = offset,
+                expectedBytes = bytes,
+                expectedFrameBytes = expectedFrameBytes,
+                expectedFrameSha256 = expectedFrameSha256,
+            )
+        } finally {
+            payload.fill(0)
+        }
+    }
+
+    override suspend fun closePetPresentation(sessionId: Long): Boolean {
+        val payload = petFeaturePayload(
+            COMPANION_PRESENTATION_CLOSE_OPERATION,
+            PetPresentationWireCodec.closeBody(sessionId),
+        )
+        return try {
+            PetPresentationWireCodec.closed(payload)
+        } finally {
+            payload.fill(0)
+        }
+    }
+
+    private suspend fun companionProfileRequest(
+        operation: String,
+        body: JsonObject,
+    ): CompanionProfile {
+        val payload = petFeaturePayload(operation, body)
+        return try {
+            PetFeatureWireCodec.profile(payload)
+        } finally {
+            payload.fill(0)
+        }
+    }
+
+    private suspend fun focusRequest(operation: String, body: JsonObject): FocusSessionState {
+        val payload = petFeaturePayload(operation, body)
+        return try {
+            PetFeatureWireCodec.focus(payload)
+        } finally {
+            payload.fill(0)
+        }
+    }
+
+    private suspend fun walkRequest(operation: String, body: JsonObject): WalkAdventureState {
+        val payload = petFeaturePayload(operation, body)
+        return try {
+            PetFeatureWireCodec.walk(payload)
+        } finally {
+            payload.fill(0)
+        }
+    }
+
+    private suspend fun petFeaturePayload(operation: String, body: JsonObject): ByteArray {
+        if (!petFeatureApiAvailable) throw TransportException("firmware_operation_unavailable")
+        return successfulPayload(operation, body)
+    }
+
     override suspend fun action(command: ActionCommand): ActionReceipt {
         if (command.kind !in setOf(
                 ptl.kitsu.app.model.ActionKind.PET,
@@ -1682,8 +1957,16 @@ class BleKitsuTransport(
             ptl.kitsu.app.model.ActionKind.SEND_MESSAGE,
             )
         ) throw TransportException("firmware_operation_unavailable")
+        val role = connectedControllerRole ?: throw TransportException("not_connected")
+        if (!ControllerAccessPolicy.allowsAction(role, command.kind)) {
+            throw TransportException("controller_role_denied")
+        }
         val direct = DirectActionPreparer(
-            synchronizeClock = ::synchronizeClock,
+            synchronizeClock = if (role == ControllerRole.OWNER) {
+                ::synchronizeClock
+            } else {
+                { }
+            },
             currentEpochSeconds = { java.time.Instant.now().epochSecond },
             messageOneShotReady = { meshOneShotReady },
         ).prepare(command)
@@ -1751,7 +2034,9 @@ class BleKitsuTransport(
     private suspend fun firmwareUpdateRequest(
         operation: String,
         body: JsonObject,
-    ): FirmwareUpdateReceipt = FirmwareBlePayloadMapper.firmwareUpdate(request(operation, body))
+    ): FirmwareUpdateReceipt = FirmwareBlePayloadMapper.firmwareUpdate(
+        successfulPayload(operation, body),
+    )
 
     override fun events(after: String?): Flow<EventEnvelope> = flow { emitAll(eventBus) }
 
@@ -1781,10 +2066,12 @@ class BleKitsuTransport(
             negotiatedMtu = 23
             envelopeSession = null
             connectedDeviceAddress = null
+            connectedControllerRole = null
             lastGattFailureCode = null
             meshOneShotReady = false
             messageProtocolVersion = 1
             messageMarkReadAvailable = false
+            petFeatureApiAvailable = false
             clockSyncWarning = null
             handshakeResponse?.completeExceptionally(HandshakeException("disconnected"))
             handshakeResponse = null

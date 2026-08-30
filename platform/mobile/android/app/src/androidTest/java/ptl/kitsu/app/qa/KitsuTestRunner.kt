@@ -5,6 +5,9 @@ import android.content.Context
 import androidx.test.runner.AndroidJUnitRunner
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
@@ -12,6 +15,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import ptl.kitsu.app.KitsuApplication
 import ptl.kitsu.app.KitsuServiceContainer
+import ptl.kitsu.app.automation.AutomationCapabilityStore
 import ptl.kitsu.app.cache.EncryptedBoundedCache
 import ptl.kitsu.app.connection.ConnectionCoordinator
 import ptl.kitsu.app.connection.InMemoryReconnectSuppressionStore
@@ -39,12 +43,16 @@ import ptl.kitsu.app.model.NeedLevels
 import ptl.kitsu.app.model.Peer
 import ptl.kitsu.app.model.PeerPage
 import ptl.kitsu.app.model.RepeatSource
+import ptl.kitsu.app.notifications.KitsuNotificationSettings
+import ptl.kitsu.app.notifications.KitsuNotificationSettingsStore
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
 import ptl.kitsu.app.pairing.BluetoothPairingRepairProgress
 import ptl.kitsu.app.repository.OwnerRepository
 import ptl.kitsu.app.security.BondedCompanion
 import ptl.kitsu.app.security.CredentialStore
+import ptl.kitsu.app.security.MessageDraftRecord
+import ptl.kitsu.app.security.MessageDraftStore
 import ptl.kitsu.app.transport.ConnectResult
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.transport.FirmwareBlePayloadMapper
@@ -52,6 +60,9 @@ import ptl.kitsu.app.transport.FirmwareMessageApiPolicy
 import ptl.kitsu.app.transport.KitsuTransport
 import ptl.kitsu.app.transport.TransportException
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
+import ptl.kitsu.app.walk.WalkStepAvailability
+import ptl.kitsu.app.walk.WalkStepSnapshot
+import ptl.kitsu.app.walk.WalkStepSource
 
 /** Installs a no-radio, no-network fixture only inside the instrumentation APK process. */
 class KitsuTestRunner : AndroidJUnitRunner() {
@@ -64,6 +75,12 @@ class KitsuFixtureApplication : KitsuApplication() {
         val credentials = FixtureCredentialStore()
         val transport = FixtureTransport()
         return object : KitsuServiceContainer {
+            override val messageDraftStore: MessageDraftStore = FixtureMessageDraftStore
+            override val notificationSettingsStore: KitsuNotificationSettingsStore =
+                FixtureNotificationSettingsStore
+            override val automationCapabilityStore =
+                AutomationCapabilityStore(this@KitsuFixtureApplication)
+            override val walkStepSource: WalkStepSource = FixtureWalkStepSource
             override val ownerRepository = OwnerRepository(
                 coordinator = ConnectionCoordinator(
                     transport,
@@ -74,6 +91,92 @@ class KitsuFixtureApplication : KitsuApplication() {
                 pairingService = FixturePairingService(credentials),
             )
         }
+    }
+}
+
+private object FixtureWalkStepSource : WalkStepSource {
+    private val mutable = MutableStateFlow(
+        WalkStepSnapshot(
+            availability = WalkStepAvailability.SENSOR_UNAVAILABLE,
+            observing = false,
+        ),
+    )
+    override val snapshots: StateFlow<WalkStepSnapshot> = mutable.asStateFlow()
+    override fun startObserving(): WalkStepSnapshot = mutable.value
+    override fun stopObserving(): WalkStepSnapshot = mutable.value
+    override fun selectDevice(deviceAddress: String): WalkStepSnapshot = mutable.value.let { current ->
+        if (current.deviceAddress.equals(deviceAddress, ignoreCase = true)) current
+        else current.copy(deviceAddress = deviceAddress.uppercase(), routeId = null, stepsTotal = 0L)
+    }.also { mutable.value = it }
+    override fun bindRoute(
+        deviceAddress: String,
+        routeId: Long,
+        firmwareStepsTotal: Long,
+    ): WalkStepSnapshot =
+        mutable.value.copy(
+            deviceAddress = deviceAddress.uppercase(),
+            routeId = routeId,
+            stepsTotal = firmwareStepsTotal,
+        ).also {
+            mutable.value = it
+        }
+    override fun clearRoute(deviceAddress: String, routeId: Long): WalkStepSnapshot =
+        mutable.value.let { current ->
+            if (!current.matches(deviceAddress, routeId)) current
+            else current.copy(routeId = null, stepsTotal = 0L)
+        }.also { mutable.value = it }
+    override fun clearDevice(deviceAddress: String): WalkStepSnapshot = mutable.value.let { current ->
+        if (!current.deviceAddress.equals(deviceAddress, ignoreCase = true)) current
+        else current.copy(routeId = null, stepsTotal = 0L)
+    }.also { mutable.value = it }
+    override fun close() = Unit
+}
+
+private object FixtureNotificationSettingsStore : KitsuNotificationSettingsStore {
+    private val mutable = MutableStateFlow(KitsuNotificationSettings())
+    override val settings: StateFlow<KitsuNotificationSettings> = mutable.asStateFlow()
+
+    override fun setAlertsEnabled(enabled: Boolean) {
+        mutable.value = mutable.value.copy(
+            alertsEnabled = enabled,
+            connectionContinuityEnabled = mutable.value.connectionContinuityEnabled && enabled,
+        )
+    }
+
+    override fun setDirectMessagesEnabled(enabled: Boolean) {
+        mutable.value = mutable.value.copy(directMessagesEnabled = enabled)
+    }
+
+    override fun setPetUpdatesEnabled(enabled: Boolean) {
+        mutable.value = mutable.value.copy(petUpdatesEnabled = enabled)
+    }
+
+    override fun setConnectionContinuityEnabled(enabled: Boolean) {
+        mutable.value = mutable.value.copy(
+            connectionContinuityEnabled = enabled && mutable.value.alertsEnabled,
+        )
+    }
+
+    override fun resetConnectionContinuityForProcessStart() {
+        mutable.value = mutable.value.copy(connectionContinuityEnabled = false)
+    }
+
+    fun reset() {
+        mutable.value = KitsuNotificationSettings()
+    }
+}
+
+private object FixtureMessageDraftStore : MessageDraftStore {
+    private var records: List<MessageDraftRecord> = emptyList()
+
+    override suspend fun read(): List<MessageDraftRecord> = synchronized(this) { records.toList() }
+
+    override suspend fun write(records: List<MessageDraftRecord>) {
+        synchronized(this) { this.records = records.toList() }
+    }
+
+    fun reset() {
+        synchronized(this) { records = emptyList() }
     }
 }
 
@@ -114,6 +217,8 @@ object FixtureScenario {
         private set
 
     fun reset() = synchronized(lock) {
+        FixtureMessageDraftStore.reset()
+        FixtureNotificationSettingsStore.reset()
         journalRevision = 500L
         rows = initialMessages()
         lastFloodAdvert = initialLastFloodAdvert()

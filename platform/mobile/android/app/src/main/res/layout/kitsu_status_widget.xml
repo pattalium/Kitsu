@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/kitsu_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/kitsu_widget_background"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="14dp">
+
+    <ImageView
+        android:id="@+id/kitsu_widget_portrait"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:adjustViewBounds="true"
+        android:background="@drawable/kitsu_widget_portrait_background"
+        android:contentDescription="@string/kitsu_widget_default_portrait"
+        android:filter="false"
+        android:padding="7dp"
+        android:scaleType="fitCenter" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/kitsu_widget_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:text="@string/kitsu_widget_default_name"
+            android:textColor="@color/kitsu_widget_text"
+            android:textSize="20sp" />
+
+        <TextView
+            android:id="@+id/kitsu_widget_mood"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/kitsu_widget_default_mood"
+            android:textColor="@color/kitsu_widget_secondary_text"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/kitsu_widget_energy"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="@string/kitsu_widget_default_energy"
+                android:textColor="@color/kitsu_widget_text"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/kitsu_widget_battery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="@string/kitsu_widget_default_battery"
+                android:textColor="@color/kitsu_widget_text"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/kitsu_widget_energy_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_marginTop="3dp"
+            android:max="100"
+            android:progress="0"
+            android:progressBackgroundTint="@color/kitsu_widget_meter_track"
+            android:progressTint="@color/kitsu_widget_accent" />
+
+        <TextView
+            android:id="@+id/kitsu_widget_request"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/kitsu_widget_accent"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/kitsu_widget_focus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/kitsu_widget_secondary_text"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/kitsu_widget_walk"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/kitsu_widget_secondary_text"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/kitsu_widget_freshness"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/kitsu_widget_no_status"
+            android:textColor="@color/kitsu_widget_muted_text"
+            android:textSize="11sp" />
+    </LinearLayout>
+</LinearLayout>

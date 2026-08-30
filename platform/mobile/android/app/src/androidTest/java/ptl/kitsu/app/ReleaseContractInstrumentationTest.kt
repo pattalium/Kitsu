@@ -26,6 +26,8 @@ import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.MeshConfigurationReceipt
 import ptl.kitsu.app.model.PeerPage
 import ptl.kitsu.app.security.AndroidKeystoreEncounterCodeVault
+import ptl.kitsu.app.security.AndroidKeystoreMessageDraftStore
+import ptl.kitsu.app.security.MessageDraftRecord
 import ptl.kitsu.app.transport.ConnectResult
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.transport.KitsuTransport
@@ -67,9 +69,9 @@ class ReleaseContractInstrumentationTest {
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
         assertEquals(packageInfo.longVersionCode.toInt(), BuildConfig.VERSION_CODE)
         assertEquals(packageInfo.versionName, BuildConfig.VERSION_NAME)
-        assertEquals(33, BuildConfig.VERSION_CODE)
+        assertEquals(34, BuildConfig.VERSION_CODE)
         assertEquals(
-            if (context.packageName.endsWith(".debug")) "2.2.12-debug" else "2.2.12",
+            if (context.packageName.endsWith(".debug")) "2.3.0-debug" else "2.3.0",
             BuildConfig.VERSION_NAME,
         )
         assertTrue(
@@ -86,7 +88,7 @@ class ReleaseContractInstrumentationTest {
         )
     }
 
-    @Test fun packagedAppHasOnlyTheRequiredBluetoothPermissionSurface() {
+    @Test fun packagedAppHasOnlyTheRequiredLocalDevicePermissionSurface() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val packageInfo = context.packageManager.getPackageInfo(
             context.packageName,
@@ -94,11 +96,19 @@ class ReleaseContractInstrumentationTest {
         )
         val permissions = packageInfo.requestedPermissions?.toSet().orEmpty()
         assertFalse(Manifest.permission.INTERNET in permissions)
-        assertFalse(Manifest.permission.FOREGROUND_SERVICE in permissions)
         assertFalse(Manifest.permission.ACCESS_COARSE_LOCATION in permissions)
         assertTrue(Manifest.permission.BLUETOOTH_SCAN in permissions)
         assertTrue(Manifest.permission.BLUETOOTH_CONNECT in permissions)
-        assertTrue(packageInfo.services.isNullOrEmpty())
+        assertTrue(Manifest.permission.POST_NOTIFICATIONS in permissions)
+        assertTrue(Manifest.permission.FOREGROUND_SERVICE in permissions)
+        assertTrue(Manifest.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE in permissions)
+        assertTrue(Manifest.permission.ACTIVITY_RECOGNITION in permissions)
+        assertTrue(Manifest.permission.VIBRATE in permissions)
+        assertEquals(
+            setOf("ptl.kitsu.app.notifications.KitsuConnectedDeviceService"),
+            packageInfo.services.orEmpty().map { it.name }.toSet(),
+        )
+        assertTrue(packageInfo.services.orEmpty().all { !it.exported })
     }
 
     @Test fun voluntarySupportUsesTheExactExternalHttpsDestinationWithoutAnAppEntitlement() {
@@ -141,7 +151,7 @@ class ReleaseContractInstrumentationTest {
     }
 
     @Test fun encounterCodeVaultEncryptsAndRetainsIndependentDeviceRecords() {
-        val context = InstrumentationRegistry.getInstrumentation().context
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
         val file = context.filesDir.resolve("encounter-code-vault-v1.bin")
         file.delete()
         try {
@@ -182,6 +192,40 @@ class ReleaseContractInstrumentationTest {
             0,
         )
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, activityInfo.screenOrientation)
+    }
+
+    @Test fun plainTextShareTargetIsExposedWithoutAcceptingOtherMedia() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        fun resolves(type: String): Boolean = context.packageManager.queryIntentActivities(
+            Intent(Intent.ACTION_SEND).setType(type),
+            PackageManager.MATCH_DEFAULT_ONLY,
+        ).any { it.activityInfo.packageName == context.packageName }
+
+        assertTrue(resolves("text/plain"))
+        assertFalse(resolves("image/png"))
+    }
+
+    @Test fun messageDraftStoreEncryptsAndRoundTripsTheExactDeviceBinding() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = context.filesDir.resolve("message-drafts-v1.bin")
+        file.delete()
+        try {
+            val record = MessageDraftRecord(
+                deviceAddress = "AA:BB:CC:DD:EE:FF",
+                threadKey = "direct:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                text = "private unsent draft",
+                updatedAtMillis = 42,
+            )
+            val store = AndroidKeystoreMessageDraftStore(context)
+            store.write(listOf(record))
+
+            assertFalse(file.readBytes().toString(Charsets.ISO_8859_1).contains(record.text))
+            assertEquals(listOf(record), store.read())
+            store.write(emptyList())
+            assertTrue(store.read().isEmpty())
+        } finally {
+            file.delete()
+        }
     }
 
     @Test fun moderationAcceptanceAndBlocksPersistAcrossStoreRecreation() {

@@ -6,8 +6,16 @@ import ptl.kitsu.app.connection.AndroidReconnectSuppressionStore
 import ptl.kitsu.app.connection.ConnectionCoordinator
 import ptl.kitsu.app.repository.OwnerRepository
 import ptl.kitsu.app.security.AndroidKeystoreCredentialStore
+import ptl.kitsu.app.security.AndroidKeystoreMessageDraftStore
+import ptl.kitsu.app.security.MessageDraftStore
+import ptl.kitsu.app.notifications.AndroidKitsuNotificationSettingsStore
+import ptl.kitsu.app.notifications.KitsuNotificationCoordinator
+import ptl.kitsu.app.notifications.KitsuNotificationSettingsStore
 import ptl.kitsu.app.transport.BleGattConfiguration
 import ptl.kitsu.app.transport.BleKitsuTransport
+import ptl.kitsu.app.walk.AndroidWalkStepSource
+import ptl.kitsu.app.walk.WalkStepSource
+import ptl.kitsu.app.automation.AutomationCapabilityStore
 import java.util.UUID
 
 open class KitsuApplication : Application() {
@@ -25,10 +33,24 @@ open class KitsuApplication : Application() {
 
 interface KitsuServiceContainer {
     val ownerRepository: OwnerRepository
+    val messageDraftStore: MessageDraftStore
+    val notificationSettingsStore: KitsuNotificationSettingsStore
+    val walkStepSource: WalkStepSource
+    val automationCapabilityStore: AutomationCapabilityStore
 }
 
 class AppServices(application: Application) : KitsuServiceContainer {
     val credentials = AndroidKeystoreCredentialStore(application)
+    override val messageDraftStore: MessageDraftStore =
+        AndroidKeystoreMessageDraftStore(application)
+    override val notificationSettingsStore: KitsuNotificationSettingsStore =
+        AndroidKitsuNotificationSettingsStore(application).also {
+            // Continuity is a visible, process-local choice; never resurrect it after process death.
+            it.resetConnectionContinuityForProcessStart()
+        }
+    override val walkStepSource: WalkStepSource = AndroidWalkStepSource(application)
+    override val automationCapabilityStore: AutomationCapabilityStore =
+        AutomationCapabilityStore(application)
     private val direct = BleKitsuTransport(
         context = application,
         credentials = credentials,
@@ -50,5 +72,11 @@ class AppServices(application: Application) : KitsuServiceContainer {
         cache = EncryptedBoundedCache(application),
         credentials = credentials,
         pairingService = direct,
+    )
+    @Suppress("unused")
+    private val notificationCoordinator = KitsuNotificationCoordinator(
+        application = application,
+        repository = ownerRepository,
+        settingsStore = notificationSettingsStore,
     )
 }

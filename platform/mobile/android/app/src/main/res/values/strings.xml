@@ -1,4 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="notification_channel_direct_messages">Direct messages</string>
+    <string name="notification_channel_direct_messages_description">New direct messages read from the connected Kitsu journal</string>
+    <string name="notification_channel_pet_updates">Companion updates</string>
+    <string name="notification_channel_pet_updates_description">Companion requests, focus sessions, and walk moments</string>
+    <string name="notification_channel_connection">Connected Kitsu</string>
+    <string name="notification_channel_connection_description">Visible connection continuity explicitly enabled in Kitsu settings</string>
+    <string name="notification_private_message_title">New Kitsu message</string>
+    <string name="notification_private_pet_title">Kitsu companion update</string>
+    <string name="notification_unlock_to_view">Unlock to view details</string>
+    <string name="notification_reply_hint">Reply to %1$s</string>
+    <string name="notification_reply_action">Reply</string>
+    <string name="notification_reply_result_public">Kitsu reply update</string>
+    <string name="notification_reply_accepted_title">Reply accepted by Kitsu</string>
+    <string name="notification_reply_rejected_title">Reply not accepted</string>
+    <string name="notification_connection_public_title">Kitsu connection active</string>
+    <string name="notification_connection_public_text">Unlock to view the connected device</string>
+    <string name="notification_connection_title">%1$s is connected</string>
+    <string name="notification_connection_text">Kitsu will keep this existing Bluetooth connection active until it disconnects or you turn this off.</string>
     <string name="app_name">Kitsu</string>
+    <string name="kitsu_widget_name">Kitsu status</string>
+    <string name="kitsu_widget_description">Your Kitsu’s last saved mood, energy, and battery status</string>
+    <string name="kitsu_widget_default_name">Your Kitsu</string>
+    <string name="kitsu_widget_default_mood">Mood unknown</string>
+    <string name="kitsu_widget_default_energy">Energy —</string>
+    <string name="kitsu_widget_default_battery">Battery —</string>
+    <string name="kitsu_widget_no_status">Open Kitsu to load status</string>
+    <string name="kitsu_widget_default_portrait">Default Kitsu portrait</string>
+    <string name="shortcut_check_short">Check Kitsu</string>
+    <string name="shortcut_check_long">Refresh Kitsu status</string>
+    <string name="shortcut_pet_short">Pet Kitsu</string>
+    <string name="shortcut_pet_long">Confirm one Pet action</string>
+    <string name="shortcut_focus_short">Focus with Kitsu</string>
+    <string name="shortcut_focus_long">Confirm a 25-minute focus session</string>
+    <string name="shortcut_walk_short">Walk with Kitsu</string>
+    <string name="shortcut_walk_long">Open Walk with Kitsu</string>
 </resources>

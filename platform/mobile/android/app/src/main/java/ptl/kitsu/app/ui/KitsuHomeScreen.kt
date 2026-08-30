@@ -62,6 +62,7 @@ internal fun KitsuHomeScreen(
     onOpenLocationSettings: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onManageKitsu: () -> Unit,
+    canListenNearby: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -97,7 +98,7 @@ internal fun KitsuHomeScreen(
         when {
             owner.status != null -> {
                 item { NeedsAndBondCard(owner) }
-                item { CareActionsCard(owner, viewModel, updateBusy) }
+                item { CareActionsCard(owner, viewModel, updateBusy, canListenNearby) }
             }
             owner.loading -> item {
                 StatePanel(
@@ -494,7 +495,12 @@ private fun NeedsAndBondCard(owner: OwnerState) {
 }
 
 @Composable
-private fun CareActionsCard(owner: OwnerState, viewModel: MainViewModel, updateBusy: Boolean) {
+private fun CareActionsCard(
+    owner: OwnerState,
+    viewModel: MainViewModel,
+    updateBusy: Boolean,
+    canListenNearby: Boolean,
+) {
     val enabled = owner.connection.connected && !updateBusy
     KitsuCard(title = "Spend a moment together") {
         Text(
@@ -514,8 +520,10 @@ private fun CareActionsCard(owner: OwnerState, viewModel: MainViewModel, updateB
             CareAction("Play", Icons.Default.SportsEsports, enabled, Modifier.weight(1f)) {
                 viewModel.simpleAction(ActionKind.PLAY)
             }
-            CareAction("Listen", Icons.Default.Hearing, enabled, Modifier.weight(1f)) {
-                viewModel.simpleAction(ActionKind.LISTEN_ONCE)
+            if (canListenNearby) {
+                CareAction("Listen", Icons.Default.Hearing, enabled, Modifier.weight(1f)) {
+                    viewModel.simpleAction(ActionKind.LISTEN_ONCE)
+                }
             }
         }
         if (!owner.connection.connected) {

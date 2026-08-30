@@ -3,4 +3,12 @@
     <color name="kitsu_launcher_background">#0B0C0F</color>
     <color name="kitsu_window_background">#0B0C0F</color>
     <color name="kitsu_brand_copper">#F09A68</color>
+    <color name="kitsu_widget_background">#F316171B</color>
+    <color name="kitsu_widget_portrait_background">#FF2A2020</color>
+    <color name="kitsu_widget_border">#3DF09A68</color>
+    <color name="kitsu_widget_text">#FFF8EEE9</color>
+    <color name="kitsu_widget_secondary_text">#FFD8C5BC</color>
+    <color name="kitsu_widget_muted_text">#FFA9948B</color>
+    <color name="kitsu_widget_accent">#FFF09A68</color>
+    <color name="kitsu_widget_meter_track">#FF433532</color>
 </resources>

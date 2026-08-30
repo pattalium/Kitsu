@@ -35,10 +35,20 @@ data class BluetoothPairingRepairProgress(
 
 /** Native first-run controller issuance over authenticated Bluetooth. */
 interface ControllerPairingService {
+    /** Frozen owner-v1 issuance path. */
     suspend fun pairController(
         label: String,
         onProgress: (ControllerPairingProgress) -> Unit,
     ): BondedCompanion
+
+    /**
+     * Caretaker-v2 client path. The role is selected physically on Kitsu and
+     * attested by the device; this method never transmits a role selector.
+     */
+    suspend fun pairCaretakerController(
+        label: String,
+        onProgress: (ControllerPairingProgress) -> Unit,
+    ): BondedCompanion = throw PairingException("caretaker_pairing_unavailable")
 
     suspend fun finishPendingPairing(
         onProgress: (ControllerPairingProgress) -> Unit,

@@ -1,5 +1,6 @@
 package ptl.kitsu.app.repository
 
+import android.annotation.SuppressLint
 import ptl.kitsu.app.cache.CachePolicy
 import ptl.kitsu.app.cache.CacheSnapshot
 import ptl.kitsu.app.cache.EncounterDiscoveryCachePolicy
@@ -11,6 +12,7 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionKind
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.AdvertiseScope
+import ptl.kitsu.app.model.CompanionProfile
 import ptl.kitsu.app.model.EncounterCodePolicy
 import ptl.kitsu.app.model.EncounterCatalogCreature
 import ptl.kitsu.app.model.EncounterDiscoveryRecord
@@ -18,6 +20,8 @@ import ptl.kitsu.app.model.EncounterDiscoveryPolicy
 import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.model.HistoryEntry
 import ptl.kitsu.app.model.ExpeditionDuration
+import ptl.kitsu.app.model.FocusSessionState
+import ptl.kitsu.app.model.FocusStartCommand
 import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.Message
@@ -30,7 +34,15 @@ import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.Peer
 import ptl.kitsu.app.model.PartyJoinCommand
 import ptl.kitsu.app.model.PartyRoundCommand
+import ptl.kitsu.app.model.PetPresentationSnapshot
+import ptl.kitsu.app.model.PetPresentationState
 import ptl.kitsu.app.model.StoryTrigger
+import ptl.kitsu.app.model.WalkAdventureState
+import ptl.kitsu.app.model.WalkDecisionCommand
+import ptl.kitsu.app.model.WalkLocationCommand
+import ptl.kitsu.app.model.WalkPrivacy
+import ptl.kitsu.app.model.WalkStartCommand
+import ptl.kitsu.app.model.WalkSyncCommand
 import ptl.kitsu.app.pairing.ControllerPairingProgress
 import ptl.kitsu.app.pairing.ControllerPairingService
 import ptl.kitsu.app.pairing.ControllerForgetPolicy
@@ -39,12 +51,15 @@ import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
 import ptl.kitsu.app.pairing.BluetoothPairingRepairProgress
 import ptl.kitsu.app.pairing.BluetoothPairingRepairStage
 import ptl.kitsu.app.security.BondedCompanion
+import ptl.kitsu.app.security.ControllerRole
 import ptl.kitsu.app.security.CredentialStore
 import ptl.kitsu.app.security.SafeLog
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.transport.FirmwareEncounterApiPolicy
 import ptl.kitsu.app.transport.FirmwareFunApiPolicy
+import ptl.kitsu.app.transport.FirmwarePetFeatureApiPolicy
 import ptl.kitsu.app.transport.KitsuTransport
+import ptl.kitsu.app.transport.PetPresentationWireCodec
 import ptl.kitsu.app.transport.FirmwareMessageApiPolicy
 import ptl.kitsu.app.transport.TransportException
 import ptl.kitsu.app.update.FirmwareInstallProgress
@@ -53,6 +68,7 @@ import ptl.kitsu.app.update.FirmwareUpdatePackageReader
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import ptl.kitsu.app.update.VerifiedFirmwarePackage
 import java.io.FileInputStream
+import java.security.SecureRandom
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -94,6 +110,22 @@ data class OwnerState(
     val funSupported: Boolean = false,
     val funErrorCode: String? = null,
     val funMutationInFlight: Boolean = false,
+    val companionProfile: CompanionProfile? = null,
+    val companionProfileSupported: Boolean = false,
+    val companionProfileErrorCode: String? = null,
+    val companionProfileMutationInFlight: Boolean = false,
+    val focusState: FocusSessionState? = null,
+    val focusSupported: Boolean = false,
+    val focusErrorCode: String? = null,
+    val focusMutationInFlight: Boolean = false,
+    val walkState: WalkAdventureState? = null,
+    val walkSupported: Boolean = false,
+    val walkErrorCode: String? = null,
+    val walkMutationInFlight: Boolean = false,
+    val petPresentation: PetPresentationState? = null,
+    val petPresentationFrame: ByteArray? = null,
+    val petPresentationErrorCode: String? = null,
+    val petPresentationInFlight: Boolean = false,
     val messages: List<Message> = emptyList(),
     val messagesErrorCode: String? = null,
     val messageJournalSession: String? = null,
@@ -124,11 +156,13 @@ class OwnerRepository(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
     private val advertiseSubmissionTimeoutMillis: Long = ADVERTISE_SUBMISSION_TIMEOUT_MILLIS,
 ) {
+    private val presentationSessionRandom = SecureRandom()
     private val mutableState = MutableStateFlow(OwnerState())
     val state: StateFlow<OwnerState> = mutableState.asStateFlow()
     private var eventJob: Job? = null
     private var lastLiveNamespace: OwnerCursorNamespace? = null
     private val refreshMutex = Mutex()
+    private val presentationMutex = Mutex()
     private val messageRefreshMutex = Mutex()
     private val messageReadMutex = Mutex()
     /** Serializes selected-owner invalidation with device-data commit and cache persistence. */
@@ -136,11 +170,13 @@ class OwnerRepository(
     private var ownerDataGeneration = 0L
     private var ownerCredentialId: String? = null
     private var ownerCredentialRoot: String? = null
+    private var ownerCredentialRole: ControllerRole? = null
     private data class OwnerDataBinding(
         val generation: Long,
         val deviceAddress: String,
         val controllerId: String,
         val controllerRoot: String,
+        val controllerRole: ControllerRole,
     )
     /** Serializes every operation that may select, issue, repair, or remove a controller root. */
     private val credentialLifecycleMutex = Mutex()
@@ -162,18 +198,22 @@ class OwnerRepository(
                     snapshot = deviceCache,
                     activeDeviceAddress = active?.deviceAddress,
                 )
+                val ownerCacheAllowed = active?.role != ControllerRole.CARETAKER
                 ownerDataMutex.withLock {
                     ownerCredentialId = active?.controllerIdB64
                     ownerCredentialRoot = active?.controllerRootB64
+                    ownerCredentialRole = active?.role
                     mutableState.value = mutableState.value.copy(
                         status = deviceCache?.status,
                         history = deviceCache?.history.orEmpty(),
-                        peers = deviceCache?.peers.orEmpty(),
-                        channels = deviceCache?.channels.orEmpty(),
-                        messages = deviceCache?.messages.orEmpty(),
-                        encounterDiscovery = cachedDiscovery?.records.orEmpty(),
-                        encounterDiscoveryDeviceId = cachedDiscovery?.deviceId,
-                        encounterDiscoverySupported = cachedDiscovery != null,
+                        peers = deviceCache?.peers.orEmpty().takeIf { ownerCacheAllowed }.orEmpty(),
+                        channels = deviceCache?.channels.orEmpty().takeIf { ownerCacheAllowed }.orEmpty(),
+                        messages = deviceCache?.messages.orEmpty().takeIf { ownerCacheAllowed }.orEmpty(),
+                        encounterDiscovery = cachedDiscovery?.records.orEmpty()
+                            .takeIf { ownerCacheAllowed }.orEmpty(),
+                        encounterDiscoveryDeviceId = cachedDiscovery?.deviceId
+                            .takeIf { ownerCacheAllowed },
+                        encounterDiscoverySupported = ownerCacheAllowed && cachedDiscovery != null,
                         savedKitsu = devices,
                         activeDeviceAddress = active?.deviceAddress,
                         pendingPairing = pendingPairing,
@@ -218,6 +258,41 @@ class OwnerRepository(
                     funSupported = connection.connected && mutableState.value.funSupported,
                     funErrorCode = if (connection.connected) mutableState.value.funErrorCode else null,
                     funMutationInFlight = connection.connected && mutableState.value.funMutationInFlight,
+                    companionProfile = if (connection.connected) {
+                        mutableState.value.companionProfile
+                    } else null,
+                    companionProfileSupported = connection.connected &&
+                        mutableState.value.companionProfileSupported,
+                    companionProfileErrorCode = if (connection.connected) {
+                        mutableState.value.companionProfileErrorCode
+                    } else null,
+                    companionProfileMutationInFlight = connection.connected &&
+                        mutableState.value.companionProfileMutationInFlight,
+                    focusState = if (connection.connected) mutableState.value.focusState else null,
+                    focusSupported = connection.connected && mutableState.value.focusSupported,
+                    focusErrorCode = if (connection.connected) {
+                        mutableState.value.focusErrorCode
+                    } else null,
+                    focusMutationInFlight = connection.connected &&
+                        mutableState.value.focusMutationInFlight,
+                    walkState = if (connection.connected) mutableState.value.walkState else null,
+                    walkSupported = connection.connected && mutableState.value.walkSupported,
+                    walkErrorCode = if (connection.connected) {
+                        mutableState.value.walkErrorCode
+                    } else null,
+                    walkMutationInFlight = connection.connected &&
+                        mutableState.value.walkMutationInFlight,
+                    petPresentation = if (connection.connected) {
+                        mutableState.value.petPresentation
+                    } else null,
+                    petPresentationFrame = if (connection.connected) {
+                        mutableState.value.petPresentationFrame
+                    } else null,
+                    petPresentationErrorCode = if (connection.connected) {
+                        mutableState.value.petPresentationErrorCode
+                    } else null,
+                    petPresentationInFlight = connection.connected &&
+                        mutableState.value.petPresentationInFlight,
                     messageJournalSession = if (connection.connected) {
                         mutableState.value.messageJournalSession
                     } else null,
@@ -231,6 +306,11 @@ class OwnerRepository(
                 }
             }
         }
+    }
+
+    suspend fun activeControllerRoleAfterHydration(): ControllerRole? {
+        initialHydration.await()
+        return credentials.bondedCompanion()?.role
     }
 
     suspend fun connectAndRefresh(userInitiated: Boolean = false) =
@@ -504,6 +584,39 @@ class OwnerRepository(
     ) = refreshMutex.withLock refreshLock@ {
         val expectedOwner = requestedOwner ?: captureOwnerDataBinding() ?: return@refreshLock
         if (!ownerDataMutex.withLock { ownerDataBindingMatches(expectedOwner) }) return@refreshLock
+        val caretaker = expectedOwner.controllerRole == ControllerRole.CARETAKER
+        val refreshMessagesForRole = includeMessages && !caretaker
+        if (caretaker) {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        peers = emptyList(),
+                        channels = emptyList(),
+                        messages = emptyList(),
+                        messagesErrorCode = null,
+                        messageJournalSession = null,
+                        messageJournalRevision = null,
+                        messageProtocolVersion = 1,
+                        messageMarkReadSupported = false,
+                        messageReadErrorCode = null,
+                        encounterCatalog = emptyList(),
+                        encounterCatalogSupported = false,
+                        encounterCatalogErrorCode = null,
+                        encounterDiscovery = emptyList(),
+                        encounterDiscoveryDeviceId = null,
+                        encounterDiscoverySupported = false,
+                        encounterDiscoveryErrorCode = null,
+                        nearbyKitsu = emptyList(),
+                        nearbyKitsuSupported = false,
+                        nearbyInteractionKinds = emptySet(),
+                        nearbyKitsuErrorCode = null,
+                        funState = null,
+                        funSupported = false,
+                        funErrorCode = null,
+                    )
+                }
+            }
+        }
         try {
             val nonMessageSnapshot = coordinator.withTransport { transport ->
                 val status = try {
@@ -512,7 +625,7 @@ class OwnerRepository(
                     transport.status()
                 } catch (statusFailure: Throwable) {
                     if (statusFailure is CancellationException) throw statusFailure
-                    if (includeMessages) {
+                    if (refreshMessagesForRole) {
                         // status() did not establish v2 support; the BLE transport
                         // remains on safe legacy v1. Still surface a valid inbox before
                         // propagating the unrelated status failure.
@@ -545,13 +658,12 @@ class OwnerRepository(
                 ownerDataMutex.withLock {
                     if (ownerDataBindingMatches(expectedOwner)) {
                         mutableState.value = mutableState.value.copy(
-                            messageMarkReadSupported = FirmwareMessageApiPolicy.supportsMarkRead(
-                                status.firmwareVersion,
-                            ),
+                            messageMarkReadSupported = !caretaker &&
+                                FirmwareMessageApiPolicy.supportsMarkRead(status.firmwareVersion),
                         )
                     }
                 }
-                if (includeMessages) {
+                if (refreshMessagesForRole) {
                     try {
                         // Commit immediately after capability selection. History,
                         // peers, and channels are not prerequisites for showing chat.
@@ -584,12 +696,11 @@ class OwnerRepository(
                     ),
                     limit = 100,
                 )
-                val peers = transport.peers()
-                val channels = transport.channels(status.firmwareVersion)
+                val peers = if (caretaker) emptyList() else transport.peers().items
+                val channels = if (caretaker) emptyList() else transport.channels(status.firmwareVersion)
                 var encounterCatalogErrorCode: String? = null
-                val encounterCatalogSupported = FirmwareEncounterApiPolicy.supportsCatalogV1(
-                    status.firmwareVersion,
-                )
+                val encounterCatalogSupported = !caretaker &&
+                    FirmwareEncounterApiPolicy.supportsCatalogV1(status.firmwareVersion)
                 val encounterCatalog = if (encounterCatalogSupported) {
                     try {
                         transport.encounterCatalog().items
@@ -604,9 +715,8 @@ class OwnerRepository(
                     emptyList()
                 }
                 var encounterDiscoveryErrorCode: String? = null
-                val encounterDiscoverySupported = FirmwareEncounterApiPolicy.supportsDiscoveryV1(
-                    status.firmwareVersion,
-                )
+                val encounterDiscoverySupported = !caretaker &&
+                    FirmwareEncounterApiPolicy.supportsDiscoveryV1(status.firmwareVersion)
                 val priorDiscovery = previous.encounterDiscovery.takeIf {
                     previous.encounterDiscoveryDeviceId == status.deviceId &&
                         EncounterDiscoveryPolicy.isExactPublicDiscovery(it)
@@ -637,7 +747,8 @@ class OwnerRepository(
                     EncounterDiscoveryPolicy.isExactPublicDiscovery(encounterDiscovery)
                 }
                 var nearbyKitsuErrorCode: String? = null
-                val nearbyKitsuSupported = FirmwareEncounterApiPolicy.supportsV1(status.firmwareVersion)
+                val nearbyKitsuSupported = !caretaker &&
+                    FirmwareEncounterApiPolicy.supportsV1(status.firmwareVersion)
                 val nearbyPage = if (nearbyKitsuSupported) {
                     try {
                         transport.nearbyKitsu()
@@ -652,7 +763,7 @@ class OwnerRepository(
                     null
                 }
                 var funErrorCode: String? = null
-                val funSupported = FirmwareFunApiPolicy.supportsV1(status.firmwareVersion)
+                val funSupported = !caretaker && FirmwareFunApiPolicy.supportsV1(status.firmwareVersion)
                 val funState = if (funSupported) {
                     try {
                         transport.funState()
@@ -661,6 +772,57 @@ class OwnerRepository(
                     } catch (failure: Throwable) {
                         funErrorCode = failure.transportCodeOr("fun_state_refresh_failed")
                         SafeLog.warn("owner_fun", funErrorCode!!, failure)
+                        null
+                    }
+                } else {
+                    null
+                }
+                val petFeaturesSupported = FirmwarePetFeatureApiPolicy.supportsV1(
+                    status.firmwareVersion,
+                )
+                var companionProfileErrorCode: String? = null
+                val companionProfile = if (petFeaturesSupported) {
+                    try {
+                        transport.companionProfile()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        companionProfileErrorCode = failure.transportCodeOr(
+                            "companion_profile_refresh_failed",
+                        )
+                        SafeLog.warn(
+                            "owner_companion_profile",
+                            companionProfileErrorCode!!,
+                            failure,
+                        )
+                        null
+                    }
+                } else {
+                    null
+                }
+                var focusErrorCode: String? = null
+                val focusState = if (petFeaturesSupported) {
+                    try {
+                        transport.focusState()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        focusErrorCode = failure.transportCodeOr("focus_state_refresh_failed")
+                        SafeLog.warn("owner_focus", focusErrorCode!!, failure)
+                        null
+                    }
+                } else {
+                    null
+                }
+                var walkErrorCode: String? = null
+                val walkState = if (petFeaturesSupported) {
+                    try {
+                        transport.walkState()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        walkErrorCode = failure.transportCodeOr("walk_state_refresh_failed")
+                        SafeLog.warn("owner_walk", walkErrorCode!!, failure)
                         null
                     }
                 } else {
@@ -676,7 +838,7 @@ class OwnerRepository(
                     status = status,
                     history = if (replaceHistory) history.items else
                         (previous.history + history.items).distinctBy { it.id }.takeLast(CachePolicy.MAX_HISTORY),
-                    peers = peers.items,
+                    peers = peers,
                     channels = channels,
                     encounterCatalog = encounterCatalog,
                     encounterCatalogSupported = encounterCatalogSupported,
@@ -692,9 +854,17 @@ class OwnerRepository(
                     funState = funState,
                     funSupported = funSupported,
                     funErrorCode = funErrorCode,
-                    messageMarkReadSupported = FirmwareMessageApiPolicy.supportsMarkRead(
-                        status.firmwareVersion,
-                    ),
+                    companionProfile = companionProfile,
+                    companionProfileSupported = petFeaturesSupported,
+                    companionProfileErrorCode = companionProfileErrorCode,
+                    focusState = focusState,
+                    focusSupported = petFeaturesSupported,
+                    focusErrorCode = focusErrorCode,
+                    walkState = walkState,
+                    walkSupported = petFeaturesSupported,
+                    walkErrorCode = walkErrorCode,
+                    messageMarkReadSupported = !caretaker &&
+                        FirmwareMessageApiPolicy.supportsMarkRead(status.firmwareVersion),
                 )
             }
             // A messages-only event refresh may have completed while the slower
@@ -1026,18 +1196,359 @@ class OwnerRepository(
         }
     }
 
-    suspend fun pairController(label: String) = credentialLifecycleMutex.withLock {
-        pairControllerUnlocked(label)
+    suspend fun setCompanionNickname(nickname: String): CompanionProfile =
+        mutateCompanionProfile { it.setCompanionNickname(nickname) }
+
+    suspend fun answerCompanionRequest(accept: Boolean): CompanionProfile =
+        mutateCompanionProfile { it.answerCompanionRequest(accept) }
+
+    suspend fun answerCompanionQuestion(choice: Int): CompanionProfile =
+        mutateCompanionProfile { it.answerCompanionQuestion(choice) }
+
+    suspend fun startFocus(command: FocusStartCommand): FocusSessionState =
+        mutateFocus { it.startFocus(command) }
+
+    suspend fun stopFocus(sessionId: Long): FocusSessionState =
+        mutateFocus { it.stopFocus(sessionId) }
+
+    suspend fun cancelFocus(sessionId: Long): FocusSessionState =
+        mutateFocus { it.cancelFocus(sessionId) }
+
+    suspend fun acknowledgeFocus(sessionId: Long): FocusSessionState =
+        mutateFocus { it.acknowledgeFocus(sessionId) }
+
+    suspend fun startWalk(command: WalkStartCommand): WalkAdventureState =
+        mutateWalk { it.startWalk(command) }
+
+    suspend fun syncWalk(command: WalkSyncCommand): WalkAdventureState =
+        mutateWalk { it.syncWalk(command) }
+
+    suspend fun updateWalkLocation(command: WalkLocationCommand): WalkAdventureState =
+        mutateWalk { it.updateWalkLocation(command) }
+
+    suspend fun decideWalk(command: WalkDecisionCommand): WalkAdventureState =
+        mutateWalk { it.decideWalk(command) }
+
+    suspend fun finishWalk(routeId: Long): WalkAdventureState =
+        mutateWalk { it.finishWalk(routeId) }
+
+    suspend fun acknowledgeWalk(routeId: Long): WalkAdventureState =
+        mutateWalk { it.acknowledgeWalk(routeId) }
+
+    suspend fun setWalkPrivacy(mode: WalkPrivacy): WalkAdventureState =
+        mutateWalk { it.setWalkPrivacy(mode) }
+
+    suspend fun setWalkHome(zoneToken: Long): WalkAdventureState =
+        mutateWalk { it.setWalkHome(zoneToken) }
+
+    suspend fun capturePetPresentation(): PetPresentationSnapshot {
+        if (!presentationMutex.tryLock()) {
+            throw TransportException("pet_presentation_in_flight")
+        }
+        try {
+            return refreshMutex.withLock {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        val expectedOwner = ownerDataMutex.withLock {
+            val owner = currentOwnerDataBinding()
+                ?: throw TransportException("saved_kitsu_not_found")
+            if (!mutableState.value.companionProfileSupported) {
+                throw TransportException("firmware_operation_unavailable")
+            }
+            if (mutableState.value.petPresentationInFlight) {
+                throw TransportException("pet_presentation_in_flight")
+            }
+            mutableState.value = mutableState.value.copy(
+                petPresentationInFlight = true,
+                petPresentationErrorCode = null,
+            )
+            owner
+        }
+        try {
+            val sessionId = nextPresentationSessionId()
+            val snapshot = coordinator.withTransport { transport ->
+                var opened = false
+                var primaryFailure: Throwable? = null
+                try {
+                    val state = transport.openPetPresentation(sessionId)
+                    opened = true
+                    val frame = if (state.frame.available) {
+                        val output = ByteArray(state.frame.bytes)
+                        var offset = 0
+                        while (offset < output.size) {
+                            val bytes = minOf(
+                                PetPresentationWireCodec.MAX_CHUNK_BYTES,
+                                output.size - offset,
+                            )
+                            val chunk = transport.readPetPresentation(
+                                sessionId = sessionId,
+                                offset = offset,
+                                bytes = bytes,
+                                expectedFrameBytes = output.size,
+                                expectedFrameSha256 = state.frame.sha256,
+                            )
+                            chunk.data.copyInto(output, destinationOffset = offset)
+                            offset = chunk.nextOffset
+                        }
+                        if (!PetPresentationWireCodec.verifyFrame(state, output)) {
+                            output.fill(0)
+                            throw TransportException("pet_presentation_digest_mismatch")
+                        }
+                        output
+                    } else {
+                        null
+                    }
+                    PetPresentationSnapshot(state, frame)
+                } catch (cancelled: CancellationException) {
+                    primaryFailure = cancelled
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    primaryFailure = failure
+                    throw failure
+                } finally {
+                    if (opened) {
+                        try {
+                            withContext(NonCancellable) {
+                                transport.closePetPresentation(sessionId)
+                            }
+                        } catch (closeFailure: Throwable) {
+                            if (primaryFailure == null) throw closeFailure
+                            SafeLog.warn(
+                                "owner_pet_presentation",
+                                "pet_presentation_close_failed",
+                                closeFailure,
+                            )
+                        }
+                    }
+                }
+            }
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        petPresentation = snapshot.state,
+                        petPresentationFrame = snapshot.frame?.copyOf(),
+                        petPresentationErrorCode = null,
+                    )
+                }
+            }
+            snapshot
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        petPresentationErrorCode = failure.transportCodeOr(
+                            "pet_presentation_capture_failed",
+                        ),
+                    )
+                }
+            }
+            throw failure
+        } finally {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        petPresentationInFlight = false,
+                    )
+                }
+            }
+            }
+            }
+        } finally {
+            presentationMutex.unlock()
+        }
     }
 
-    private suspend fun pairControllerUnlocked(label: String) {
+    private fun nextPresentationSessionId(): Long {
+        while (true) {
+            val candidate = presentationSessionRandom.nextInt().toLong() and 0xffff_ffffL
+            if (candidate != 0L) return candidate
+        }
+    }
+
+    private suspend fun mutateCompanionProfile(
+        call: suspend (KitsuTransport) -> CompanionProfile,
+    ): CompanionProfile = refreshMutex.withLock {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        val expectedOwner = ownerDataMutex.withLock {
+            val owner = currentOwnerDataBinding()
+                ?: throw TransportException("saved_kitsu_not_found")
+            if (!mutableState.value.companionProfileSupported) {
+                throw TransportException("firmware_operation_unavailable")
+            }
+            if (mutableState.value.companionProfileMutationInFlight) {
+                throw TransportException("companion_profile_action_in_flight")
+            }
+            mutableState.value = mutableState.value.copy(
+                companionProfileMutationInFlight = true,
+                companionProfileErrorCode = null,
+            )
+            owner
+        }
+        try {
+            coordinator.withTransport(call).also { updated ->
+                ownerDataMutex.withLock {
+                    if (ownerDataBindingMatches(expectedOwner)) {
+                        mutableState.value = mutableState.value.copy(
+                            companionProfile = updated,
+                            companionProfileErrorCode = null,
+                        )
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        companionProfileErrorCode = failure.transportCodeOr(
+                            "companion_profile_mutation_failed",
+                        ),
+                    )
+                }
+            }
+            throw failure
+        } finally {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        companionProfileMutationInFlight = false,
+                    )
+                }
+            }
+        }
+    }
+
+    @SuppressLint("SuspiciousIndentation")
+    private suspend fun mutateFocus(
+        call: suspend (KitsuTransport) -> FocusSessionState,
+    ): FocusSessionState = refreshMutex.withLock {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        val expectedOwner = ownerDataMutex.withLock {
+            val owner = currentOwnerDataBinding()
+                ?: throw TransportException("saved_kitsu_not_found")
+            if (!mutableState.value.focusSupported) {
+                throw TransportException("firmware_operation_unavailable")
+            }
+            if (mutableState.value.focusMutationInFlight) {
+                throw TransportException("focus_action_in_flight")
+            }
+            mutableState.value = mutableState.value.copy(
+                focusMutationInFlight = true,
+                focusErrorCode = null,
+            )
+            owner
+        }
+        try {
+            coordinator.withTransport(call).also { updated ->
+                ownerDataMutex.withLock {
+                    if (ownerDataBindingMatches(expectedOwner)) {
+                        mutableState.value = mutableState.value.copy(
+                            focusState = updated,
+                            focusErrorCode = null,
+                        )
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        focusErrorCode = failure.transportCodeOr("focus_mutation_failed"),
+                    )
+                }
+            }
+            throw failure
+        } finally {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        focusMutationInFlight = false,
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun mutateWalk(
+        call: suspend (KitsuTransport) -> WalkAdventureState,
+    ): WalkAdventureState = refreshMutex.withLock {
+        if (!coordinator.isDirect()) throw TransportException("direct_ble_required")
+        val expectedOwner = ownerDataMutex.withLock {
+            val owner = currentOwnerDataBinding()
+                ?: throw TransportException("saved_kitsu_not_found")
+            if (!mutableState.value.walkSupported) {
+                throw TransportException("firmware_operation_unavailable")
+            }
+            if (mutableState.value.walkMutationInFlight) {
+                throw TransportException("walk_action_in_flight")
+            }
+            mutableState.value = mutableState.value.copy(
+                walkMutationInFlight = true,
+                walkErrorCode = null,
+            )
+            owner
+        }
+        try {
+            coordinator.withTransport(call).also { updated ->
+                ownerDataMutex.withLock {
+                    if (ownerDataBindingMatches(expectedOwner)) {
+                        mutableState.value = mutableState.value.copy(
+                            walkState = updated,
+                            walkErrorCode = null,
+                        )
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        walkErrorCode = failure.transportCodeOr("walk_mutation_failed"),
+                    )
+                }
+            }
+            throw failure
+        } finally {
+            ownerDataMutex.withLock {
+                if (ownerDataBindingMatches(expectedOwner)) {
+                    mutableState.value = mutableState.value.copy(
+                        walkMutationInFlight = false,
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun pairController(label: String) = credentialLifecycleMutex.withLock {
+        pairControllerUnlocked(label, caretaker = false)
+    }
+
+    suspend fun pairCaretakerController(label: String) = credentialLifecycleMutex.withLock {
+        pairControllerUnlocked(label, caretaker = true)
+    }
+
+    private suspend fun pairControllerUnlocked(label: String, caretaker: Boolean) {
         provenMissingController = null
         stopEvents()
         coordinator.disconnect(suppressAutomaticReconnect = false)
         mutableState.value = mutableState.value.copy(pairing = true, pairingProgress = null, errorCode = null)
         try {
-            pairingService.pairController(label) { progress ->
-                mutableState.value = mutableState.value.copy(pairing = true, pairingProgress = progress)
+            val onProgress: (ControllerPairingProgress) -> Unit = { progress ->
+                mutableState.value = mutableState.value.copy(
+                    pairing = true,
+                    pairingProgress = progress,
+                )
+            }
+            if (caretaker) {
+                pairingService.pairCaretakerController(label, onProgress)
+            } else {
+                pairingService.pairController(label, onProgress)
             }
             reloadDevices()
             mutableState.value = mutableState.value.copy(pairing = false, pairingProgress = null)
@@ -1057,6 +1568,7 @@ class OwnerRepository(
         finishPendingPairingUnlocked()
     }
 
+    @SuppressLint("SuspiciousIndentation")
     private suspend fun finishPendingPairingUnlocked() {
         provenMissingController = null
         stopEvents()
@@ -1253,6 +1765,7 @@ class OwnerRepository(
         }
     }
 
+    @SuppressLint("SuspiciousIndentation")
     suspend fun installFirmware(
         packageFile: VerifiedFirmwarePackage,
         reinstallConfirmed: Boolean = false,
@@ -1567,11 +2080,13 @@ class OwnerRepository(
                 active?.deviceAddress,
                 ignoreCase = true,
             ) || ownerCredentialId != active?.controllerIdB64 ||
-                ownerCredentialRoot != active?.controllerRootB64
+                ownerCredentialRoot != active?.controllerRootB64 ||
+                ownerCredentialRole != active?.role
             if (ownerChanged) {
                 ownerDataGeneration += 1L
                 ownerCredentialId = active?.controllerIdB64
                 ownerCredentialRoot = active?.controllerRootB64
+                ownerCredentialRole = active?.role
                 lastLiveNamespace = null
                 try {
                     withContext(Dispatchers.IO) { cache.clear() }
@@ -1625,6 +2140,7 @@ class OwnerRepository(
             }
             ownerCredentialId = selectedCredential?.controllerIdB64
             ownerCredentialRoot = selectedCredential?.controllerRootB64
+            ownerCredentialRole = selectedCredential?.role
             lastLiveNamespace = null
             var clearFailure: Throwable? = null
             try {
@@ -1664,23 +2180,25 @@ class OwnerRepository(
                         // companion.refresh has no event subtype. Publish the full
                         // mutable chat ring first so inbound and delivery transitions
                         // are not held hostage by slower, unrelated reads.
-                        try {
-                            refreshMessages(
-                                transport,
-                                persist = false,
-                                expectedOwner = expectedOwner,
-                            )
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (failure: Throwable) {
-                            SafeLog.warn("owner_messages", "event_messages_refresh_failed", failure)
-                            ownerDataMutex.withLock {
-                                if (ownerDataBindingMatches(expectedOwner)) {
-                                    mutableState.value = mutableState.value.copy(
-                                        messagesErrorCode = failure.transportCodeOr(
-                                            "messages_refresh_failed",
-                                        ),
-                                    )
+                        if (expectedOwner.controllerRole == ControllerRole.OWNER) {
+                            try {
+                                refreshMessages(
+                                    transport,
+                                    persist = false,
+                                    expectedOwner = expectedOwner,
+                                )
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Throwable) {
+                                SafeLog.warn("owner_messages", "event_messages_refresh_failed", failure)
+                                ownerDataMutex.withLock {
+                                    if (ownerDataBindingMatches(expectedOwner)) {
+                                        mutableState.value = mutableState.value.copy(
+                                            messagesErrorCode = failure.transportCodeOr(
+                                                "messages_refresh_failed",
+                                            ),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1704,7 +2222,14 @@ class OwnerRepository(
         val address = mutableState.value.activeDeviceAddress ?: return null
         val controllerId = ownerCredentialId ?: return null
         val controllerRoot = ownerCredentialRoot ?: return null
-        return OwnerDataBinding(ownerDataGeneration, address, controllerId, controllerRoot)
+        val controllerRole = ownerCredentialRole ?: return null
+        return OwnerDataBinding(
+            ownerDataGeneration,
+            address,
+            controllerId,
+            controllerRoot,
+            controllerRole,
+        )
     }
 
     /** Must be called while [ownerDataMutex] is held. */
@@ -1712,7 +2237,8 @@ class OwnerRepository(
         ownerDataGeneration == expected.generation &&
             mutableState.value.activeDeviceAddress.equals(expected.deviceAddress, ignoreCase = true) &&
             ownerCredentialId == expected.controllerId &&
-            ownerCredentialRoot == expected.controllerRoot
+            ownerCredentialRoot == expected.controllerRoot &&
+            ownerCredentialRole == expected.controllerRole
 
     /** Caller holds [ownerDataMutex], binding commit and the encrypted write as one transaction. */
     private suspend fun writeCacheSnapshot(snapshot: OwnerState) = withContext(Dispatchers.IO) {
@@ -1778,6 +2304,22 @@ class OwnerRepository(
         funSupported = false,
         funErrorCode = null,
         funMutationInFlight = false,
+        companionProfile = null,
+        companionProfileSupported = false,
+        companionProfileErrorCode = null,
+        companionProfileMutationInFlight = false,
+        focusState = null,
+        focusSupported = false,
+        focusErrorCode = null,
+        focusMutationInFlight = false,
+        walkState = null,
+        walkSupported = false,
+        walkErrorCode = null,
+        walkMutationInFlight = false,
+        petPresentation = null,
+        petPresentationFrame = null,
+        petPresentationErrorCode = null,
+        petPresentationInFlight = false,
         messages = emptyList(),
         messagesErrorCode = null,
         messageJournalSession = null,

@@ -33,6 +33,8 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -76,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.Instant
 import java.util.Date
 import kotlinx.coroutines.flow.collect
@@ -85,6 +88,8 @@ import ptl.kitsu.app.MainViewModel
 import ptl.kitsu.app.model.Message
 import ptl.kitsu.app.model.MessageRoute
 import ptl.kitsu.app.model.MeshPeerKeyPolicy
+import ptl.kitsu.app.navigation.AppLaunchRequest
+import ptl.kitsu.app.navigation.AppRoute
 import ptl.kitsu.app.repository.OwnerState
 
 @Composable
@@ -101,6 +106,8 @@ internal fun KitsuMessagesScreen(
     onAcceptPolicy: () -> Unit,
     onBlockPeer: (String) -> Unit,
     onExportReport: (ModerationReport) -> Unit,
+    launchRequest: AppLaunchRequest? = null,
+    onLaunchRequestConsumed: (Long) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var showPolicy by rememberSaveable { mutableStateOf(false) }
@@ -111,7 +118,8 @@ internal fun KitsuMessagesScreen(
     var pendingBlockPeerId by rememberSaveable { mutableStateOf<String?>(null) }
     var reportReason by rememberSaveable { mutableStateOf(ReportReason.SPAM_OR_SCAM) }
     var reportNote by rememberSaveable { mutableStateOf("") }
-    var conversationDrafts by rememberSaveable { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val conversationDrafts by viewModel.messageDrafts.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     var detailVisibleAndResumed by remember {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
@@ -132,9 +140,16 @@ internal fun KitsuMessagesScreen(
         blockedPeerIds = blockedPeerIds,
         currentJournalSession = owner.messageJournalSession,
     )
+    val threadsWithDrafts = MessageDraftPresentationPolicy.includeDraftThreads(
+        threads = discoveredThreads,
+        drafts = conversationDrafts,
+        peers = owner.peers,
+        channels = owner.channels,
+        blockedPeerIds = blockedPeerIds,
+    )
     val manualThread = manualDirectTarget
         ?.takeIf { MeshPeerKeyPolicy.isCanonicalBase64Url(it) && it !in blockedPeerIds }
-        ?.takeIf { target -> discoveredThreads.none { it.key == MessageThreadPolicy.directKey(target) } }
+        ?.takeIf { target -> threadsWithDrafts.none { it.key == MessageThreadPolicy.directKey(target) } }
         ?.let { target ->
             MessageThread(
                 key = MessageThreadPolicy.directKey(target),
@@ -147,9 +162,37 @@ internal fun KitsuMessagesScreen(
                 latestJournalPosition = -1,
             )
         }
-    val threads = if (manualThread == null) discoveredThreads else discoveredThreads + manualThread
+    val threads = if (manualThread == null) threadsWithDrafts else threadsWithDrafts + manualThread
+    val visibleThreads = MessageSearchPolicy.filter(threads, searchQuery, blockedPeerIds)
     val selectedThread = threads.firstOrNull { it.key == selectedThreadKey }
     val hiddenMessageCount = owner.messages.count { it.peerId in blockedPeerIds }
+
+    LaunchedEffect(launchRequest?.id) {
+        val request = launchRequest ?: return@LaunchedEffect
+        val route = request.route as? AppRoute.Messages ?: return@LaunchedEffect
+        val threadKey = route.threadKey
+        if (threadKey == null) {
+            if (request.messageDraft == null) {
+                onLaunchRequestConsumed(request.id)
+            } else {
+                showNewConversation = true
+            }
+            return@LaunchedEffect
+        }
+        if (!ptl.kitsu.app.security.MessageDraftPolicy.validThreadKey(threadKey) ||
+            (threadKey.startsWith("direct:") && threadKey.removePrefix("direct:") in blockedPeerIds)
+        ) {
+            onLaunchRequestConsumed(request.id)
+            viewModel.showNotice("That conversation is not available.")
+            return@LaunchedEffect
+        }
+        if (threadKey.startsWith("direct:")) {
+            manualDirectTarget = threadKey.removePrefix("direct:")
+        }
+        request.messageDraft?.let { viewModel.updateMessageDraft(threadKey, it) }
+        onSelectedThreadKeyChange(threadKey)
+        onLaunchRequestConsumed(request.id)
+    }
 
     LaunchedEffect(selectedThreadKey, selectedThread?.key, threads.size) {
         if (selectedThreadKey != null && selectedThread == null) onSelectedThreadKeyChange(null)
@@ -189,7 +232,10 @@ internal fun KitsuMessagesScreen(
             Row(Modifier.fillMaxSize().testTag("layout-messages-master-detail")) {
                 ConversationListPane(
                     owner = owner,
-                    threads = threads,
+                    threads = visibleThreads,
+                    allThreadCount = threads.size,
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = { searchQuery = it },
                     selectedThreadKey = selectedThreadKey,
                     hiddenMessageCount = hiddenMessageCount,
                     updateBusy = updateBusy,
@@ -214,9 +260,7 @@ internal fun KitsuMessagesScreen(
                             messageSubmissionInFlight = messageSubmissionInFlight,
                             policyAccepted = policyAccepted,
                             body = conversationDrafts[selectedThread.key].orEmpty(),
-                            onBodyChange = { draft ->
-                                conversationDrafts = conversationDrafts + (selectedThread.key to draft)
-                            },
+                            onBodyChange = { draft -> viewModel.updateMessageDraft(selectedThread.key, draft) },
                             showHeader = true,
                             unreadLiveIds = unreadLiveIds,
                             onReviewPolicy = { showPolicy = true },
@@ -240,7 +284,10 @@ internal fun KitsuMessagesScreen(
         } else if (selectedThread == null) {
             ConversationListPane(
                 owner = owner,
-                threads = threads,
+                threads = visibleThreads,
+                allThreadCount = threads.size,
+                searchQuery = searchQuery,
+                onSearchQueryChange = { searchQuery = it },
                 selectedThreadKey = null,
                 hiddenMessageCount = hiddenMessageCount,
                 updateBusy = updateBusy,
@@ -259,9 +306,7 @@ internal fun KitsuMessagesScreen(
                     messageSubmissionInFlight = messageSubmissionInFlight,
                     policyAccepted = policyAccepted,
                     body = conversationDrafts[selectedThread.key].orEmpty(),
-                    onBodyChange = { draft ->
-                        conversationDrafts = conversationDrafts + (selectedThread.key to draft)
-                    },
+                    onBodyChange = { draft -> viewModel.updateMessageDraft(selectedThread.key, draft) },
                     showHeader = false,
                     unreadLiveIds = unreadLiveIds,
                     onReviewPolicy = { showPolicy = true },
@@ -289,13 +334,20 @@ internal fun KitsuMessagesScreen(
             blockedPeerIds = blockedPeerIds,
             onSelect = { route, target ->
                 if (route == MessageRoute.DIRECT) manualDirectTarget = target
-                onSelectedThreadKeyChange(
-                    if (route == MessageRoute.DIRECT) MessageThreadPolicy.directKey(target)
-                    else MessageThreadPolicy.channelKey(target.toInt()),
-                )
+                val threadKey = if (route == MessageRoute.DIRECT) {
+                    MessageThreadPolicy.directKey(target)
+                } else {
+                    MessageThreadPolicy.channelKey(target.toInt())
+                }
+                launchRequest?.messageDraft?.let { viewModel.updateMessageDraft(threadKey, it) }
+                launchRequest?.let { onLaunchRequestConsumed(it.id) }
+                onSelectedThreadKeyChange(threadKey)
                 showNewConversation = false
             },
-            onDismiss = { showNewConversation = false },
+            onDismiss = {
+                launchRequest?.let { onLaunchRequestConsumed(it.id) }
+                showNewConversation = false
+            },
         )
     }
 
@@ -357,6 +409,9 @@ internal fun KitsuMessagesScreen(
 private fun ConversationListPane(
     owner: OwnerState,
     threads: List<MessageThread>,
+    allThreadCount: Int,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
     selectedThreadKey: String?,
     hiddenMessageCount: Int,
     updateBusy: Boolean,
@@ -397,6 +452,29 @@ private fun ConversationListPane(
             }
         }
 
+        if (allThreadCount > 0 || searchQuery.isNotEmpty()) {
+            item {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    singleLine = true,
+                    label = { Text("Search conversations") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = if (searchQuery.isEmpty()) null else {
+                        {
+                            IconButton(
+                                onClick = { onSearchQueryChange("") },
+                                modifier = Modifier.testTag("messages-search-clear"),
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear message search")
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("messages-search"),
+                )
+            }
+        }
+
         if (owner.messagesErrorCode != null) {
             item {
                 StatePanel(
@@ -417,6 +495,15 @@ private fun ConversationListPane(
                     message = "Reading the local message journal from your Kitsu.",
                     kind = StatePanelKind.LOADING,
                     testTag = "messages-loading",
+                )
+            }
+            threads.isEmpty() && searchQuery.isNotBlank() && allThreadCount > 0 -> item {
+                StatePanel(
+                    title = "No matching conversations",
+                    message = "Try a contact name, public-key reference, channel, or message text.",
+                    actionLabel = "Clear search",
+                    onAction = { onSearchQueryChange("") },
+                    testTag = "messages-search-empty",
                 )
             }
             threads.isEmpty() -> item {

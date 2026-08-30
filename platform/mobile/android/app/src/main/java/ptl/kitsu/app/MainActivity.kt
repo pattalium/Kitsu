@@ -32,6 +32,7 @@ import ptl.kitsu.app.ui.ModerationReport
 import ptl.kitsu.app.ui.ModerationReportCodec
 import ptl.kitsu.app.update.locksCompanionControls
 import ptl.kitsu.app.model.EncounterCodePolicy
+import ptl.kitsu.app.notifications.KitsuNotificationPermissionPolicy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,12 +70,20 @@ internal fun kitsuSensitiveUnlockClip(code: String): ClipData {
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
-    private enum class BleContinuation { CONNECT, PAIR_CONTROLLER, FINISH_PAIRING, REPAIR_PAIRING }
+    private enum class BleContinuation {
+        CONNECT,
+        PAIR_CONTROLLER,
+        PAIR_CARETAKER,
+        FINISH_PAIRING,
+        REPAIR_PAIRING,
+    }
+    private enum class NotificationContinuation { ALERTS, CONNECTION_CONTINUITY }
 
     private var permissionContinuation = BleContinuation.CONNECT
     private var bluetoothContinuation = BleContinuation.CONNECT
     private var pendingPairingLabel: String? = null
     private var pendingModerationReport: ModerationReport? = null
+    private var notificationContinuation = NotificationContinuation.ALERTS
 
     private val bluetoothEnableLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -113,6 +122,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted || KitsuNotificationPermissionPolicy.canPost(this)) {
+            continueAfterNotificationPermission(notificationContinuation)
+        } else {
+            viewModel.showNotice("Notifications remain off. You can allow them later in Android settings.")
+        }
+    }
+
+    private val walkPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted || Build.VERSION.SDK_INT < 29 || ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACTIVITY_RECOGNITION,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.startWalkStepTracking()
+        } else {
+            viewModel.showNotice("Physical activity access is needed for automatic walk steps.")
+        }
+    }
+
     private val firmwarePackageLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(viewModel::importFirmware) }
@@ -146,6 +179,10 @@ class MainActivity : ComponentActivity() {
         pendingPairingLabel = savedInstanceState?.getString(STATE_PAIRING_LABEL)
         pendingModerationReport = savedInstanceState?.getString(STATE_MODERATION_REPORT)
             ?.let { runCatching { ModerationReportCodec.decode(it) }.getOrNull() }
+        notificationContinuation = savedInstanceState?.getString(STATE_NOTIFICATION_CONTINUATION)
+            ?.let { runCatching { NotificationContinuation.valueOf(it) }.getOrNull() }
+            ?: NotificationContinuation.ALERTS
+        if (savedInstanceState == null) handleLaunchIntent(intent)
         applyEdgeToEdge(dark = true)
         setContent {
             val themePreferences = remember { KitsuThemePreferences(this@MainActivity) }
@@ -173,6 +210,10 @@ class MainActivity : ComponentActivity() {
                 onPairController = { label ->
                     pendingPairingLabel = label
                     requestBlePermissions(BleContinuation.PAIR_CONTROLLER)
+                },
+                onPairCaretakerController = { label ->
+                    pendingPairingLabel = label
+                    requestBlePermissions(BleContinuation.PAIR_CARETAKER)
                 },
                 onRetryPairingBlePermissions = {
                     requestBlePermissions(permissionContinuation)
@@ -232,8 +273,40 @@ class MainActivity : ComponentActivity() {
                     pendingModerationReport = report
                     moderationReportLauncher.launch(report.suggestedFileName())
                 },
+                onRequestNotificationPermission = { continuity ->
+                    requestNotificationPermission(
+                        if (continuity) NotificationContinuation.CONNECTION_CONTINUITY
+                        else NotificationContinuation.ALERTS,
+                    )
+                },
+                onRequestWalkPermission = {
+                    if (Build.VERSION.SDK_INT < 29 || ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.ACTIVITY_RECOGNITION,
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        viewModel.startWalkStepTracking()
+                    } else {
+                        walkPermissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+                    }
+                },
+                onCopyAutomationToken = { token ->
+                    val clip = ClipData.newPlainText("Kitsu automation capability", token).also {
+                        it.description.extras = PersistableBundle().apply {
+                            putBoolean(SENSITIVE_CLIPBOARD_EXTRA, true)
+                        }
+                    }
+                    getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+                    viewModel.showNotice("Tasker setup copied. It includes a private capability.")
+                },
             )
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleLaunchIntent(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -243,6 +316,7 @@ class MainActivity : ComponentActivity() {
         pendingModerationReport?.let {
             outState.putString(STATE_MODERATION_REPORT, ModerationReportCodec.encode(it))
         }
+        outState.putString(STATE_NOTIFICATION_CONTINUATION, notificationContinuation.name)
         super.onSaveInstanceState(outState)
     }
 
@@ -257,6 +331,44 @@ class MainActivity : ComponentActivity() {
         }
         permissionContinuation = continuation
         permissionLauncher.launch(permissions)
+    }
+
+    private fun requestNotificationPermission(continuation: NotificationContinuation) {
+        notificationContinuation = continuation
+        if (Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            continueAfterNotificationPermission(continuation)
+        } else {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun continueAfterNotificationPermission(continuation: NotificationContinuation) {
+        when (continuation) {
+            NotificationContinuation.ALERTS -> viewModel.enableNotificationAlerts()
+            NotificationContinuation.CONNECTION_CONTINUITY -> viewModel.enableConnectionContinuity()
+        }
+    }
+
+    private fun handleLaunchIntent(intent: Intent?) {
+        viewModel.handleLaunchIntent(
+            action = intent?.action,
+            mimeType = intent?.type,
+            sharedText = intent?.getCharSequenceExtra(Intent.EXTRA_TEXT),
+            routeThreadKey = intent?.getStringExtra(
+                ptl.kitsu.app.navigation.AppLaunchIntentPolicy.EXTRA_THREAD_KEY,
+            ),
+            companionDestination = intent?.getStringExtra(
+                ptl.kitsu.app.navigation.AppLaunchIntentPolicy.EXTRA_COMPANION_DESTINATION,
+            ),
+            automationAction = intent?.getStringExtra(
+                ptl.kitsu.app.navigation.AppLaunchIntentPolicy.EXTRA_AUTOMATION_ACTION,
+            ),
+        )
     }
 
     private fun requiredBlePermissions(): Array<String> = if (Build.VERSION.SDK_INT >= 31) {
@@ -280,6 +392,10 @@ class MainActivity : ComponentActivity() {
             BleContinuation.CONNECT -> viewModel.reconnectBluetooth()
             BleContinuation.PAIR_CONTROLLER -> {
                 pendingPairingLabel?.let(viewModel::pairController)
+                pendingPairingLabel = null
+            }
+            BleContinuation.PAIR_CARETAKER -> {
+                pendingPairingLabel?.let(viewModel::pairCaretakerController)
                 pendingPairingLabel = null
             }
             BleContinuation.FINISH_PAIRING -> viewModel.finishPendingPairing()
@@ -311,5 +427,6 @@ class MainActivity : ComponentActivity() {
         const val STATE_BLUETOOTH_CONTINUATION = "bluetooth_continuation"
         const val STATE_PAIRING_LABEL = "pending_pairing_label"
         const val STATE_MODERATION_REPORT = "pending_moderation_report"
+        const val STATE_NOTIFICATION_CONTINUATION = "notification_continuation"
     }
 }

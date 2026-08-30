@@ -10,12 +10,14 @@ object SafeLog {
     )
 
     fun info(event: String, fields: Map<String, Any?> = emptyMap()) {
-        Log.i("Kitsu", render(event, fields))
+        // Logging is diagnostic only and must never change app behavior. This
+        // also keeps local JVM tests independent of Android's Log stub.
+        runCatching { Log.i("Kitsu", render(event, fields)) }
     }
 
     fun warn(event: String, code: String, throwable: Throwable? = null) {
         val safeType = throwable?.javaClass?.simpleName ?: "none"
-        Log.w("Kitsu", "$event code=$code cause=$safeType")
+        runCatching { Log.w("Kitsu", "$event code=$code cause=$safeType") }
     }
 
     internal fun render(event: String, fields: Map<String, Any?>): String = buildString {

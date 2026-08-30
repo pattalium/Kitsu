@@ -1,6 +1,7 @@
 package ptl.kitsu.app
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -26,6 +27,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import ptl.kitsu.app.ui.MeshUserPolicy
 import ptl.kitsu.app.ui.ModerationPreferences
+import ptl.kitsu.app.qa.FixtureScenario
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -69,7 +71,7 @@ class AdaptiveOwnerUiTest {
         compose.onNodeWithTag("kitsu-app")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Dark theme"))
 
-        listOf("nav-home", "nav-guide", "nav-network", "nav-messages", "nav-settings").forEach { tag ->
+        listOf("nav-home", "nav-companion", "nav-network", "nav-messages", "nav-settings").forEach { tag ->
             compose.onNodeWithTag(tag).assertHasClickAction()
         }
         compose.onAllNodesWithTag("nav-care").assertCountEquals(0)
@@ -101,7 +103,8 @@ class AdaptiveOwnerUiTest {
 
     @Test
     fun fieldGuideListsThePublicRosterWithoutAConnection() {
-        compose.onNodeWithTag("nav-guide").performClick()
+        compose.onNodeWithTag("nav-companion").performClick()
+        compose.onNodeWithText("Creature guide").performClick()
         compose.onNodeWithTag("screen-field-guide").assertIsDisplayed()
         compose.onNodeWithTag("field-guide-summary").assertIsDisplayed()
         compose.onNodeWithTag("screen-field-guide")
@@ -163,6 +166,28 @@ class AdaptiveOwnerUiTest {
             .assertIsDisplayed()
         compose.onNodeWithText("Kitsu itself keeps no internet permission", substring = true)
             .assertIsDisplayed()
+    }
+
+    @Test
+    fun settingsShowsAttestedRoleAndSeparatePhysicalPairingFlows() {
+        compose.onNodeWithTag("nav-settings").performClick()
+        compose.onNodeWithTag("screen-settings")
+            .performScrollToNode(hasTestTag("saved-kitsu-role"))
+        compose.onNodeWithTag("saved-kitsu-role")
+            .assertTextContains("Owner authorization")
+
+        compose.onNodeWithTag("screen-settings")
+            .performScrollToNode(hasTestTag("pairing-start-caretaker"))
+        compose.onNodeWithTag("pairing-start")
+            .assertTextContains("Pair as owner")
+            .assertIsEnabled()
+        compose.onNodeWithTag("pairing-start-caretaker")
+            .assertTextContains("Pair as caretaker")
+            .assertIsDisplayed()
+            .assertIsEnabled()
+        compose.onNodeWithText("PAIR PHONE", substring = true).assertExists()
+        compose.onNodeWithText("PAIR CARETAKER", substring = true).assertExists()
+        compose.onNodeWithText("Kitsu says CARETAKER", substring = true).assertExists()
     }
 
     @Test
@@ -236,6 +261,40 @@ class AdaptiveOwnerUiTest {
         compose.onNodeWithTag("conversation-body").assertTextContains(draft).assertIsDisplayed()
         compose.onNodeWithTag("conversation-send").assertIsDisplayed().assertHasClickAction()
         compose.onNodeWithTag("conversation-composer").assertExists()
+    }
+
+    @Test
+    fun plainTextShareOpensRecipientChoiceAndOnlyPrefillsTheChosenConversation() {
+        val shared = "Shared from Android without sending"
+        compose.activityRule.scenario.onActivity { activity ->
+            ViewModelProvider(activity)[MainViewModel::class.java].handleLaunchIntent(
+                action = Intent.ACTION_SEND,
+                mimeType = "text/plain",
+                sharedText = shared,
+            )
+        }
+
+        compose.onNodeWithText("New conversation").assertIsDisplayed()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            tagCount("message-recipient-${FixtureScenario.DIRECT_PEER_KEY}") == 1
+        }
+        compose.onNodeWithTag("message-recipient-${FixtureScenario.DIRECT_PEER_KEY}").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) { tagCount("conversation-composer") == 1 }
+        compose.onNodeWithTag("conversation-body").assertTextContains(shared)
+        compose.onNodeWithTag("conversation-send").assertHasClickAction()
+    }
+
+    @Test
+    fun localMessageSearchFindsConversationTextWithoutChangingTheJournal() {
+        openMessages()
+        compose.onNodeWithTag("messages-search").performTextReplacement("weather clear")
+        compose.onNodeWithTag("message-thread-channel:0").assertIsDisplayed()
+        compose.onAllNodesWithTag("message-thread-direct:${FixtureScenario.DIRECT_PEER_KEY}")
+            .assertCountEquals(0)
+
+        compose.onNodeWithTag("messages-search-clear").performClick()
+        compose.onNodeWithTag("message-thread-direct:${FixtureScenario.DIRECT_PEER_KEY}")
+            .assertIsDisplayed()
     }
 
     @Test

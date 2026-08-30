@@ -6,6 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.security.KeyStore
@@ -17,6 +18,15 @@ import javax.crypto.spec.GCMParameterSpec
 const val MAX_SAVED_KITSU = 3
 
 @Serializable
+enum class ControllerRole {
+    @SerialName("owner")
+    OWNER,
+
+    @SerialName("caretaker")
+    CARETAKER,
+}
+
+@Serializable
 data class BondedCompanion(
     val deviceAddress: String,
     val displayName: String,
@@ -24,6 +34,8 @@ data class BondedCompanion(
     val controllerIdB64: String,
     /** Unpadded base64url 32-byte controller root, protected at rest by Keystore. */
     val controllerRootB64: String,
+    /** Role attested by Kitsu during pairing. Legacy credentials are owners. */
+    val role: ControllerRole = ControllerRole.OWNER,
 )
 
 interface CredentialStore {

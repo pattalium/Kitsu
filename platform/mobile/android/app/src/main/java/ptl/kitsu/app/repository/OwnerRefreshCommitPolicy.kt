@@ -2,14 +2,17 @@ package ptl.kitsu.app.repository
 
 import ptl.kitsu.app.connection.ConnectionState
 import ptl.kitsu.app.model.HistoryEntry
+import ptl.kitsu.app.model.CompanionProfile
 import ptl.kitsu.app.model.EncounterCatalogCreature
 import ptl.kitsu.app.model.EncounterDiscoveryRecord
+import ptl.kitsu.app.model.FocusSessionState
 import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.KitsuStatus
 import ptl.kitsu.app.model.MeshChannel
 import ptl.kitsu.app.model.NearbyKitsu
 import ptl.kitsu.app.model.NeighborInteractionKind
 import ptl.kitsu.app.model.Peer
+import ptl.kitsu.app.model.WalkAdventureState
 
 internal data class OwnerNonMessageSnapshot(
     val connection: ConnectionState,
@@ -31,6 +34,15 @@ internal data class OwnerNonMessageSnapshot(
     val funState: FunState? = null,
     val funSupported: Boolean = false,
     val funErrorCode: String? = null,
+    val companionProfile: CompanionProfile? = null,
+    val companionProfileSupported: Boolean = false,
+    val companionProfileErrorCode: String? = null,
+    val focusState: FocusSessionState? = null,
+    val focusSupported: Boolean = false,
+    val focusErrorCode: String? = null,
+    val walkState: WalkAdventureState? = null,
+    val walkSupported: Boolean = false,
+    val walkErrorCode: String? = null,
     val messageMarkReadSupported: Boolean = false,
 )
 
@@ -62,6 +74,15 @@ internal object OwnerRefreshCommitPolicy {
         funState = snapshot.funState,
         funSupported = snapshot.funSupported,
         funErrorCode = snapshot.funErrorCode,
+        companionProfile = snapshot.companionProfile,
+        companionProfileSupported = snapshot.companionProfileSupported,
+        companionProfileErrorCode = snapshot.companionProfileErrorCode,
+        focusState = snapshot.focusState,
+        focusSupported = snapshot.focusSupported,
+        focusErrorCode = snapshot.focusErrorCode,
+        walkState = snapshot.walkState,
+        walkSupported = snapshot.walkSupported,
+        walkErrorCode = snapshot.walkErrorCode,
         messageMarkReadSupported = snapshot.messageMarkReadSupported,
         loading = false,
         errorCode = null,

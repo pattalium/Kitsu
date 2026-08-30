@@ -1,5 +1,6 @@
 package ptl.kitsu.app.pairing
 
+import ptl.kitsu.app.security.ControllerRole
 import ptl.kitsu.app.transport.SecureEnvelopeSession
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -33,6 +34,7 @@ private data class PairRequest(
 private data class PairPending(
     val v: Int,
     val type: String,
+    val role: String? = null,
     @SerialName("device_nonce_b64") val deviceNonceB64: String,
     @SerialName("expires_in_ms") val expiresInMs: Int,
 )
@@ -41,6 +43,7 @@ private data class PairPending(
 private data class PairGrant(
     val v: Int,
     val type: String,
+    val role: String? = null,
     @SerialName("controller_id_b64") val controllerIdB64: String,
     @SerialName("root_b64") val rootB64: String,
     @SerialName("device_uid") val deviceUid: String,
@@ -50,9 +53,17 @@ private data class PairGrant(
 )
 
 @Serializable
-private data class PairCommit(
+private data class PairCommitV1(
     val v: Int = 1,
     val type: String = "pair_commit",
+    @SerialName("proof_b64") val proofB64: String,
+)
+
+@Serializable
+private data class PairCommitV2(
+    val v: Int = 2,
+    val type: String = "pair_commit",
+    val role: String = "caretaker",
     @SerialName("proof_b64") val proofB64: String,
 )
 
@@ -60,6 +71,7 @@ private data class PairCommit(
 private data class PairOk(
     val v: Int,
     val type: String,
+    val role: String? = null,
     @SerialName("proof_b64") val proofB64: String,
 )
 
@@ -74,7 +86,13 @@ data class ControllerGrant(
     val controllerIdB64: String,
     val rootB64: String,
     val deviceUid: String,
+    val role: ControllerRole = ControllerRole.OWNER,
 )
+
+enum class ControllerPairingFlow {
+    OWNER,
+    CARETAKER,
+}
 
 class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom()) {
     private val json = Json {
@@ -92,6 +110,7 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
         deleteCandidate: suspend () -> Unit,
         onPending: suspend (expiresInMillis: Int) -> Unit = {},
         onCandidateStored: suspend () -> Unit = {},
+        flow: ControllerPairingFlow = ControllerPairingFlow.OWNER,
     ): ControllerGrant {
         val cleanLabel = sanitizedLabel(label)
         val clientNonce = ByteArray(16).also(random::nextBytes)
@@ -99,6 +118,7 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
             bounded(
                 json.encodeToString(
                     PairRequest(
+                        v = flow.protocolVersion,
                         clientNonceB64 = SecureEnvelopeSession.encodeUrl(clientNonce),
                         label = cleanLabel,
                     ),
@@ -112,7 +132,9 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
         } catch (failure: TimeoutCancellationException) {
             throw PairingException("pairing_timeout", failure)
         }
-        if (pending.v != 1 || pending.type != "pair_pending" || pending.expiresInMs !in 1..60_000) {
+        if (!flow.accepts(pending.v, pending.role) ||
+            pending.type != "pair_pending" || pending.expiresInMs !in 1..60_000
+        ) {
             throw PairingException("pairing_failed")
         }
         val deviceNonce = decodeFixed(pending.deviceNonceB64, 16)
@@ -124,7 +146,7 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
         } catch (failure: TimeoutCancellationException) {
             throw PairingException("pairing_timeout", failure)
         }
-        if (grant.v != 1 || grant.type != "pair_grant" ||
+        if (!flow.accepts(grant.v, grant.role) || grant.type != "pair_grant" ||
             grant.clientNonceB64 != SecureEnvelopeSession.encodeUrl(clientNonce) ||
             grant.deviceNonceB64 != SecureEnvelopeSession.encodeUrl(deviceNonce)
         ) throw PairingException("pairing_failed")
@@ -135,8 +157,8 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
             root.fill(0)
             throw PairingException("pairing_failed")
         }
-        val expectedDevice = proof(
-            root, DEVICE_PREFIX, controllerId, grant.deviceUid, clientNonce, deviceNonce,
+        val expectedDevice = pairingProof(
+            flow, root, DEVICE_ROLE, controllerId, grant.deviceUid, clientNonce, deviceNonce,
         )
         val actualDevice = decodeFixed(grant.proofB64, 32)
         if (!MessageDigest.isEqual(expectedDevice, actualDevice)) {
@@ -144,20 +166,30 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
             throw PairingException("pairing_failed")
         }
 
-        val candidate = ControllerGrant(grant.controllerIdB64, grant.rootB64, grant.deviceUid)
+        val candidate = ControllerGrant(
+            grant.controllerIdB64,
+            grant.rootB64,
+            grant.deviceUid,
+            flow.attestedRole,
+        )
         var candidateStored = false
         try {
             persistCandidate(candidate)
             candidateStored = true
             onCandidateStored()
-            val clientProof = proof(
-                root, CLIENT_PREFIX, controllerId, grant.deviceUid, clientNonce, deviceNonce,
+            val clientProof = pairingProof(
+                flow, root, CLIENT_ROLE, controllerId, grant.deviceUid, clientNonce, deviceNonce,
             )
+            val commit = when (flow) {
+                ControllerPairingFlow.OWNER -> json.encodeToString(
+                    PairCommitV1(proofB64 = SecureEnvelopeSession.encodeUrl(clientProof)),
+                )
+                ControllerPairingFlow.CARETAKER -> json.encodeToString(
+                    PairCommitV2(proofB64 = SecureEnvelopeSession.encodeUrl(clientProof)),
+                )
+            }
             channel.send(
-                bounded(
-                    json.encodeToString(PairCommit(proofB64 = SecureEnvelopeSession.encodeUrl(clientProof)))
-                        .toByteArray(Charsets.UTF_8),
-                ),
+                bounded(commit.toByteArray(Charsets.UTF_8)),
             )
             val ok = try {
                 withTimeout(RESPONSE_TIMEOUT_MILLIS) {
@@ -166,11 +198,13 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
             } catch (failure: TimeoutCancellationException) {
                 throw PairingException("pairing_timeout", failure)
             }
-            val expectedOk = proof(
-                root, OK_PREFIX, controllerId, grant.deviceUid, clientNonce, deviceNonce,
+            val expectedOk = pairingProof(
+                flow, root, OK_ROLE, controllerId, grant.deviceUid, clientNonce, deviceNonce,
             )
             val actualOk = decodeFixed(ok.proofB64, 32)
-            if (ok.v != 1 || ok.type != "pair_ok" || !MessageDigest.isEqual(expectedOk, actualOk)) {
+            if (!flow.accepts(ok.v, ok.role) || ok.type != "pair_ok" ||
+                !MessageDigest.isEqual(expectedOk, actualOk)
+            ) {
                 throw PairingException("pairing_failed")
             }
             root.fill(0)
@@ -226,6 +260,42 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
     }
 
     companion object {
+        private val DEVICE_ROLE = "device".toByteArray(Charsets.US_ASCII)
+        private val CLIENT_ROLE = "client".toByteArray(Charsets.US_ASCII)
+        private val OK_ROLE = "ok".toByteArray(Charsets.US_ASCII)
+
+        private fun pairingProof(
+            flow: ControllerPairingFlow,
+            root: ByteArray,
+            proofRole: ByteArray,
+            controllerId: ByteArray,
+            deviceUid: String,
+            clientNonce: ByteArray,
+            deviceNonce: ByteArray,
+        ): ByteArray = when (flow) {
+            ControllerPairingFlow.OWNER -> proof(
+                root,
+                when {
+                    proofRole.contentEquals(DEVICE_ROLE) -> DEVICE_PREFIX
+                    proofRole.contentEquals(CLIENT_ROLE) -> CLIENT_PREFIX
+                    else -> OK_PREFIX
+                },
+                controllerId,
+                deviceUid,
+                clientNonce,
+                deviceNonce,
+            )
+            ControllerPairingFlow.CARETAKER -> roleBoundProof(
+                root,
+                proofRole,
+                CARETAKER_ROLE,
+                controllerId,
+                deviceUid,
+                clientNonce,
+                deviceNonce,
+            )
+        }
+
         internal fun proof(
             root: ByteArray,
             prefix: ByteArray,
@@ -239,9 +309,27 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
                 clientNonce + deviceNonce,
         )
 
+        internal fun roleBoundProof(
+            root: ByteArray,
+            proofRole: ByteArray,
+            controllerRole: ByteArray,
+            controllerId: ByteArray,
+            deviceUid: String,
+            clientNonce: ByteArray,
+            deviceNonce: ByteArray,
+        ): ByteArray = SecureEnvelopeSession.hmac(
+            root,
+            PAIR_V2_DOMAIN + proofRole + ZERO + controllerRole + ZERO +
+                controllerId + root + deviceUid.toByteArray(Charsets.US_ASCII) +
+                clientNonce + deviceNonce,
+        )
+
         internal val DEVICE_PREFIX = "KITSU-PAIR-1\u0000device\u0000".toByteArray(Charsets.US_ASCII)
         internal val CLIENT_PREFIX = "KITSU-PAIR-1\u0000client\u0000".toByteArray(Charsets.US_ASCII)
         internal val OK_PREFIX = "KITSU-PAIR-1\u0000ok\u0000".toByteArray(Charsets.US_ASCII)
+        internal val PAIR_V2_DOMAIN = "KITSU-PAIR-2\u0000".toByteArray(Charsets.US_ASCII)
+        internal val CARETAKER_ROLE = "caretaker".toByteArray(Charsets.US_ASCII)
+        private val ZERO = byteArrayOf(0)
         private val DEVICE_UID = Regex("^KT[0-9A-F]{4}$")
         private val PAIRING_ERROR_CODES = setOf(
             "pairing_closed", "controller_full", "auth_failed", "timeout",
@@ -250,6 +338,23 @@ class ControllerPairingProtocol(private val random: SecureRandom = SecureRandom(
         const val MAX_FRAME_BYTES = 1024
         private const val RESPONSE_TIMEOUT_MILLIS = 10_000L
     }
+}
+
+private val ControllerPairingFlow.protocolVersion: Int
+    get() = when (this) {
+        ControllerPairingFlow.OWNER -> 1
+        ControllerPairingFlow.CARETAKER -> 2
+    }
+
+private val ControllerPairingFlow.attestedRole: ControllerRole
+    get() = when (this) {
+        ControllerPairingFlow.OWNER -> ControllerRole.OWNER
+        ControllerPairingFlow.CARETAKER -> ControllerRole.CARETAKER
+    }
+
+private fun ControllerPairingFlow.accepts(version: Int, role: String?): Boolean = when (this) {
+    ControllerPairingFlow.OWNER -> version == 1 && role == null
+    ControllerPairingFlow.CARETAKER -> version == 2 && role == "caretaker"
 }
 
 class PairingException(val code: String, cause: Throwable? = null) : Exception(code, cause)

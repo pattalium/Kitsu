@@ -40,12 +40,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -56,10 +58,16 @@ import ptl.kitsu.app.BuildConfig
 import ptl.kitsu.app.EncounterUnlockUiState
 import ptl.kitsu.app.FirmwareUpdateUiState
 import ptl.kitsu.app.MainViewModel
+import ptl.kitsu.app.automation.KitsuAutomationAction
+import ptl.kitsu.app.automation.KitsuAutomationPolicy
 import ptl.kitsu.app.model.EncounterRarity
 import ptl.kitsu.app.model.EncounterUnlockCode
 import ptl.kitsu.app.repository.OwnerState
+import ptl.kitsu.app.notifications.KitsuNotificationSettings
 import ptl.kitsu.app.pairing.BluetoothPairingRepairPolicy
+import ptl.kitsu.app.pairing.ControllerPairingFlow
+import ptl.kitsu.app.security.ControllerAccessPolicy
+import ptl.kitsu.app.security.ControllerRole
 import ptl.kitsu.app.security.MAX_SAVED_KITSU
 import ptl.kitsu.app.transport.ConnectionMode
 import ptl.kitsu.app.update.FirmwareInstallStage
@@ -80,6 +88,7 @@ internal fun KitsuSettingsScreen(
     onEnableBluetooth: () -> Unit,
     onOpenLocationSettings: () -> Unit,
     onPairController: (String) -> Unit,
+    onPairCaretakerController: (String) -> Unit,
     onRetryPairingBlePermissions: () -> Unit,
     onFinishPairing: () -> Unit,
     onRepairBluetoothPairing: () -> Unit,
@@ -89,6 +98,8 @@ internal fun KitsuSettingsScreen(
     onOpenSupportPage: () -> Unit,
     onOpenUnlockPage: (String) -> Unit,
     onCopyUnlockCode: (String) -> Unit,
+    onRequestNotificationPermission: (continuity: Boolean) -> Unit,
+    onCopyAutomationToken: (String) -> Unit,
     acceptedPolicyVersion: Int,
     blockedPeerIds: Set<String>,
     onAcceptPolicy: () -> Unit,
@@ -96,12 +107,19 @@ internal fun KitsuSettingsScreen(
     updateBusy: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val notificationSettings by viewModel.notificationSettings.collectAsStateWithLifecycle()
+    val automationCapabilityToken by viewModel.automationCapabilityToken.collectAsStateWithLifecycle()
     var pairingLabel by rememberSaveable { mutableStateOf("My phone") }
+    var pairingFlow by rememberSaveable { mutableStateOf(ControllerPairingFlow.OWNER) }
     var forgetAddress by rememberSaveable { mutableStateOf<String?>(null) }
     var showTerms by rememberSaveable { mutableStateOf(false) }
     var showPrivacy by rememberSaveable { mutableStateOf(false) }
     var pendingUnblockPeerId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingDeleteUnlockDeviceId by rememberSaveable { mutableStateOf<String?>(null) }
+    val activeRole = owner.savedKitsu.firstOrNull {
+        it.deviceAddress.equals(owner.activeDeviceAddress, ignoreCase = true)
+    }?.role ?: ControllerRole.OWNER
+    val ownerSettingsAvailable = ControllerAccessPolicy.isOwner(activeRole)
 
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("screen-settings"),
@@ -111,7 +129,11 @@ internal fun KitsuSettingsScreen(
         item {
             SectionHeading(
                 title = "Settings",
-                supporting = "Your devices, appearance and signed offline updates.",
+                supporting = if (ownerSettingsAvailable) {
+                    "Your devices, appearance and signed offline updates."
+                } else {
+                    "Your devices, caretaker access and app preferences."
+                },
             )
         }
 
@@ -147,6 +169,13 @@ internal fun KitsuSettingsScreen(
             items(owner.savedKitsu, key = { it.deviceAddress }) { device ->
                 val selected = device.deviceAddress.equals(owner.activeDeviceAddress, ignoreCase = true)
                 val connected = selected && owner.connection.connected
+                val canRemoveRevokedAuthorization =
+                    ControllerPairingPresentation.canRemoveRevokedCaretakerAuthorization(
+                        role = device.role,
+                        deviceAddress = device.deviceAddress,
+                        activeDeviceAddress = owner.activeDeviceAddress,
+                        errorCode = owner.errorCode,
+                    )
                 KitsuCard(modifier = Modifier.testTag("saved-kitsu-card")) {
                     Row(
                         Modifier.fillMaxWidth(),
@@ -169,6 +198,12 @@ internal fun KitsuSettingsScreen(
                                 device.deviceAddress,
                                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                "${ControllerPairingPresentation.savedRoleLabel(device.role)} authorization",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.testTag("saved-kitsu-role"),
                             )
                         }
                         StatusPill(
@@ -203,16 +238,33 @@ internal fun KitsuSettingsScreen(
                             ) { Text("Connect") }
                         }
                     }
-                    TextButton(
-                        onClick = { forgetAddress = device.deviceAddress },
-                        enabled = !updateBusy,
-                    ) {
+                    if (ControllerAccessPolicy.allowsOperation(device.role, "controller.forget")) {
+                        TextButton(
+                            onClick = { forgetAddress = device.deviceAddress },
+                            enabled = !updateBusy,
+                        ) {
+                            Text(
+                                if (owner.pendingForgetAddress.equals(device.deviceAddress, ignoreCase = true)) {
+                                    "Finish forgetting authorization"
+                                } else {
+                                    "Forget authorization"
+                                },
+                            )
+                        }
+                    } else if (canRemoveRevokedAuthorization) {
+                        TextButton(
+                            onClick = { forgetAddress = device.deviceAddress },
+                            enabled = !updateBusy,
+                            modifier = Modifier.testTag("remove-revoked-authorization"),
+                        ) {
+                            Text("Remove revoked authorization from this phone")
+                        }
+                    } else {
                         Text(
-                            if (owner.pendingForgetAddress.equals(device.deviceAddress, ignoreCase = true)) {
-                                "Finish forgetting authorization"
-                            } else {
-                                "Forget authorization"
-                            },
+                            "An owner can revoke this caretaker authorization on Kitsu.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.testTag("caretaker-revoke-guidance"),
                         )
                     }
                 }
@@ -224,7 +276,10 @@ internal fun KitsuSettingsScreen(
                 owner = owner,
                 pairingLabel = pairingLabel,
                 onPairingLabelChange = { pairingLabel = it },
+                pairingFlow = pairingFlow,
+                onPairingFlowChange = { pairingFlow = it },
                 onPairController = onPairController,
+                onPairCaretakerController = onPairCaretakerController,
                 onRetryBlePermissions = onRetryPairingBlePermissions,
                 onOpenAppSettings = onOpenAppSettings,
                 onFinishPairing = onFinishPairing,
@@ -242,82 +297,111 @@ internal fun KitsuSettingsScreen(
         }
 
         item {
-            FirmwareCard(
+            NotificationSettingsCard(
                 owner = owner,
-                firmware = firmware,
-                viewModel = viewModel,
-                onOpenFirmwarePackage = onOpenFirmwarePackage,
-                updateBusy = updateBusy,
+                settings = notificationSettings,
+                directMessagesVisible = ownerSettingsAvailable,
+                enabled = !updateBusy,
+                onEnableAlerts = { onRequestNotificationPermission(false) },
+                onDisableAlerts = viewModel::disableNotificationAlerts,
+                onDirectMessagesChanged = viewModel::setDirectMessageNotifications,
+                onPetUpdatesChanged = viewModel::setPetUpdateNotifications,
+                onEnableContinuity = { onRequestNotificationPermission(true) },
+                onDisableContinuity = { viewModel.disableConnectionContinuity(showNotice = true) },
             )
+        }
+
+        item {
+            LocalAutomationCard(
+                capabilityToken = automationCapabilityToken,
+                enabled = !updateBusy,
+                onEnable = viewModel::enableLocalAutomation,
+                onDisable = viewModel::disableLocalAutomation,
+                onCopyToken = onCopyAutomationToken,
+            )
+        }
+
+        if (ownerSettingsAvailable) {
+            item {
+                FirmwareCard(
+                    owner = owner,
+                    firmware = firmware,
+                    viewModel = viewModel,
+                    onOpenFirmwarePackage = onOpenFirmwarePackage,
+                    updateBusy = updateBusy,
+                )
+            }
         }
 
         item {
             KitsuDetailsCard(owner)
         }
 
-        item {
-            EncounterUnlocksCard(
-                state = encounterUnlocks,
-                connected = owner.connection.connected,
-                enabled = !updateBusy,
-                onSync = viewModel::syncEncounterCodes,
-                onOpenUnlockPage = onOpenUnlockPage,
-                onCopyUnlockCode = onCopyUnlockCode,
-                onDeleteDevice = { pendingDeleteUnlockDeviceId = it },
-            )
-        }
+        if (ownerSettingsAvailable) {
+            item {
+                EncounterUnlocksCard(
+                    state = encounterUnlocks,
+                    connected = owner.connection.connected,
+                    enabled = !updateBusy,
+                    onSync = viewModel::syncEncounterCodes,
+                    onOpenUnlockPage = onOpenUnlockPage,
+                    onCopyUnlockCode = onCopyUnlockCode,
+                    onDeleteDevice = { pendingDeleteUnlockDeviceId = it },
+                )
+            }
 
-        item {
-            KitsuCard(title = "Privacy & terms", modifier = Modifier.testTag("settings-privacy-terms")) {
-                StatusPill(
-                    if (acceptedPolicyVersion == MeshUserPolicy.VERSION) {
-                        "Messaging policy accepted"
-                    } else {
-                        "Acceptance required to send"
-                    },
-                    if (acceptedPolicyVersion == MeshUserPolicy.VERSION) StatusTone.POSITIVE else StatusTone.ACTIVE,
-                )
-                Text(
-                    "Policy ${MeshUserPolicy.VERSION_LABEL}. Messaging remains gated whenever the policy version changes.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { showTerms = true }, modifier = Modifier.testTag("open-terms")) {
-                        Text("Terms & user policy")
-                    }
-                    TextButton(onClick = { showPrivacy = true }, modifier = Modifier.testTag("open-privacy")) {
-                        Text("Privacy")
+            item {
+                KitsuCard(title = "Privacy & terms", modifier = Modifier.testTag("settings-privacy-terms")) {
+                    StatusPill(
+                        if (acceptedPolicyVersion == MeshUserPolicy.VERSION) {
+                            "Messaging policy accepted"
+                        } else {
+                            "Acceptance required to send"
+                        },
+                        if (acceptedPolicyVersion == MeshUserPolicy.VERSION) StatusTone.POSITIVE else StatusTone.ACTIVE,
+                    )
+                    Text(
+                        "Policy ${MeshUserPolicy.VERSION_LABEL}. Messaging remains gated whenever the policy version changes.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { showTerms = true }, modifier = Modifier.testTag("open-terms")) {
+                            Text("Terms & user policy")
+                        }
+                        TextButton(onClick = { showPrivacy = true }, modifier = Modifier.testTag("open-privacy")) {
+                            Text("Privacy")
+                        }
                     }
                 }
             }
-        }
 
-        item {
-            KitsuCard(title = "Blocked peers", modifier = Modifier.testTag("blocked-peers")) {
-                Text(
-                    "Blocking hides a peer's messages and recipient suggestion on this phone. Kitsu firmware may still receive that peer's mesh traffic.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (blockedPeerIds.isEmpty()) {
-                    Text("No peers blocked on this phone.")
-                } else {
-                    blockedPeerIds.sorted().forEach { peerId ->
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                MessageComposerPolicy.compactReference(peerId),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(
-                                onClick = { pendingUnblockPeerId = peerId },
-                                enabled = !updateBusy,
-                            ) { Text("Unblock") }
+            item {
+                KitsuCard(title = "Blocked peers", modifier = Modifier.testTag("blocked-peers")) {
+                    Text(
+                        "Blocking hides a peer's messages and recipient suggestion on this phone. Kitsu firmware may still receive that peer's mesh traffic.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (blockedPeerIds.isEmpty()) {
+                        Text("No peers blocked on this phone.")
+                    } else {
+                        blockedPeerIds.sorted().forEach { peerId ->
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    MessageComposerPolicy.compactReference(peerId),
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(
+                                    onClick = { pendingUnblockPeerId = peerId },
+                                    enabled = !updateBusy,
+                                ) { Text("Unblock") }
+                            }
                         }
                     }
                 }
@@ -371,34 +455,61 @@ internal fun KitsuSettingsScreen(
     }
 
     forgetAddress?.let { address ->
-        val name = owner.savedKitsu.firstOrNull {
+        val device = owner.savedKitsu.firstOrNull {
             it.deviceAddress.equals(address, ignoreCase = true)
-        }?.displayName ?: "Kitsu"
-        AlertDialog(
-            onDismissRequest = { forgetAddress = null },
-            icon = { Icon(Icons.Default.Security, contentDescription = null) },
-            title = { Text("Forget $name authorization?") },
-            text = {
-                Text(
-                    "Kitsu will revoke this phone's controller root. Packs, other phone authorizations and saved encounter unlocks stay intact. Delete saved unlocks separately if you want them removed from this phone. Android may still show the Bluetooth bond in system settings.",
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        forgetAddress = null
-                        viewModel.forgetController(address)
-                    },
-                    enabled = !updateBusy,
-                ) { Text("Forget authorization") }
-            },
-            dismissButton = {
-                TextButton(onClick = { forgetAddress = null }) { Text("Cancel") }
-            },
-        )
+        }
+        val canRevokeOnKitsu = device?.let {
+            ControllerAccessPolicy.allowsOperation(it.role, "controller.forget")
+        } == true
+        val canRemoveRevokedAuthorization = device?.let {
+            ControllerPairingPresentation.canRemoveRevokedCaretakerAuthorization(
+                role = it.role,
+                deviceAddress = it.deviceAddress,
+                activeDeviceAddress = owner.activeDeviceAddress,
+                errorCode = owner.errorCode,
+            )
+        } == true
+        if (device != null && (canRevokeOnKitsu || canRemoveRevokedAuthorization)) {
+            AlertDialog(
+                onDismissRequest = { forgetAddress = null },
+                icon = { Icon(Icons.Default.Security, contentDescription = null) },
+                title = {
+                    Text(
+                        if (canRevokeOnKitsu) {
+                            "Forget ${device.displayName} authorization?"
+                        } else {
+                            "Remove ${device.displayName} from this phone?"
+                        },
+                    )
+                },
+                text = {
+                    Text(
+                        if (canRevokeOnKitsu) {
+                            "Kitsu will revoke this phone's controller root. Packs, other phone authorizations and saved encounter unlocks stay intact. Delete saved unlocks separately if you want them removed from this phone. Android may still show the Bluetooth bond in system settings."
+                        } else {
+                            "Kitsu has already rejected this revoked caretaker authorization. This removes only its encrypted credential from this phone; Kitsu and other phones stay unchanged."
+                        },
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            forgetAddress = null
+                            viewModel.forgetController(address)
+                        },
+                        enabled = !updateBusy,
+                    ) {
+                        Text(if (canRevokeOnKitsu) "Forget authorization" else "Remove from phone")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { forgetAddress = null }) { Text("Cancel") }
+                },
+            )
+        }
     }
 
-    if (showTerms) {
+    if (showTerms && ownerSettingsAvailable) {
         MeshPolicyDialog(
             canAccept = !updateBusy,
             onAccept = {
@@ -409,7 +520,7 @@ internal fun KitsuSettingsScreen(
         )
     }
 
-    if (showPrivacy) {
+    if (showPrivacy && ownerSettingsAvailable) {
         AlertDialog(
             onDismissRequest = { showPrivacy = false },
             title = { Text("Privacy") },
@@ -420,7 +531,7 @@ internal fun KitsuSettingsScreen(
         )
     }
 
-    pendingUnblockPeerId?.let { peerId ->
+    pendingUnblockPeerId?.takeIf { ownerSettingsAvailable }?.let { peerId ->
         AlertDialog(
             onDismissRequest = { pendingUnblockPeerId = null },
             title = { Text("Unblock this peer?") },
@@ -437,7 +548,7 @@ internal fun KitsuSettingsScreen(
         )
     }
 
-    pendingDeleteUnlockDeviceId?.let { deviceId ->
+    pendingDeleteUnlockDeviceId?.takeIf { ownerSettingsAvailable }?.let { deviceId ->
         AlertDialog(
             onDismissRequest = { pendingDeleteUnlockDeviceId = null },
             icon = { Icon(Icons.Default.DeleteSweep, contentDescription = null) },
@@ -853,7 +964,10 @@ private fun PairingCard(
     owner: OwnerState,
     pairingLabel: String,
     onPairingLabelChange: (String) -> Unit,
+    pairingFlow: ControllerPairingFlow,
+    onPairingFlowChange: (ControllerPairingFlow) -> Unit,
     onPairController: (String) -> Unit,
+    onPairCaretakerController: (String) -> Unit,
     onRetryBlePermissions: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onFinishPairing: () -> Unit,
@@ -888,9 +1002,12 @@ private fun PairingCard(
                 }
             }
             owner.pendingPairing != null -> {
-                StatusPill("Action required", StatusTone.ACTIVE)
+                val pendingRole = ControllerPairingPresentation.savedRoleLabel(
+                    owner.pendingPairing.role,
+                )
+                StatusPill("$pendingRole authorization", StatusTone.ACTIVE)
                 Text(
-                    "Pairing with ${owner.pendingPairing.displayName} may already be committed on the device. Keep it nearby and finish the recovery step.",
+                    "$pendingRole pairing with ${owner.pendingPairing.displayName} may already be committed on the device. Keep it nearby and finish the recovery step.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -898,13 +1015,16 @@ private fun PairingCard(
                     onClick = onFinishPairing,
                     enabled = !owner.pairing && !updateBusy,
                     modifier = Modifier.testTag("pairing-finish"),
-                ) { Text(if (owner.pairing) "Finishing…" else "Finish pairing") }
+                ) {
+                    Text(if (owner.pairing) "Finishing…" else "Finish ${pendingRole.lowercase()} pairing")
+                }
             }
             owner.pairing -> {
+                val pairingCopy = ControllerPairingPresentation.copy(pairingFlow)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator()
                     Column {
-                        Text("Pairing nearby Kitsu", style = MaterialTheme.typography.titleMedium)
+                        Text(pairingCopy.progressLabel, style = MaterialTheme.typography.titleMedium)
                         Text(
                             owner.pairingProgress?.detail?.humanized() ?: "Waiting for the secure handshake",
                             style = MaterialTheme.typography.bodyMedium,
@@ -916,7 +1036,7 @@ private fun PairingCard(
             }
             else -> {
                 Text(
-                    "Hold the device's pairing control, keep it close, then authorize this phone over Bluetooth.",
+                    "Choose the matching option after selecting the pairing role physically on Kitsu.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -928,11 +1048,47 @@ private fun PairingCard(
                     singleLine = true,
                     enabled = !updateBusy,
                 )
+                val ownerCopy = ControllerPairingPresentation.copy(ControllerPairingFlow.OWNER)
+                Text("Owner phone", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    ownerCopy.deviceInstruction,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    ownerCopy.accessSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Button(
-                    onClick = { onPairController(pairingLabel) },
+                    onClick = {
+                        onPairingFlowChange(ControllerPairingFlow.OWNER)
+                        onPairController(pairingLabel)
+                    },
                     enabled = !updateBusy && owner.savedKitsu.size < MAX_SAVED_KITSU,
                     modifier = Modifier.fillMaxWidth().testTag("pairing-start"),
-                ) { Text("Pair this phone") }
+                ) { Text(ownerCopy.buttonLabel) }
+                HorizontalDivider()
+                val caretakerCopy = ControllerPairingPresentation.copy(ControllerPairingFlow.CARETAKER)
+                Text("Caretaker phone", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    caretakerCopy.deviceInstruction,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    caretakerCopy.accessSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = {
+                        onPairingFlowChange(ControllerPairingFlow.CARETAKER)
+                        onPairCaretakerController(pairingLabel)
+                    },
+                    enabled = !updateBusy && owner.savedKitsu.size < MAX_SAVED_KITSU,
+                    modifier = Modifier.fillMaxWidth().testTag("pairing-start-caretaker"),
+                ) { Text(caretakerCopy.buttonLabel) }
                 if (owner.savedKitsu.size >= MAX_SAVED_KITSU) {
                     Text(
                         "The saved-device limit is full. Repair Bluetooth pairing for a saved Kitsu, or forget one saved controller before pairing a different Kitsu.",
@@ -975,6 +1131,170 @@ private fun AppearanceCard(
             enabled = enabled,
             modifier = Modifier.testTag("theme-system"),
         ) { onThemePreferenceChange(KitsuThemePreference.SYSTEM) }
+    }
+}
+
+@Composable
+private fun LocalAutomationCard(
+    capabilityToken: String?,
+    enabled: Boolean,
+    onEnable: () -> Unit,
+    onDisable: () -> Unit,
+    onCopyToken: (String) -> Unit,
+) {
+    KitsuCard(
+        title = "Shortcuts & local automation",
+        modifier = Modifier.testTag("settings-local-automation"),
+    ) {
+        Text(
+            "Launcher shortcuts open a visible confirmation. Tasker can use the same safe pet, focus, walk, accessibility, and Studio actions after you enable a private capability on this phone.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "Mesh messages, firmware, pairings, unlock codes, and settings are never exposed to automation.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (capabilityToken == null) {
+            Button(onClick = onEnable, enabled = enabled) { Text("Enable Tasker access") }
+        } else {
+            StatusPill("Tasker access enabled", StatusTone.POSITIVE)
+            Text(
+                "Tasker: launch an Activity with component " +
+                    "${BuildConfig.APPLICATION_ID}/ptl.kitsu.app.automation.KitsuAutomationActivity, " +
+                    "action ${KitsuAutomationPolicy.ACTION_AUTOMATE}, and the two String extras shown in the copied setup.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Allowed action values: " +
+                    KitsuAutomationAction.entries.joinToString { it.wireName },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        onCopyToken(
+                            KitsuAutomationPolicy.setupRecipe(
+                                BuildConfig.APPLICATION_ID,
+                                capabilityToken,
+                            ),
+                        )
+                    },
+                    enabled = enabled,
+                ) { Text("Copy Tasker setup") }
+                TextButton(onClick = onDisable, enabled = enabled) { Text("Revoke") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationSettingsCard(
+    owner: OwnerState,
+    settings: KitsuNotificationSettings,
+    directMessagesVisible: Boolean,
+    enabled: Boolean,
+    onEnableAlerts: () -> Unit,
+    onDisableAlerts: () -> Unit,
+    onDirectMessagesChanged: (Boolean) -> Unit,
+    onPetUpdatesChanged: (Boolean) -> Unit,
+    onEnableContinuity: () -> Unit,
+    onDisableContinuity: () -> Unit,
+) {
+    KitsuCard(
+        title = "Notifications & connection",
+        modifier = Modifier.testTag("notification-settings-card"),
+    ) {
+        Text(
+            if (directMessagesVisible) {
+                "Everything here is opt-in. Message and pet details stay private on the lock screen."
+            } else {
+                "Everything here is opt-in. Companion details stay private on the lock screen."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        NotificationToggleRow(
+            title = "Kitsu notifications",
+            supporting = if (directMessagesVisible) {
+                "Allow direct-message and companion updates on this phone"
+            } else {
+                "Allow companion updates on this caretaker phone"
+            },
+            checked = settings.alertsEnabled,
+            enabled = enabled,
+            testTag = "notifications-enabled-switch",
+            onCheckedChange = { checked ->
+                if (checked) onEnableAlerts() else onDisableAlerts()
+            },
+        )
+        if (directMessagesVisible) {
+            NotificationToggleRow(
+                title = "Direct messages",
+                supporting = "Notify only for new direct journal entries; blocked peers stay hidden",
+                checked = settings.directMessagesEnabled,
+                enabled = enabled && settings.alertsEnabled,
+                testTag = "direct-message-notifications-switch",
+                onCheckedChange = onDirectMessagesChanged,
+            )
+        }
+        NotificationToggleRow(
+            title = "Companion updates",
+            supporting = "Requests, check-ins, focus changes and walk moments",
+            checked = settings.petUpdatesEnabled,
+            enabled = enabled && settings.alertsEnabled,
+            testTag = "pet-update-notifications-switch",
+            onCheckedChange = onPetUpdatesChanged,
+        )
+        HorizontalDivider()
+        NotificationToggleRow(
+            title = "Keep current connection active",
+            supporting = when {
+                !settings.alertsEnabled -> "Enable Kitsu notifications first"
+                !owner.connection.connected -> "Connect the selected Kitsu first"
+                settings.connectionContinuityEnabled -> "Active until you turn it off or Kitsu disconnects"
+                else -> "Starts only from this switch; never at boot and never reconnects silently"
+            },
+            checked = settings.connectionContinuityEnabled,
+            enabled = enabled && settings.alertsEnabled && owner.connection.connected,
+            testTag = "connection-continuity-switch",
+            onCheckedChange = { checked ->
+                if (checked) onEnableContinuity() else onDisableContinuity()
+            },
+        )
+    }
+}
+
+@Composable
+private fun NotificationToggleRow(
+    title: String,
+    supporting: String,
+    checked: Boolean,
+    enabled: Boolean,
+    testTag: String,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                supporting,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            modifier = Modifier.testTag(testTag),
+        )
     }
 }
 

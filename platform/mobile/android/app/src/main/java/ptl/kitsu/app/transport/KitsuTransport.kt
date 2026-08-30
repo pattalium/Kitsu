@@ -4,11 +4,14 @@ import ptl.kitsu.app.model.ActionCommand
 import ptl.kitsu.app.model.ActionPolicy
 import ptl.kitsu.app.model.ActionReceipt
 import ptl.kitsu.app.model.ControllerForgetReceipt
+import ptl.kitsu.app.model.CompanionProfile
 import ptl.kitsu.app.model.EventEnvelope
 import ptl.kitsu.app.model.EncounterCodePage
 import ptl.kitsu.app.model.EncounterCatalogPage
 import ptl.kitsu.app.model.EncounterDiscoveryPage
 import ptl.kitsu.app.model.ExpeditionDuration
+import ptl.kitsu.app.model.FocusSessionState
+import ptl.kitsu.app.model.FocusStartCommand
 import ptl.kitsu.app.model.FunState
 import ptl.kitsu.app.model.HistoryPage
 import ptl.kitsu.app.model.KitsuStatus
@@ -20,9 +23,17 @@ import ptl.kitsu.app.model.NearbyKitsuPage
 import ptl.kitsu.app.model.NeighborInteractionCommand
 import ptl.kitsu.app.model.NeighborInteractionReceipt
 import ptl.kitsu.app.model.PeerPage
+import ptl.kitsu.app.model.PetPresentationChunk
+import ptl.kitsu.app.model.PetPresentationState
 import ptl.kitsu.app.model.PartyJoinCommand
 import ptl.kitsu.app.model.PartyRoundCommand
 import ptl.kitsu.app.model.StoryTrigger
+import ptl.kitsu.app.model.WalkAdventureState
+import ptl.kitsu.app.model.WalkDecisionCommand
+import ptl.kitsu.app.model.WalkLocationCommand
+import ptl.kitsu.app.model.WalkPrivacy
+import ptl.kitsu.app.model.WalkStartCommand
+import ptl.kitsu.app.model.WalkSyncCommand
 import ptl.kitsu.app.update.FirmwareUpdateReceipt
 import kotlinx.coroutines.flow.Flow
 
@@ -96,6 +107,53 @@ interface KitsuTransport {
     suspend fun chooseParty(command: PartyRoundCommand): FunState =
         throw TransportException("firmware_operation_unavailable")
     suspend fun leaveParty(): FunState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun companionProfile(): CompanionProfile =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun setCompanionNickname(nickname: String): CompanionProfile =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun answerCompanionRequest(accept: Boolean): CompanionProfile =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun answerCompanionQuestion(choice: Int): CompanionProfile =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun focusState(): FocusSessionState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun startFocus(command: FocusStartCommand): FocusSessionState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun stopFocus(sessionId: Long): FocusSessionState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun cancelFocus(sessionId: Long): FocusSessionState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun acknowledgeFocus(sessionId: Long): FocusSessionState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun walkState(): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun startWalk(command: WalkStartCommand): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun syncWalk(command: WalkSyncCommand): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun updateWalkLocation(command: WalkLocationCommand): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun decideWalk(command: WalkDecisionCommand): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun finishWalk(routeId: Long): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun acknowledgeWalk(routeId: Long): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun setWalkPrivacy(mode: WalkPrivacy): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun setWalkHome(zoneToken: Long): WalkAdventureState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun openPetPresentation(sessionId: Long): PetPresentationState =
+        throw TransportException("firmware_operation_unavailable")
+    suspend fun readPetPresentation(
+        sessionId: Long,
+        offset: Int,
+        bytes: Int,
+        expectedFrameBytes: Int,
+        expectedFrameSha256: String,
+    ): PetPresentationChunk = throw TransportException("firmware_operation_unavailable")
+    suspend fun closePetPresentation(sessionId: Long): Boolean =
         throw TransportException("firmware_operation_unavailable")
     suspend fun forgetController(): ControllerForgetReceipt
 

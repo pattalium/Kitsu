@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="check_kitsu"
+        android:enabled="true"
+        android:icon="@drawable/kitsu_app_icon_monochrome"
+        android:shortcutShortLabel="@string/shortcut_check_short"
+        android:shortcutLongLabel="@string/shortcut_check_long">
+        <intent
+            android:action="ptl.kitsu.app.action.CONFIRM_AUTOMATION"
+            android:targetPackage="ptl.kitsu.app.debug"
+            android:targetClass="ptl.kitsu.app.MainActivity">
+            <extra android:name="ptl.kitsu.app.extra.AUTOMATION_ACTION" android:value="check" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="pet_kitsu"
+        android:enabled="true"
+        android:icon="@drawable/kitsu_app_icon_monochrome"
+        android:shortcutShortLabel="@string/shortcut_pet_short"
+        android:shortcutLongLabel="@string/shortcut_pet_long">
+        <intent
+            android:action="ptl.kitsu.app.action.CONFIRM_AUTOMATION"
+            android:targetPackage="ptl.kitsu.app.debug"
+            android:targetClass="ptl.kitsu.app.MainActivity">
+            <extra android:name="ptl.kitsu.app.extra.AUTOMATION_ACTION" android:value="pet" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="focus_with_kitsu"
+        android:enabled="true"
+        android:icon="@drawable/kitsu_app_icon_monochrome"
+        android:shortcutShortLabel="@string/shortcut_focus_short"
+        android:shortcutLongLabel="@string/shortcut_focus_long">
+        <intent
+            android:action="ptl.kitsu.app.action.CONFIRM_AUTOMATION"
+            android:targetPackage="ptl.kitsu.app.debug"
+            android:targetClass="ptl.kitsu.app.MainActivity">
+            <extra android:name="ptl.kitsu.app.extra.AUTOMATION_ACTION" android:value="focus_25" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="walk_with_kitsu"
+        android:enabled="true"
+        android:icon="@drawable/kitsu_app_icon_monochrome"
+        android:shortcutShortLabel="@string/shortcut_walk_short"
+        android:shortcutLongLabel="@string/shortcut_walk_long">
+        <intent
+            android:action="ptl.kitsu.app.action.CONFIRM_AUTOMATION"
+            android:targetPackage="ptl.kitsu.app.debug"
+            android:targetClass="ptl.kitsu.app.MainActivity">
+            <extra android:name="ptl.kitsu.app.extra.AUTOMATION_ACTION" android:value="walk" />
+        </intent>
+    </shortcut>
+</shortcuts>

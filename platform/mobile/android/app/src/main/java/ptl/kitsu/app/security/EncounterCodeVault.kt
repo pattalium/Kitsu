@@ -137,6 +137,7 @@ class AndroidKeystoreEncounterCodeVault(context: Context) : EncounterCodeVault {
             cipher.init(Cipher.ENCRYPT_MODE, secretKey())
             cipher.updateAAD(FILE_HEADER)
             val ciphertext = cipher.doFinal(plaintext)
+            file.parentFile?.let { Files.createDirectories(it.toPath()) }
             val temporary = File(file.parentFile, "${file.name}.tmp")
             temporary.outputStream().use { output ->
                 output.write(FILE_HEADER)
