@@ -474,7 +474,12 @@ ProtocolResult calculateEnvelopeMac(
 
 bool roleAllowed(const char* role) {
   return role && (strcmp(role, "device") == 0 ||
-                  strcmp(role, "client") == 0 || strcmp(role, "ok") == 0);
+                   strcmp(role, "client") == 0 || strcmp(role, "ok") == 0);
+}
+
+bool controllerRoleAllowed(const char* role) {
+  return role && (strcmp(role, "owner") == 0 ||
+                  strcmp(role, "caretaker") == 0);
 }
 
 }  // namespace
@@ -1027,6 +1032,49 @@ ProtocolResult makePairingProof(
   const CryptoPart parts[] = {
       {domain, sizeof(domain)},
       {reinterpret_cast<const uint8_t*>(role), strlen(role)},
+      {&separator, 1U},
+      {controllerId, 16U},
+      {root, kEnvelopeKeyBytes},
+      {reinterpret_cast<const uint8_t*>(deviceUid), 6U},
+      {clientNonce, 16U},
+      {deviceNonce, 16U},
+  };
+  return crypto.hmacSha256(root, parts, sizeof(parts) / sizeof(parts[0]),
+                           output)
+      ? ProtocolResult::Ok
+      : ProtocolResult::CryptoFailed;
+}
+
+ProtocolResult makeRoleBoundPairingProof(
+    const uint8_t root[kEnvelopeKeyBytes], const char* proofRole,
+    const char* controllerRole, const uint8_t controllerId[16],
+    const char deviceUid[7], const uint8_t clientNonce[16],
+    const uint8_t deviceNonce[16], CompanionCrypto& crypto,
+    uint8_t output[kEnvelopeMacBytes]) {
+  if (!root || !roleAllowed(proofRole) ||
+      !controllerRoleAllowed(controllerRole) || !controllerId || !deviceUid ||
+      !clientNonce || !deviceNonce || !output) {
+    return ProtocolResult::InvalidArgument;
+  }
+  if (deviceUid[0] != 'K' || deviceUid[1] != 'T' ||
+      deviceUid[6] != '\0') {
+    return ProtocolResult::InvalidArgument;
+  }
+  for (size_t i = 2U; i < 6U; ++i) {
+    const char c = deviceUid[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) {
+      return ProtocolResult::InvalidArgument;
+    }
+  }
+  static const uint8_t domain[] = {'K', 'I', 'T', 'S', 'U', '-', 'P', 'A',
+                                   'I', 'R', '-', '2', 0};
+  const uint8_t separator = 0U;
+  const CryptoPart parts[] = {
+      {domain, sizeof(domain)},
+      {reinterpret_cast<const uint8_t*>(proofRole), strlen(proofRole)},
+      {&separator, 1U},
+      {reinterpret_cast<const uint8_t*>(controllerRole),
+       strlen(controllerRole)},
       {&separator, 1U},
       {controllerId, 16U},
       {root, kEnvelopeKeyBytes},

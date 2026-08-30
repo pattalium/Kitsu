@@ -66,7 +66,7 @@ def cpp_function(source: str, signature: str) -> str:
 
 class RxObservabilitySourceTests(unittest.TestCase):
     def test_version_and_ci_identity_are_current(self) -> None:
-        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.3"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.4"', MAIN)
         self.assertIn(
             'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
             MAIN,

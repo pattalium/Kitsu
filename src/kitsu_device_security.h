@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "kitsu_controller_permissions.h"
 #include "kitsu_reflashable_profile.h"
 
 namespace kitsu868 {
@@ -117,6 +118,12 @@ class KitsuDeviceSecurity {
   bool findControllerRoot(
       const uint8_t controllerId[kKitsuControllerIdBytes],
       uint8_t outputRoot[kKitsuSecretBytes]) const;
+  // Returns the role authenticated by the same durable record as the root.
+  // The role output is invalidated on failure so callers cannot accidentally
+  // retain Owner authority from an earlier lookup.
+  bool findControllerRoot(
+      const uint8_t controllerId[kKitsuControllerIdBytes],
+      uint8_t outputRoot[kKitsuSecretBytes], ControllerRole& outputRole) const;
 
   SecurityResult deriveJournalKey(uint8_t output[kKitsuSecretBytes]);
 
@@ -130,7 +137,8 @@ class KitsuDeviceSecurity {
       const uint8_t controllerId[kKitsuControllerIdBytes],
       const uint8_t pendingRoot[kKitsuSecretBytes],
       bool secureConnections, bool linkEncrypted, bool bonded,
-      bool physicalConfirmed, bool pairCommitVerified);
+      bool physicalConfirmed, bool pairCommitVerified,
+      ControllerRole role = ControllerRole::Owner);
   SecurityResult revokeControllerAfterPhysicalConfirmation(
       const uint8_t controllerId[kKitsuControllerIdBytes],
       bool physicalConfirmed);
@@ -151,6 +159,7 @@ class KitsuDeviceSecurity {
     uint8_t deviceSecret[kKitsuSecretBytes]{};
     struct Controller {
       bool valid = false;
+      ControllerRole role = ControllerRole::Owner;
       uint8_t id[kKitsuControllerIdBytes]{};
       uint8_t root[kKitsuSecretBytes]{};
     } controllers[kKitsuControllerCapacity]{};

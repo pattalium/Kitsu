@@ -23,6 +23,9 @@ TRACKER_HEADER = (ROOT / "src" / "kitsu_channel_repeat_tracker.h").read_text(
 )
 MAIN = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
 SESSION = (ROOT / "src" / "kitsu_ble_session.cpp").read_text(encoding="utf-8")
+PERMISSIONS = (ROOT / "src" / "kitsu_controller_permissions.cpp").read_text(
+    encoding="utf-8"
+)
 DISPATCHER = (ROOT / "lib" / "MeshCore" / "src" / "Dispatcher.cpp").read_text(
     encoding="utf-8"
 )
@@ -232,7 +235,7 @@ class MessagesV3CompatibilitySourceTests(unittest.TestCase):
         self.assertIn("kMessagesV3PageItems", v3_page)
         self.assertIn("kMessagesPageTailReserveBytes", v3_page)
 
-        allowed = cpp_function(SESSION, "bool operationAllowed(")
+        allowed = PERMISSIONS
         handler = cpp_function(
             MAIN,
             "__attribute__((noinline)) bool handleCompanionBleRequest(\n"
@@ -246,7 +249,7 @@ class MessagesV3CompatibilitySourceTests(unittest.TestCase):
         self.assertIn("buildMessagesV3", handler)
         # This capability is exposed only once the coordinated v3 release is
         # promoted; strict 0.15.x companions continue to request messages.v2.
-        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.3"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.4"', MAIN)
         self.assertIn(
             'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
             MAIN,
@@ -282,7 +285,7 @@ class MessagesV3CompatibilitySourceTests(unittest.TestCase):
         self.assertIn("kitsu.messages.v4", v4_page)
         self.assertIn("kMessagesV4PageItems", v4_page)
         self.assertIn("kMaximumEnvelopePayloadBytes", v4_page)
-        allowed = cpp_function(SESSION, "bool operationAllowed(")
+        allowed = PERMISSIONS
         self.assertIn('"messages.get.v4"', allowed)
 
     def test_v4_worst_case_three_pages_drain_all_24_rows(self) -> None:

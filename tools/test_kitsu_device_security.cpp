@@ -6,6 +6,7 @@
 using kitsu868::connectivity::DeviceSecurityPlatform;
 using kitsu868::connectivity::DeviceSecurityStorage;
 using kitsu868::connectivity::KitsuDeviceSecurity;
+using kitsu868::connectivity::ControllerRole;
 using kitsu868::connectivity::SecurityMode;
 using kitsu868::connectivity::SecurityResult;
 using kitsu868::connectivity::kKitsuControllerIdBytes;
@@ -189,6 +190,7 @@ constexpr size_t kRetiredKeyOffset = 60U;
 constexpr size_t kRetiredKeyBytes = 32U;
 constexpr size_t kControllerTableOffset = 92U;
 constexpr size_t kControllerTableBytes = 208U;
+constexpr size_t kControllerRecordBytes = 52U;
 constexpr size_t kRetiredCountersOffset = 300U;
 constexpr size_t kRetiredCountersBytes = 16U;
 
@@ -243,6 +245,24 @@ bool openActivePlaintext(const MemoryStorage& storage,
   const int8_t active = security.status().activeSlot;
   return active >= 0 && openSlotPlaintext(
       storage, static_cast<uint8_t>(active), platform, output);
+}
+
+bool sealActivePlaintext(MemoryStorage& storage,
+                         const KitsuDeviceSecurity& security,
+                         TestPlatform& platform,
+                         uint8_t plain[kPlainBytes]) {
+  const int8_t active = security.status().activeSlot;
+  if (active < 0) return false;
+  uint8_t* blob = storage.data[static_cast<uint8_t>(active)];
+  writeU32(plain + kPlainCrcOffset,
+           plaintextCrc32(plain, kPlainCrcOffset));
+  uint8_t wrappingKey[kKitsuSecretBytes]{};
+  if (!platform.deriveWrappingKey(kHardwareId, wrappingKey)) return false;
+  const bool sealed = platform.seal(
+      wrappingKey, readU32(blob + 8U), blob + 16U, plain, kPlainBytes,
+      blob + kOuterHeaderBytes, blob + 28U);
+  memset(wrappingKey, 0, sizeof(wrappingKey));
+  return sealed;
 }
 
 bool retiredRangesAreZero(const uint8_t plain[kPlainBytes]) {
@@ -373,8 +393,10 @@ void testControllerPhysicalGateAndRevocation() {
 
   uint8_t copied[kKitsuSecretBytes]{};
   uint8_t copiedId[kKitsuControllerIdBytes]{};
+  ControllerRole copiedRole = static_cast<ControllerRole>(0xFFU);
   assert(security.controllerAt(0U, copiedId));
-  assert(security.findControllerRoot(controllerId, copied));
+  assert(security.findControllerRoot(controllerId, copied, copiedRole));
+  assert(copiedRole == ControllerRole::Owner);
   assert(memcmp(copied, capability, sizeof(copied)) == 0);
   assert(memcmp(copiedId, controllerId, sizeof(copiedId)) == 0);
   assert(!storage.contains(capability, sizeof(capability)));
@@ -383,8 +405,10 @@ void testControllerPhysicalGateAndRevocation() {
   assert(restored.begin(storage, platform, kHardwareId) ==
          SecurityResult::OkReflashable);
   memset(copied, 0, sizeof(copied));
+  copiedRole = static_cast<ControllerRole>(0xFFU);
   assert(restored.controllerAt(0U, copiedId));
-  assert(restored.findControllerRoot(controllerId, copied));
+  assert(restored.findControllerRoot(controllerId, copied, copiedRole));
+  assert(copiedRole == ControllerRole::Owner);
   assert(memcmp(copied, capability, sizeof(copied)) == 0);
   assert(restored.revokeControllerAfterPhysicalConfirmation(controllerId,
                                                              false) ==
@@ -411,6 +435,100 @@ void testControllerPhysicalGateAndRevocation() {
   assert(restored.revokeAuthenticatedController(controllerId) ==
          SecurityResult::Ok);
   assertAllStoredGenerationsSanitized(storage, platform, true);
+}
+
+void testControllerRolesPersistInReservedPadding() {
+  MemoryStorage storage;
+  TestPlatform platform;
+  KitsuDeviceSecurity security;
+  assert(security.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+
+  uint8_t ownerId[kKitsuControllerIdBytes]{};
+  uint8_t ownerRoot[kKitsuSecretBytes]{};
+  uint8_t caretakerId[kKitsuControllerIdBytes]{};
+  uint8_t caretakerRoot[kKitsuSecretBytes]{};
+  memset(ownerId, 0x11, sizeof(ownerId));
+  memset(ownerRoot, 0xa1, sizeof(ownerRoot));
+  memset(caretakerId, 0x22, sizeof(caretakerId));
+  memset(caretakerRoot, 0xb2, sizeof(caretakerRoot));
+  assert(security.commitControllerAfterPairing(
+             ownerId, ownerRoot, true, true, true, true, true) ==
+         SecurityResult::Ok);
+  assert(security.commitControllerAfterPairing(
+             caretakerId, caretakerRoot, true, true, true, true, true,
+             ControllerRole::Caretaker) == SecurityResult::Ok);
+
+  uint8_t plain[kPlainBytes]{};
+  assert(openActivePlaintext(storage, security, platform, plain));
+  const size_t ownerRole = kControllerTableOffset + 1U;
+  const size_t caretakerRole =
+      kControllerTableOffset + kControllerRecordBytes + 1U;
+  assert(plain[ownerRole] == static_cast<uint8_t>(ControllerRole::Owner));
+  assert(plain[ownerRole + 1U] == 0U && plain[ownerRole + 2U] == 0U);
+  assert(plain[caretakerRole] ==
+         static_cast<uint8_t>(ControllerRole::Caretaker));
+  assert(plain[caretakerRole + 1U] == 0U &&
+         plain[caretakerRole + 2U] == 0U);
+
+  KitsuDeviceSecurity restored;
+  assert(restored.begin(storage, platform, kHardwareId) ==
+         SecurityResult::OkReflashable);
+  uint8_t recovered[kKitsuSecretBytes]{};
+  ControllerRole role = static_cast<ControllerRole>(0xFFU);
+  assert(restored.findControllerRoot(ownerId, recovered, role));
+  assert(role == ControllerRole::Owner);
+  assert(memcmp(recovered, ownerRoot, sizeof(recovered)) == 0);
+  assert(restored.findControllerRoot(caretakerId, recovered, role));
+  assert(role == ControllerRole::Caretaker);
+  assert(memcmp(recovered, caretakerRoot, sizeof(recovered)) == 0);
+
+  uint8_t invalidId[kKitsuControllerIdBytes]{};
+  uint8_t invalidRoot[kKitsuSecretBytes]{};
+  memset(invalidId, 0x33, sizeof(invalidId));
+  memset(invalidRoot, 0xc3, sizeof(invalidRoot));
+  assert(restored.commitControllerAfterPairing(
+             invalidId, invalidRoot, true, true, true, true, true,
+             static_cast<ControllerRole>(0x7fU)) ==
+         SecurityResult::InvalidArgument);
+  role = ControllerRole::Owner;
+  assert(!restored.findControllerRoot(invalidId, recovered, role));
+  assert(role == static_cast<ControllerRole>(0xFFU));
+}
+
+void testUnsupportedControllerRoleEncodingFailsClosed() {
+  for (uint8_t variant = 0U; variant < 2U; ++variant) {
+    MemoryStorage storage;
+    TestPlatform platform;
+    KitsuDeviceSecurity security;
+    assert(security.begin(storage, platform, kHardwareId) ==
+           SecurityResult::OkReflashable);
+    uint8_t controllerId[kKitsuControllerIdBytes]{};
+    uint8_t controllerRoot[kKitsuSecretBytes]{};
+    memset(controllerId, 0x44, sizeof(controllerId));
+    memset(controllerRoot, 0xd4, sizeof(controllerRoot));
+    assert(security.commitControllerAfterPairing(
+               controllerId, controllerRoot, true, true, true, true, true) ==
+           SecurityResult::Ok);
+
+    uint8_t plain[kPlainBytes]{};
+    assert(openActivePlaintext(storage, security, platform, plain));
+    const size_t padding = kControllerTableOffset + 1U;
+    if (variant == 0U) {
+      plain[padding] = 2U;
+    } else {
+      plain[padding + 1U] = 1U;
+    }
+    assert(sealActivePlaintext(storage, security, platform, plain));
+    const uint8_t inactive =
+        static_cast<uint8_t>(security.status().activeSlot ^ 1);
+    assert(storage.clearSlot(inactive));
+
+    KitsuDeviceSecurity refuses;
+    assert(refuses.begin(storage, platform, kHardwareId) ==
+           SecurityResult::CorruptStorage);
+    assert(!refuses.ready());
+  }
 }
 
 void testRetiredNetworkMaterialIsTransactionallyRemoved() {
@@ -683,6 +801,8 @@ int main() {
   testProfileGates();
   testReflashableCreationRecoveryAndDerivation();
   testControllerPhysicalGateAndRevocation();
+  testControllerRolesPersistInReservedPadding();
+  testUnsupportedControllerRoleEncodingFailsClosed();
   testRetiredNetworkMaterialIsTransactionallyRemoved();
   testFourControllerLimitHasNoEviction();
   testPhysicalAllControllerRecoveryPreservesDeviceMaterial();

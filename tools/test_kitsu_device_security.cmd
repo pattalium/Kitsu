@@ -19,6 +19,7 @@ if errorlevel 1 exit /b %ERRORLEVEL%
 
 pushd "%OUT_DIR%"
 cl /nologo /std:c++17 /EHsc /W4 /WX ^
+  "%PROJECT%\src\kitsu_controller_permissions.cpp" ^
   "%PROJECT%\src\kitsu_device_security.cpp" ^
   "%PROJECT%\tools\test_kitsu_device_security.cpp" ^
   /Fe:"%OUT_DIR%\kitsu_device_security_test.exe"

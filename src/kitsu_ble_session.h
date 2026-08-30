@@ -30,7 +30,14 @@ struct BleSessionStatus {
   bool secureLink = false;
   bool pairingWindowOpen = false;
   bool physicalConfirmationPending = false;
+  bool pairingCompleted = false;
+  // Meaningful only while a pairing window/request/result is active. The
+  // locally selected value is never taken from a client request.
+  ControllerRole pairingRole = static_cast<ControllerRole>(0xFFU);
   bool applicationAuthenticated = false;
+  // Meaningful only while applicationAuthenticated is true. Otherwise the
+  // value is an invalid fail-closed sentinel, never an implied Owner role.
+  ControllerRole controllerRole = static_cast<ControllerRole>(0xFFU);
   // True only after one authenticated request has been verified and its
   // matching response has been accepted by the BLE transport on this link.
   bool authenticatedRequestBarrier = false;
@@ -62,6 +69,18 @@ class BleOperationDelegate {
       const companion::DecodedEnvelope& request, const uint8_t* payload,
       size_t payloadBytes, uint8_t* responsePayload,
       size_t responseCapacity, size_t& responseBytes) = 0;
+
+  // Role-aware integration point. Existing firmware delegates remain source
+  // compatible through the default forwarding implementation; authorization
+  // has already succeeded before this method is called.
+  virtual bool handleAuthorizedBleRequest(
+      ControllerRole role, const companion::DecodedEnvelope& request,
+      const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
+      size_t responseCapacity, size_t& responseBytes) {
+    (void)role;
+    return handleBleRequest(request, payload, payloadBytes, responsePayload,
+                            responseCapacity, responseBytes);
+  }
 };
 
 // Host-testable application session layered above the encrypted/bonded GATT
@@ -84,13 +103,17 @@ class KitsuBleSession {
                                bool authenticated, bool bonded,
                                uint32_t nowMillis);
   void onLinkClosed(uint32_t nowMillis);
-  void setPairingWindow(bool open, uint32_t remainingMs,
-                        uint32_t nowMillis);
+  // Owner windows use the frozen v1 pairing exchange. Caretaker windows use
+  // v2: pair_request has no role selector, while grant/commit/ok echo the
+  // locally selected "caretaker" role and bind it into every pairing proof.
+  void setPairingWindow(
+      bool open, uint32_t remainingMs, uint32_t nowMillis,
+      ControllerRole role = ControllerRole::Owner);
   void onFrame(const uint8_t* json, size_t jsonBytes,
                uint32_t nowMillis);
   void loop(uint32_t nowMillis);
 
-  // Called only from the explicit Pair Phone screen after a PRG hold.
+  // Called only from an explicit local pairing screen after a PRG hold.
   bool confirmPendingPairing(uint32_t nowMillis);
   void cancelPendingPairing();
 
@@ -113,6 +136,9 @@ class KitsuBleSession {
                          uint32_t nowMillis);
   bool handlePairCommit(const uint8_t* json, size_t jsonBytes,
                         uint32_t nowMillis);
+  bool makePendingPairingProof(
+      const char* proofRole,
+      uint8_t output[companion::kEnvelopeMacBytes]);
   bool handleAuthenticatedEnvelope(const uint8_t* json, size_t jsonBytes,
                                    uint32_t nowMillis);
   bool sendAuthenticated( companion::EnvelopeChannel channel,
@@ -131,7 +157,9 @@ class KitsuBleSession {
   bool linkAuthenticated_ = false;
   bool linkBonded_ = false;
   bool pairingWindowOpen_ = false;
+  ControllerRole pairingWindowRole_ = static_cast<ControllerRole>(0xFFU);
   bool controllerKnown_ = false;
+  ControllerRole controllerRole_ = static_cast<ControllerRole>(0xFFU);
   bool authenticatedRequestBarrier_ = false;
   uint8_t proofFailures_ = 0U;
   uint32_t stateDeadline_ = 0U;
@@ -153,6 +181,10 @@ class KitsuBleSession {
   uint8_t pendingControllerRoot_[32]{};
   uint8_t pendingClientNonce_[16]{};
   uint8_t pendingDeviceNonce_[16]{};
+  ControllerRole pendingPairingRole_ = static_cast<ControllerRole>(0xFFU);
+  uint8_t pendingPairingVersion_ = 0U;
+  bool pairingCompleted_ = false;
+  ControllerRole completedPairingRole_ = static_cast<ControllerRole>(0xFFU);
 
   uint8_t payloadScratch_[companion::kMaximumEnvelopePayloadBytes]{};
   uint8_t responseScratch_[companion::kMaximumEnvelopePayloadBytes]{};

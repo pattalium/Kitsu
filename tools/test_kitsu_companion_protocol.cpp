@@ -362,6 +362,40 @@ void testHandshakeAndPairingVectors() {
              root, "device", controllerId, "kt1234", clientNonce,
              deviceNonce, crypto, pairDevice) ==
          ProtocolResult::InvalidArgument);
+
+  uint8_t caretakerDevice[32]{};
+  uint8_t caretakerClient[32]{};
+  uint8_t caretakerOk[32]{};
+  uint8_t ownerDevice[32]{};
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             root, "device", "caretaker", controllerId, deviceUid,
+             clientNonce, deviceNonce, crypto, caretakerDevice) ==
+         ProtocolResult::Ok);
+  assert(hexEquals(caretakerDevice, sizeof(caretakerDevice),
+                   "1cef77337d81072efb9ed54a921c30fd3c01a092672f947eeaf103772658b15a"));
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             root, "client", "caretaker", controllerId, deviceUid,
+             clientNonce, deviceNonce, crypto, caretakerClient) ==
+         ProtocolResult::Ok);
+  assert(hexEquals(caretakerClient, sizeof(caretakerClient),
+                   "8e0977742ba1aab1c0bb2795147ac2e22f6509fb751e99d6000de8e952598e87"));
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             root, "ok", "caretaker", controllerId, deviceUid, clientNonce,
+             deviceNonce, crypto, caretakerOk) == ProtocolResult::Ok);
+  assert(hexEquals(caretakerOk, sizeof(caretakerOk),
+                   "ac26365b6b415d9698931ab15a8fe02a2a56cd8016919d7119b41d1d4e628451"));
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             root, "device", "owner", controllerId, deviceUid, clientNonce,
+             deviceNonce, crypto, ownerDevice) == ProtocolResult::Ok);
+  assert(memcmp(caretakerDevice, caretakerClient, sizeof(caretakerDevice)) !=
+         0);
+  assert(memcmp(caretakerClient, caretakerOk, sizeof(caretakerClient)) != 0);
+  assert(memcmp(caretakerDevice, ownerDevice, sizeof(caretakerDevice)) != 0);
+  assert(memcmp(caretakerDevice, pairDevice, sizeof(caretakerDevice)) != 0);
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             root, "device", "admin", controllerId, deviceUid, clientNonce,
+             deviceNonce, crypto, ownerDevice) ==
+         ProtocolResult::InvalidArgument);
 }
 
 }  // namespace

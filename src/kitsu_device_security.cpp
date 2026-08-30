@@ -178,6 +178,11 @@ bool KitsuDeviceSecurity::decodeLoaded(size_t bytes,
   cursor += kRetiredKeyBytes;
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
     material_.controllers[i].valid = cryptScratch_[cursor] != 0U;
+    if (decodeControllerRolePadding(
+            cryptScratch_ + cursor + 1U, kControllerRolePaddingBytes,
+            material_.controllers[i].role) != ControllerRoleCodecResult::Ok) {
+      return false;
+    }
     cursor += 4U;
     memcpy(material_.controllers[i].id, cryptScratch_ + cursor,
            sizeof(material_.controllers[i].id));
@@ -212,6 +217,11 @@ bool KitsuDeviceSecurity::encode(uint32_t generation, size_t& bytes) {
   cursor += kRetiredKeyBytes;
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
     cryptScratch_[cursor] = material_.controllers[i].valid ? 1U : 0U;
+    if (encodeControllerRolePadding(
+            material_.controllers[i].role, cryptScratch_ + cursor + 1U,
+            kControllerRolePaddingBytes) != ControllerRoleCodecResult::Ok) {
+      return false;
+    }
     cursor += 4U;
     memcpy(cryptScratch_ + cursor, material_.controllers[i].id,
            sizeof(material_.controllers[i].id));
@@ -445,6 +455,14 @@ bool KitsuDeviceSecurity::controllerAtSlot(
 bool KitsuDeviceSecurity::findControllerRoot(
     const uint8_t controllerId[kKitsuControllerIdBytes],
     uint8_t outputRoot[kKitsuSecretBytes]) const {
+  ControllerRole ignored = static_cast<ControllerRole>(0xFFU);
+  return findControllerRoot(controllerId, outputRoot, ignored);
+}
+
+bool KitsuDeviceSecurity::findControllerRoot(
+    const uint8_t controllerId[kKitsuControllerIdBytes],
+    uint8_t outputRoot[kKitsuSecretBytes], ControllerRole& outputRole) const {
+  outputRole = static_cast<ControllerRole>(0xFFU);
   if (!status_.begun || !controllerId || !outputRoot) return false;
   memset(outputRoot, 0, kKitsuSecretBytes);
   for (size_t i = 0U; i < kKitsuControllerCapacity; ++i) {
@@ -453,6 +471,7 @@ bool KitsuDeviceSecurity::findControllerRoot(
                kKitsuControllerIdBytes) == 0) {
       memcpy(outputRoot, material_.controllers[i].root,
              kKitsuSecretBytes);
+      outputRole = material_.controllers[i].role;
       return true;
     }
   }
@@ -497,9 +516,12 @@ SecurityResult KitsuDeviceSecurity::commitControllerAfterPairing(
     const uint8_t controllerId[kKitsuControllerIdBytes],
     const uint8_t pendingRoot[kKitsuSecretBytes], bool secureConnections,
     bool linkEncrypted, bool bonded, bool physicalConfirmed,
-    bool pairCommitVerified) {
+    bool pairCommitVerified, ControllerRole role) {
   if (!status_.begun) return setResult(SecurityResult::NotBegun);
   if (!controllerId || !pendingRoot) {
+    return setResult(SecurityResult::InvalidArgument);
+  }
+  if (role != ControllerRole::Owner && role != ControllerRole::Caretaker) {
     return setResult(SecurityResult::InvalidArgument);
   }
   if (!secureConnections || !linkEncrypted || !bonded ||
@@ -541,6 +563,7 @@ SecurityResult KitsuDeviceSecurity::commitControllerAfterPairing(
   Material::Controller& controller =
       material_.controllers[static_cast<size_t>(target)];
   controller.valid = true;
+  controller.role = role;
   memcpy(controller.id, controllerId, sizeof(controller.id));
   memcpy(controller.root, pendingRoot, sizeof(controller.root));
   const SecurityResult persisted = persist();

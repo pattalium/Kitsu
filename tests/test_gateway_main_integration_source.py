@@ -6,6 +6,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
 SESSION = (ROOT / "src" / "kitsu_ble_session.cpp").read_text(encoding="utf-8")
+PERMISSIONS = (ROOT / "src" / "kitsu_controller_permissions.cpp").read_text(
+    encoding="utf-8"
+)
 MESSAGE_READ = (ROOT / "src" / "kitsu_message_read_contract.cpp").read_text(
     encoding="utf-8"
 )
@@ -120,9 +123,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
             self.assertNotIn(forbidden, MAIN)
 
     def test_ble_surface_has_local_ops_and_authenticated_self_forget(self):
-        allowed = SESSION.split("bool operationAllowed", 1)[1].split(
-            "}  // namespace", 1
-        )[0]
+        allowed = PERMISSIONS
         for operation in (
             "state.get",
             "history.get",
@@ -359,7 +360,7 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn(
             "kitsu868::companion::kMaximumEnvelopePayloadBytes", messages
         )
-        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.3"', MAIN)
+        self.assertIn('#define KITSU_FIRMWARE_VERSION_LITERAL "0.20.4"', MAIN)
         self.assertIn(
             'constexpr char FIRMWARE_VERSION[] = KITSU_FIRMWARE_VERSION_LITERAL;',
             MAIN,
@@ -502,18 +503,16 @@ class LocalOnlyMainIntegrationSourceTests(unittest.TestCase):
         self.assertIn("touchChatJournal(chatJournal[index])", apply_read)
 
     def test_authenticated_mark_read_is_bounded_atomic_and_updates_physical_unread(self):
-        allowed = SESSION.split("bool operationAllowed", 1)[1].split(
-            "}  // namespace", 1
-        )[0]
+        allowed = PERMISSIONS
         self.assertIn('"messages.mark_read"', allowed)
         authenticated = SESSION.split(
             "bool KitsuBleSession::handleAuthenticatedEnvelope", 1
         )[1].split("void KitsuBleSession::onFrame", 1)[0]
-        self.assertIn("operationAllowed(request.operation)", authenticated)
-        self.assertIn("operations_->handleBleRequest(", authenticated)
+        self.assertIn("controllerPermission(controllerRole_", authenticated)
+        self.assertIn("operations_->handleAuthorizedBleRequest(", authenticated)
         preauthenticated_dispatch = SESSION.split(
             "bool KitsuBleSession::handleAuthenticatedEnvelope", 1
-        )[0].split("bool operationAllowed", 1)[0]
+        )[0]
         self.assertNotIn("messages.mark_read", preauthenticated_dispatch)
 
         mark_read_contract = MAIN.split("void buildMarkReadResponse", 1)[1].split(

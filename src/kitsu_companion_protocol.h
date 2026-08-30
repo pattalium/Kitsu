@@ -175,5 +175,16 @@ ProtocolResult makePairingProof(
     const uint8_t clientNonce[16], const uint8_t deviceNonce[16],
     CompanionCrypto& crypto, uint8_t output[kEnvelopeMacBytes]);
 
+// Pairing v2 keeps the frozen v1 transcript untouched and adds an explicit
+// controller-role binding under a new domain.  controllerRole is the role
+// selected locally on Kitsu ("owner" or "caretaker"), never a role chosen by
+// the remote client.
+ProtocolResult makeRoleBoundPairingProof(
+    const uint8_t root[kEnvelopeKeyBytes], const char* proofRole,
+    const char* controllerRole, const uint8_t controllerId[16],
+    const char deviceUid[7], const uint8_t clientNonce[16],
+    const uint8_t deviceNonce[16], CompanionCrypto& crypto,
+    uint8_t output[kEnvelopeMacBytes]);
+
 }  // namespace companion
 }  // namespace kitsu868

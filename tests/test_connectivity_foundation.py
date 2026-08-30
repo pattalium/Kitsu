@@ -128,6 +128,9 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
     def test_controller_recovery_is_heltec_only_bounded_and_physical(self) -> None:
         main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
         session = (ROOT / "src/kitsu_ble_session.cpp").read_text(encoding="utf-8")
+        permissions = (ROOT / "src/kitsu_controller_permissions.cpp").read_text(
+            encoding="utf-8"
+        )
         security = (ROOT / "src/kitsu_device_security.cpp").read_text(
             encoding="utf-8"
         )
@@ -181,9 +184,7 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         self.assertIn("REBOOT NOW", main)
         self.assertNotIn("controllerRecoveryTargetId", session)
 
-        allowed = session.split("bool operationAllowed", 1)[1].split(
-            "}  // namespace", 1
-        )[0]
+        allowed = permissions
         self.assertIn('"controller.forget"', allowed)
         for forbidden in (
             "controller.list",

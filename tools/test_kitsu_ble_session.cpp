@@ -14,6 +14,7 @@ using kitsu868::companion::ProtocolResult;
 using kitsu868::connectivity::BleOperationDelegate;
 using kitsu868::connectivity::BleSessionState;
 using kitsu868::connectivity::BleSessionTransport;
+using kitsu868::connectivity::ControllerRole;
 using kitsu868::connectivity::DeviceSecurityPlatform;
 using kitsu868::connectivity::DeviceSecurityStorage;
 using kitsu868::connectivity::KitsuBleSession;
@@ -193,6 +194,7 @@ class MemoryStorage final : public DeviceSecurityStorage {
     if (slot >= kSecuritySlots || inputBytes > kSecurityBlobCapacity) {
       return false;
     }
+    if (failWrite) return false;
     memcpy(data[slot], input, inputBytes);
     sizes[slot] = inputBytes;
     return true;
@@ -207,6 +209,7 @@ class MemoryStorage final : public DeviceSecurityStorage {
 
   uint8_t data[kSecuritySlots][kSecurityBlobCapacity]{};
   size_t sizes[kSecuritySlots]{};
+  bool failWrite = false;
   bool failClear = false;
 };
 
@@ -251,9 +254,19 @@ class TestOperations final : public BleOperationDelegate {
     return true;
   }
 
+  bool handleAuthorizedBleRequest(
+      ControllerRole role, const DecodedEnvelope& request,
+      const uint8_t* payload, size_t payloadBytes, uint8_t* response,
+      size_t responseCapacity, size_t& responseBytes) override {
+    lastRole = role;
+    return handleBleRequest(request, payload, payloadBytes, response,
+                            responseCapacity, responseBytes);
+  }
+
   uint32_t calls = 0U;
   std::string lastOperation;
   std::string lastPayload;
+  ControllerRole lastRole = static_cast<ControllerRole>(0xFFU);
 };
 
 std::string b64(const uint8_t* input, size_t bytes) {
@@ -323,6 +336,11 @@ void pairController(Fixture& fixture, uint8_t controllerId[16],
   assert(fixture.security.status().controllerCount == controllerCountBefore);
   assert(fixture.transport.frames.back().find("\"pair_pending\"") !=
          std::string::npos);
+  assert(fixture.transport.frames.back().find("\"v\":1") !=
+         std::string::npos);
+  assert(fixture.transport.frames.back().find("\"role\"") ==
+         std::string::npos);
+  const std::string pending = fixture.transport.frames.back();
 
   assert(fixture.session.confirmPendingPairing(now + 2U));
   const std::string grant = fixture.transport.frames.back();
@@ -336,6 +354,10 @@ void pairController(Fixture& fixture, uint8_t controllerId[16],
   decodeField(grant, "device_nonce_b64", deviceNonce, 16U);
   decodeField(grant, "proof_b64", suppliedDeviceProof, 32U);
   assert(memcmp(echoedClientNonce, clientNonce, sizeof(clientNonce)) == 0);
+  assert(pending ==
+         "{\"v\":1,\"type\":\"pair_pending\",\"device_nonce_b64\":\"" +
+             b64(deviceNonce, sizeof(deviceNonce)) +
+             "\",\"expires_in_ms\":59999}");
   uint8_t expectedDeviceProof[32]{};
   assert(kitsu868::companion::makePairingProof(
              controllerRoot, "device", controllerId, "KT1234", clientNonce,
@@ -343,6 +365,16 @@ void pairController(Fixture& fixture, uint8_t controllerId[16],
          ProtocolResult::Ok);
   assert(memcmp(suppliedDeviceProof, expectedDeviceProof,
                 sizeof(expectedDeviceProof)) == 0);
+  const std::string expectedGrant =
+      "{\"v\":1,\"type\":\"pair_grant\",\"controller_id_b64\":\"" +
+      b64(controllerId, 16U) + "\",\"root_b64\":\"" +
+      b64(controllerRoot, 32U) +
+      "\",\"device_uid\":\"KT1234\",\"client_nonce_b64\":\"" +
+      b64(clientNonce, sizeof(clientNonce)) +
+      "\",\"device_nonce_b64\":\"" +
+      b64(deviceNonce, sizeof(deviceNonce)) + "\",\"proof_b64\":\"" +
+      b64(expectedDeviceProof, sizeof(expectedDeviceProof)) + "\"}";
+  assert(grant == expectedGrant);
 
   uint8_t clientProof[32]{};
   assert(kitsu868::companion::makePairingProof(
@@ -355,11 +387,137 @@ void pairController(Fixture& fixture, uint8_t controllerId[16],
                           commit.size(), now + 3U);
   assert(fixture.transport.frames.back().find("\"pair_ok\"") !=
          std::string::npos);
+  uint8_t ownerOkProof[32]{};
+  assert(kitsu868::companion::makePairingProof(
+             controllerRoot, "ok", controllerId, "KT1234", clientNonce,
+             deviceNonce, fixture.crypto, ownerOkProof) == ProtocolResult::Ok);
+  assert(fixture.transport.frames.back() ==
+         "{\"v\":1,\"type\":\"pair_ok\",\"proof_b64\":\"" +
+             b64(ownerOkProof, sizeof(ownerOkProof)) + "\"}");
+  assert(fixture.session.status(now + 3U).pairingCompleted);
+  assert(fixture.session.status(now + 3U).pairingRole ==
+         ControllerRole::Owner);
   assert(fixture.security.status().controllerCount ==
          controllerCountBefore + 1U);
   uint8_t persisted[32]{};
-  assert(fixture.security.findControllerRoot(controllerId, persisted));
+  ControllerRole role = static_cast<ControllerRole>(0xFFU);
+  assert(fixture.security.findControllerRoot(controllerId, persisted, role));
+  assert(role == ControllerRole::Owner);
   assert(memcmp(persisted, controllerRoot, sizeof(persisted)) == 0);
+}
+
+struct CaretakerPairingMaterial {
+  uint8_t controllerId[16]{};
+  uint8_t controllerRoot[32]{};
+  uint8_t clientNonce[16]{};
+  uint8_t deviceNonce[16]{};
+};
+
+void beginCaretakerGrant(Fixture& fixture, uint32_t now, uint8_t nonceSeed,
+                         CaretakerPairingMaterial& material,
+                         bool establishLink = true) {
+  if (establishLink) {
+    fixture.session.onSecureLinkEstablished(true, true, true, true, now);
+  }
+  fixture.session.setPairingWindow(true, 60000U, now,
+                                   ControllerRole::Caretaker);
+  assert(fixture.session.status(now).pairingWindowOpen);
+  assert(fixture.session.status(now).pairingRole ==
+         ControllerRole::Caretaker);
+  for (size_t i = 0U; i < sizeof(material.clientNonce); ++i) {
+    material.clientNonce[i] = static_cast<uint8_t>(nonceSeed + i);
+  }
+  const std::string request =
+      "{\"v\":2,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+      b64(material.clientNonce, sizeof(material.clientNonce)) +
+      "\",\"label\":\"Caretaker phone\",\"platform\":\"android\"}";
+  assert(request.find("\"role\"") == std::string::npos);
+  fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                          request.size(), now + 1U);
+  assert(fixture.session.status(now + 1U).physicalConfirmationPending);
+  assert(fixture.session.status(now + 1U).pairingRole ==
+         ControllerRole::Caretaker);
+  const std::string pending = fixture.transport.frames.back();
+  assert(pending.find("{\"v\":2,\"type\":\"pair_pending\",") == 0U);
+  assert(pending.find("\"role\":\"caretaker\"") != std::string::npos);
+
+  assert(fixture.session.confirmPendingPairing(now + 2U));
+  const std::string grant = fixture.transport.frames.back();
+  decodeField(grant, "controller_id_b64", material.controllerId,
+              sizeof(material.controllerId));
+  decodeField(grant, "root_b64", material.controllerRoot,
+              sizeof(material.controllerRoot));
+  decodeField(grant, "device_nonce_b64", material.deviceNonce,
+              sizeof(material.deviceNonce));
+  uint8_t echoedClientNonce[16]{};
+  uint8_t suppliedDeviceProof[32]{};
+  decodeField(grant, "client_nonce_b64", echoedClientNonce,
+              sizeof(echoedClientNonce));
+  decodeField(grant, "proof_b64", suppliedDeviceProof,
+              sizeof(suppliedDeviceProof));
+  assert(memcmp(echoedClientNonce, material.clientNonce,
+                sizeof(echoedClientNonce)) == 0);
+  assert(pending ==
+         "{\"v\":2,\"type\":\"pair_pending\",\"role\":\"caretaker\","
+         "\"device_nonce_b64\":\"" +
+             b64(material.deviceNonce, sizeof(material.deviceNonce)) +
+             "\",\"expires_in_ms\":59999}");
+  uint8_t expectedDeviceProof[32]{};
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             material.controllerRoot, "device", "caretaker",
+             material.controllerId, "KT1234", material.clientNonce,
+             material.deviceNonce, fixture.crypto, expectedDeviceProof) ==
+         ProtocolResult::Ok);
+  assert(memcmp(suppliedDeviceProof, expectedDeviceProof,
+                sizeof(expectedDeviceProof)) == 0);
+  const std::string expectedGrant =
+      "{\"v\":2,\"type\":\"pair_grant\",\"role\":\"caretaker\","
+      "\"controller_id_b64\":\"" +
+      b64(material.controllerId, sizeof(material.controllerId)) +
+      "\",\"root_b64\":\"" +
+      b64(material.controllerRoot, sizeof(material.controllerRoot)) +
+      "\",\"device_uid\":\"KT1234\",\"client_nonce_b64\":\"" +
+      b64(material.clientNonce, sizeof(material.clientNonce)) +
+      "\",\"device_nonce_b64\":\"" +
+      b64(material.deviceNonce, sizeof(material.deviceNonce)) +
+      "\",\"proof_b64\":\"" +
+      b64(expectedDeviceProof, sizeof(expectedDeviceProof)) + "\"}";
+  assert(grant == expectedGrant);
+}
+
+void commitCaretakerGrant(Fixture& fixture,
+                          const CaretakerPairingMaterial& material,
+                          uint32_t now) {
+  uint8_t clientProof[32]{};
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             material.controllerRoot, "client", "caretaker",
+             material.controllerId, "KT1234", material.clientNonce,
+             material.deviceNonce, fixture.crypto, clientProof) ==
+         ProtocolResult::Ok);
+  const std::string commit =
+      "{\"v\":2,\"type\":\"pair_commit\",\"role\":\"caretaker\","
+      "\"proof_b64\":\"" +
+      b64(clientProof, sizeof(clientProof)) + "\"}";
+  fixture.session.onFrame(reinterpret_cast<const uint8_t*>(commit.data()),
+                          commit.size(), now);
+  uint8_t okProof[32]{};
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             material.controllerRoot, "ok", "caretaker",
+             material.controllerId, "KT1234", material.clientNonce,
+             material.deviceNonce, fixture.crypto, okProof) ==
+         ProtocolResult::Ok);
+  assert(fixture.transport.frames.back() ==
+         "{\"v\":2,\"type\":\"pair_ok\",\"role\":\"caretaker\","
+         "\"proof_b64\":\"" +
+             b64(okProof, sizeof(okProof)) + "\"}");
+  const auto status = fixture.session.status(now);
+  assert(status.pairingCompleted);
+  assert(status.pairingRole == ControllerRole::Caretaker);
+}
+
+std::string caretakerCommitJson(const uint8_t proof[32], const char* role) {
+  return "{\"v\":2,\"type\":\"pair_commit\",\"role\":\"" +
+      std::string(role) + "\",\"proof_b64\":\"" + b64(proof, 32U) + "\"}";
 }
 
 void authenticateController(Fixture& fixture, const uint8_t controllerId[16],
@@ -401,11 +559,43 @@ void authenticateController(Fixture& fixture, const uint8_t controllerId[16],
   assert(fixture.transport.applicationAuthenticated);
   assert(fixture.session.status(2003U).state ==
          BleSessionState::Authenticated);
+  ControllerRole storedRole = static_cast<ControllerRole>(0xFFU);
+  uint8_t storedRoot[32]{};
+  assert(fixture.security.findControllerRoot(controllerId, storedRoot,
+                                             storedRole));
+  assert(fixture.session.status(2003U).controllerRole == storedRole);
   assert(fixture.transport.frames.back().find("\"device_ok\"") !=
          std::string::npos);
   assert(kitsu868::companion::deriveBleSessionKeys(
              controllerRoot, clientNonce, deviceNonce, fixture.crypto,
              c2d, d2c) == ProtocolResult::Ok);
+}
+
+void provisionController(Fixture& fixture, ControllerRole role,
+                         uint8_t controllerId[16],
+                         uint8_t controllerRoot[32], uint8_t seed) {
+  memset(controllerId, seed, 16U);
+  memset(controllerRoot, static_cast<int>(seed + 0x40U), 32U);
+  assert(fixture.security.commitControllerAfterPairing(
+             controllerId, controllerRoot, true, true, true, true, true,
+             role) == SecurityResult::Ok);
+}
+
+void sendAuthenticatedRequest(Fixture& fixture, const uint8_t c2d[32],
+                              uint64_t sequence, const char* operation,
+                              const char* payload, uint32_t nowMillis) {
+  uint8_t nonce[16]{};
+  uint8_t requestId[16]{};
+  memset(nonce, static_cast<int>(0x20U + sequence), sizeof(nonce));
+  memset(requestId, static_cast<int>(0x60U + sequence), sizeof(requestId));
+  uint8_t requestJson[4096]{};
+  size_t requestBytes = 0U;
+  assert(kitsu868::companion::encodeEnvelope(
+             EnvelopeChannel::Request, sequence, nonce, requestId, operation,
+             reinterpret_cast<const uint8_t*>(payload), strlen(payload), c2d,
+             fixture.crypto, requestJson, sizeof(requestJson), requestBytes) ==
+         ProtocolResult::Ok);
+  fixture.session.onFrame(requestJson, requestBytes, nowMillis);
 }
 
 void testPairingHandshakeEnvelopeAndReplay() {
@@ -422,7 +612,9 @@ void testPairingHandshakeEnvelopeAndReplay() {
   uint8_t requestId[16]{};
   memset(nonce, 0x11, sizeof(nonce));
   memset(requestId, 0x22, sizeof(requestId));
-  const uint8_t payload[] = "{}";
+  static const uint8_t payload[] =
+      "{\"action_id\":\"00112233-4455-6677-8899-aabbccddeeff\","
+      "\"kind\":\"pet\",\"expires_at_epoch\":1800000030,\"params\":{}}";
   uint8_t requestJson[1024]{};
   size_t requestBytes = 0U;
   assert(kitsu868::companion::encodeEnvelope(
@@ -432,7 +624,9 @@ void testPairingHandshakeEnvelopeAndReplay() {
   fixture.session.onFrame(requestJson, requestBytes, 2010U);
   assert(fixture.operations.calls == 1U);
   assert(fixture.operations.lastOperation == "action.apply");
-  assert(fixture.operations.lastPayload == "{}");
+  assert(fixture.operations.lastPayload ==
+         reinterpret_cast<const char*>(payload));
+  assert(fixture.operations.lastRole == ControllerRole::Owner);
 
   const std::string response = fixture.transport.frames.back();
   uint8_t decodedPayload[128]{};
@@ -452,6 +646,97 @@ void testPairingHandshakeEnvelopeAndReplay() {
   assert(fixture.session.status(2011U).state == BleSessionState::Closing);
   fixture.session.loop(2300U);
   assert(fixture.transport.disconnected);
+}
+
+void testCaretakerRoleIsEnforcedBeforeDelegation() {
+  static const char kPetAction[] =
+      "{\"action_id\":\"00112233-4455-6677-8899-aabbccddeeff\","
+      "\"kind\":\"pet\",\"expires_at_epoch\":1800000030,\"params\":{}}";
+  static const char kSendMessageAction[] =
+      "{\"action_id\":\"10112233-4455-6677-8899-aabbccddeeff\","
+      "\"kind\":\"send_message\",\"expires_at_epoch\":1800000030,"
+      "\"params\":{\"route\":\"channel\",\"target_id\":\"0\","
+      "\"text\":\"hello\"}}";
+
+  {
+    Fixture fixture;
+    uint8_t controllerId[16]{};
+    uint8_t controllerRoot[32]{};
+    provisionController(fixture, ControllerRole::Caretaker, controllerId,
+                        controllerRoot, 0x21U);
+    uint8_t c2d[32]{};
+    uint8_t d2c[32]{};
+    authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+    assert(fixture.session.status(2003U).controllerRole ==
+           ControllerRole::Caretaker);
+
+    sendAuthenticatedRequest(fixture, c2d, 1U, "state.get", "{}", 2010U);
+    assert(fixture.operations.calls == 1U);
+    assert(fixture.operations.lastRole == ControllerRole::Caretaker);
+    sendAuthenticatedRequest(fixture, c2d, 2U, "action.apply", kPetAction,
+                             2011U);
+    assert(fixture.operations.calls == 2U);
+    assert(fixture.operations.lastPayload == kPetAction);
+
+    sendAuthenticatedRequest(fixture, c2d, 3U, "mesh.configure", "{}",
+                             2012U);
+    assert(fixture.operations.calls == 2U);
+    assert(fixture.session.status(2012U).state == BleSessionState::Closing);
+    uint8_t retainedRoot[32]{};
+    ControllerRole retainedRole = static_cast<ControllerRole>(0xFFU);
+    assert(fixture.security.findControllerRoot(
+        controllerId, retainedRoot, retainedRole));
+    assert(retainedRole == ControllerRole::Caretaker);
+  }
+
+  {
+    Fixture fixture;
+    uint8_t controllerId[16]{};
+    uint8_t controllerRoot[32]{};
+    provisionController(fixture, ControllerRole::Caretaker, controllerId,
+                        controllerRoot, 0x22U);
+    uint8_t c2d[32]{};
+    uint8_t d2c[32]{};
+    authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+    sendAuthenticatedRequest(fixture, c2d, 1U, "action.apply",
+                             kSendMessageAction, 2010U);
+    assert(fixture.operations.calls == 0U);
+    assert(fixture.session.status(2010U).state == BleSessionState::Closing);
+  }
+
+  {
+    Fixture fixture;
+    uint8_t controllerId[16]{};
+    uint8_t controllerRoot[32]{};
+    provisionController(fixture, ControllerRole::Caretaker, controllerId,
+                        controllerRoot, 0x23U);
+    uint8_t c2d[32]{};
+    uint8_t d2c[32]{};
+    authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+    sendAuthenticatedRequest(fixture, c2d, 1U, "controller.forget", "{}",
+                             2010U);
+    assert(fixture.operations.calls == 0U);
+    uint8_t retainedRoot[32]{};
+    ControllerRole retainedRole = static_cast<ControllerRole>(0xFFU);
+    assert(fixture.security.findControllerRoot(
+        controllerId, retainedRoot, retainedRole));
+    assert(retainedRole == ControllerRole::Caretaker);
+  }
+
+  {
+    Fixture fixture;
+    uint8_t controllerId[16]{};
+    uint8_t controllerRoot[32]{};
+    provisionController(fixture, ControllerRole::Owner, controllerId,
+                        controllerRoot, 0x24U);
+    uint8_t c2d[32]{};
+    uint8_t d2c[32]{};
+    authenticateController(fixture, controllerId, controllerRoot, c2d, d2c);
+    sendAuthenticatedRequest(fixture, c2d, 1U, "action.apply",
+                             kSendMessageAction, 2010U);
+    assert(fixture.operations.calls == 1U);
+    assert(fixture.operations.lastRole == ControllerRole::Owner);
+  }
 }
 
 void testEncounterOperationsReachDelegate() {
@@ -702,6 +987,174 @@ void testStrictControlsAndTimeout() {
   assert(fixture.transport.disconnected);
 }
 
+void testPairingRoleDowngradeEscalationAndRetry() {
+  {
+    Fixture fixture;
+    const uint32_t now = 11500U;
+    fixture.session.onSecureLinkEstablished(true, true, true, true, now);
+    fixture.session.setPairingWindow(true, 60000U, now,
+                                     ControllerRole::Caretaker);
+    uint8_t nonce[16]{};
+    memset(nonce, 0x11, sizeof(nonce));
+    const std::string remoteRoleInjection =
+        "{\"v\":2,\"type\":\"pair_request\",\"role\":\"owner\","
+        "\"client_nonce_b64\":\"" +
+        b64(nonce, sizeof(nonce)) +
+        "\",\"label\":\"Role chooser\",\"platform\":\"android\"}";
+    fixture.session.onFrame(
+        reinterpret_cast<const uint8_t*>(remoteRoleInjection.data()),
+        remoteRoleInjection.size(), now + 1U);
+    assert(fixture.transport.frames.back() ==
+           "{\"v\":1,\"type\":\"error\",\"code\":\"auth_failed\"}");
+    assert(!fixture.session.status(now + 1U).physicalConfirmationPending);
+    assert(fixture.security.status().controllerCount == 0U);
+  }
+
+  {
+    Fixture fixture;
+    const uint32_t now = 12000U;
+    fixture.session.onSecureLinkEstablished(true, true, true, true, now);
+    fixture.session.setPairingWindow(true, 60000U, now,
+                                     ControllerRole::Caretaker);
+    uint8_t nonce[16]{};
+    memset(nonce, 0x21, sizeof(nonce));
+    const std::string v1Downgrade =
+        "{\"v\":1,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+        b64(nonce, sizeof(nonce)) +
+        "\",\"label\":\"Old client\",\"platform\":\"android\"}";
+    fixture.session.onFrame(
+        reinterpret_cast<const uint8_t*>(v1Downgrade.data()),
+        v1Downgrade.size(), now + 1U);
+    assert(fixture.transport.frames.back() ==
+           "{\"v\":1,\"type\":\"error\",\"code\":\"auth_failed\"}");
+    assert(fixture.session.status(now + 1U).proofFailures == 1U);
+    assert(fixture.session.status(now + 1U).pairingWindowOpen);
+    assert(fixture.session.status(now + 1U).pairingRole ==
+           ControllerRole::Caretaker);
+    assert(!fixture.session.status(now + 1U).physicalConfirmationPending);
+    assert(fixture.security.status().controllerCount == 0U);
+
+    CaretakerPairingMaterial retry{};
+    beginCaretakerGrant(fixture, now + 10U, 0x31U, retry, false);
+    commitCaretakerGrant(fixture, retry, now + 13U);
+    ControllerRole storedRole = static_cast<ControllerRole>(0xFFU);
+    uint8_t storedRoot[32]{};
+    assert(fixture.security.findControllerRoot(retry.controllerId, storedRoot,
+                                               storedRole));
+    assert(storedRole == ControllerRole::Caretaker);
+  }
+
+  {
+    Fixture fixture;
+    const uint32_t now = 13000U;
+    fixture.session.onSecureLinkEstablished(true, true, true, true, now);
+    fixture.session.setPairingWindow(true, 60000U, now,
+                                     ControllerRole::Owner);
+    uint8_t nonce[16]{};
+    memset(nonce, 0x41, sizeof(nonce));
+    const std::string v2Escalation =
+        "{\"v\":2,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+        b64(nonce, sizeof(nonce)) +
+        "\",\"label\":\"V2 client\",\"platform\":\"android\"}";
+    fixture.session.onFrame(
+        reinterpret_cast<const uint8_t*>(v2Escalation.data()),
+        v2Escalation.size(), now + 1U);
+    assert(fixture.transport.frames.back() ==
+           "{\"v\":1,\"type\":\"error\",\"code\":\"auth_failed\"}");
+    assert(fixture.session.status(now + 1U).proofFailures == 1U);
+    assert(fixture.session.status(now + 1U).pairingRole ==
+           ControllerRole::Owner);
+    assert(!fixture.session.status(now + 1U).physicalConfirmationPending);
+    assert(fixture.security.status().controllerCount == 0U);
+  }
+}
+
+void testCaretakerCommitRoleAndTranscriptTamperThenRetry() {
+  Fixture fixture;
+  const uint32_t now = 14000U;
+  CaretakerPairingMaterial roleTamper{};
+  beginCaretakerGrant(fixture, now, 0x51U, roleTamper);
+  uint8_t validProof[32]{};
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             roleTamper.controllerRoot, "client", "caretaker",
+             roleTamper.controllerId, "KT1234", roleTamper.clientNonce,
+             roleTamper.deviceNonce, fixture.crypto, validProof) ==
+         ProtocolResult::Ok);
+  const std::string changedRole = caretakerCommitJson(validProof, "owner");
+  fixture.session.onFrame(
+      reinterpret_cast<const uint8_t*>(changedRole.data()), changedRole.size(),
+      now + 3U);
+  assert(fixture.transport.frames.back().find("\"auth_failed\"") !=
+         std::string::npos);
+  assert(fixture.security.status().controllerCount == 0U);
+  assert(!fixture.session.status(now + 3U).pairingCompleted);
+
+  CaretakerPairingMaterial transcriptTamper{};
+  beginCaretakerGrant(fixture, now + 10U, 0x61U, transcriptTamper, false);
+  uint8_t legacyProof[32]{};
+  assert(kitsu868::companion::makePairingProof(
+             transcriptTamper.controllerRoot, "client",
+             transcriptTamper.controllerId, "KT1234",
+             transcriptTamper.clientNonce, transcriptTamper.deviceNonce,
+             fixture.crypto, legacyProof) == ProtocolResult::Ok);
+  const std::string changedTranscript =
+      caretakerCommitJson(legacyProof, "caretaker");
+  fixture.session.onFrame(
+      reinterpret_cast<const uint8_t*>(changedTranscript.data()),
+      changedTranscript.size(), now + 13U);
+  assert(fixture.transport.frames.back().find("\"auth_failed\"") !=
+         std::string::npos);
+  assert(fixture.security.status().controllerCount == 0U);
+
+  CaretakerPairingMaterial retry{};
+  beginCaretakerGrant(fixture, now + 20U, 0x71U, retry, false);
+  commitCaretakerGrant(fixture, retry, now + 23U);
+  uint8_t storedRoot[32]{};
+  ControllerRole storedRole = static_cast<ControllerRole>(0xFFU);
+  assert(fixture.security.findControllerRoot(retry.controllerId, storedRoot,
+                                             storedRole));
+  assert(storedRole == ControllerRole::Caretaker);
+  assert(memcmp(storedRoot, retry.controllerRoot, sizeof(storedRoot)) == 0);
+}
+
+void testCaretakerStorageFailureDoesNotIssueAndCanRetry() {
+  Fixture fixture;
+  const uint32_t now = 15000U;
+  CaretakerPairingMaterial failed{};
+  beginCaretakerGrant(fixture, now, 0x81U, failed);
+  uint8_t clientProof[32]{};
+  assert(kitsu868::companion::makeRoleBoundPairingProof(
+             failed.controllerRoot, "client", "caretaker",
+             failed.controllerId, "KT1234", failed.clientNonce,
+             failed.deviceNonce, fixture.crypto, clientProof) ==
+         ProtocolResult::Ok);
+  const std::string commit = caretakerCommitJson(clientProof, "caretaker");
+  const size_t framesBeforeCommit = fixture.transport.frames.size();
+  fixture.storage.failWrite = true;
+  fixture.session.onFrame(reinterpret_cast<const uint8_t*>(commit.data()),
+                          commit.size(), now + 3U);
+  fixture.storage.failWrite = false;
+  assert(fixture.security.status().controllerCount == 0U);
+  uint8_t missingRoot[32]{};
+  assert(!fixture.security.findControllerRoot(failed.controllerId,
+                                              missingRoot));
+  assert(!fixture.session.status(now + 3U).pairingCompleted);
+  for (size_t i = framesBeforeCommit; i < fixture.transport.frames.size(); ++i) {
+    assert(fixture.transport.frames[i].find("\"pair_ok\"") ==
+           std::string::npos);
+  }
+  assert(fixture.transport.frames.back().find("\"auth_failed\"") !=
+         std::string::npos);
+
+  CaretakerPairingMaterial retry{};
+  beginCaretakerGrant(fixture, now + 10U, 0x91U, retry, false);
+  commitCaretakerGrant(fixture, retry, now + 13U);
+  ControllerRole storedRole = static_cast<ControllerRole>(0xFFU);
+  assert(fixture.security.findControllerRoot(retry.controllerId, missingRoot,
+                                             storedRole));
+  assert(storedRole == ControllerRole::Caretaker);
+}
+
 void testPairingNeverPersistsBeforeCommit() {
   Fixture fixture;
   fixture.session.onSecureLinkEstablished(true, true, true, true, 1000U);
@@ -728,6 +1181,8 @@ void testPairingWindowSurvivesSecureLinkReconnect() {
                                           openedAt + 10U);
   fixture.session.onLinkClosed(openedAt + 20U);
   assert(fixture.session.status(openedAt + 20U).pairingWindowOpen);
+  assert(fixture.session.status(openedAt + 20U).pairingRole ==
+         ControllerRole::Owner);
   assert(fixture.session.status(openedAt + 20U).state ==
          BleSessionState::Disconnected);
 
@@ -750,6 +1205,38 @@ void testPairingWindowSurvivesSecureLinkReconnect() {
   assert(fixture.transport.frames.back().find("\"expires_in_ms\":50") !=
          std::string::npos);
   assert(fixture.session.status(openedAt + 950U).physicalConfirmationPending);
+}
+
+void testCaretakerWindowRoleSurvivesSecureLinkReconnect() {
+  Fixture fixture;
+  const uint32_t openedAt = 5500U;
+  fixture.session.setPairingWindow(true, 1000U, openedAt,
+                                   ControllerRole::Caretaker);
+  fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                          openedAt + 10U);
+  fixture.session.onLinkClosed(openedAt + 20U);
+  assert(fixture.session.status(openedAt + 20U).pairingWindowOpen);
+  assert(fixture.session.status(openedAt + 20U).pairingRole ==
+         ControllerRole::Caretaker);
+
+  fixture.session.onSecureLinkEstablished(true, true, true, true,
+                                          openedAt + 100U);
+  uint8_t nonce[16]{};
+  memset(nonce, 0x39, sizeof(nonce));
+  const std::string request =
+      "{\"v\":2,\"type\":\"pair_request\",\"client_nonce_b64\":\"" +
+      b64(nonce, sizeof(nonce)) +
+      "\",\"label\":\"Reconnect caretaker\",\"platform\":\"android\"}";
+  fixture.session.onFrame(reinterpret_cast<const uint8_t*>(request.data()),
+                          request.size(), openedAt + 101U);
+  assert(fixture.transport.frames.back().find("\"v\":2") !=
+         std::string::npos);
+  assert(fixture.transport.frames.back().find("\"role\":\"caretaker\"") !=
+         std::string::npos);
+  assert(fixture.session.status(openedAt + 101U)
+             .physicalConfirmationPending);
+  assert(fixture.session.status(openedAt + 101U).pairingRole ==
+         ControllerRole::Caretaker);
 }
 
 void testClosedAndExpiredPairingWindowsRejectReconnect() {
@@ -963,13 +1450,18 @@ void testPairingCapacityAndAuthenticationBackoffRemainEnforced() {
 
 int main() {
   testPairingHandshakeEnvelopeAndReplay();
+  testCaretakerRoleIsEnforcedBeforeDelegation();
   testEncounterOperationsReachDelegate();
   testUnsolicitedEventBarrierRequiresQueuedAuthenticatedResponse();
   testAuthenticatedControllerForgetDrainsReceipt();
   testPartialControllerForgetCannotKeepUsingSession();
   testStrictControlsAndTimeout();
+  testPairingRoleDowngradeEscalationAndRetry();
+  testCaretakerCommitRoleAndTranscriptTamperThenRetry();
+  testCaretakerStorageFailureDoesNotIssueAndCanRetry();
   testPairingNeverPersistsBeforeCommit();
   testPairingWindowSurvivesSecureLinkReconnect();
+  testCaretakerWindowRoleSurvivesSecureLinkReconnect();
   testClosedAndExpiredPairingWindowsRejectReconnect();
   testPendingPairingGrantCannotCrossReconnect();
   testAuthenticatedSessionCannotCrossReconnect();

@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "kitsu_ble_action.h"
+#include "kitsu_controller_permissions.h"
+
 namespace kitsu868 {
 namespace connectivity {
 namespace {
@@ -219,10 +222,25 @@ bool schemaMatches(const FlatField* fields, size_t fieldCount,
   return true;
 }
 
-bool validVersion(const FlatField* fields, size_t count) {
+bool versionEquals(const FlatField* fields, size_t count, uint8_t expected) {
   const FlatField* version = findField(fields, count, "v");
   return version && version->kind == FlatValueKind::Unsigned &&
-         version->value.bytes == 1U && version->value.data[0] == '1';
+         version->value.bytes == 1U && expected >= 1U && expected <= 9U &&
+         version->value.data[0] == static_cast<uint8_t>('0' + expected);
+}
+
+bool validVersion(const FlatField* fields, size_t count) {
+  return versionEquals(fields, count, 1U);
+}
+
+bool validPairingRole(ControllerRole role) {
+  return role == ControllerRole::Owner || role == ControllerRole::Caretaker;
+}
+
+uint8_t pairingVersionForRole(ControllerRole role) {
+  if (role == ControllerRole::Owner) return 1U;
+  if (role == ControllerRole::Caretaker) return 2U;
+  return 0U;
 }
 
 bool stringFieldEquals(const FlatField* fields, size_t count,
@@ -314,35 +332,6 @@ bool writeQuoted(JsonWriter& writer, const char* input, size_t bytes) {
          writer.literal("\"");
 }
 
-bool operationAllowed(const char* operation) {
-  static const char* const operations[] = {
-      "state.get",          "history.get",       "peers.get",
-      "messages.get",       "messages.get.v2",   "messages.get.v3",
-      "messages.get.v4",
-      "messages.mark_read",
-      "encounter.codes.get.v1", "encounter.neighbors.get.v1",
-      "encounter.neighbor.action.v1", "encounter.catalog.get.v1",
-      "encounter.discovery.get.v1",
-      "fun.state.get.v1", "fun.expedition.start.v1",
-      "fun.expedition.claim.v1", "fun.story.start.v1",
-      "fun.story.advance.v1", "fun.story.choose.v1",
-      "fun.party.scan.v1", "fun.party.host.v1",
-      "fun.party.join.v1", "fun.party.begin.v1",
-      "fun.party.choose.v1", "fun.party.leave.v1",
-      "channels.get",       "channels.get.v2",
-      "chat.storage.get",
-      "clock.sync",
-      "mesh.configure",     "action.apply",      "controller.forget",
-      "firmware.update.status", "firmware.update.begin",
-      "firmware.update.write",  "firmware.update.finish",
-      "firmware.update.reboot", "firmware.update.abort",
-  };
-  for (size_t i = 0U; i < sizeof(operations) / sizeof(operations[0]); ++i) {
-    if (strcmp(operation, operations[i]) == 0) return true;
-  }
-  return false;
-}
-
 }  // namespace
 
 KitsuBleSession::KitsuBleSession() = default;
@@ -379,6 +368,7 @@ void KitsuBleSession::clearSessionSecrets() {
   secureZero(clientToDeviceKey_, sizeof(clientToDeviceKey_));
   secureZero(deviceToClientKey_, sizeof(deviceToClientKey_));
   controllerKnown_ = false;
+  controllerRole_ = static_cast<ControllerRole>(0xFFU);
   authenticatedRequestBarrier_ = false;
   expectedClientSequence_ = 1U;
   nextDeviceSequence_ = 1U;
@@ -389,6 +379,8 @@ void KitsuBleSession::clearPendingPairing() {
   secureZero(pendingControllerRoot_, sizeof(pendingControllerRoot_));
   secureZero(pendingClientNonce_, sizeof(pendingClientNonce_));
   secureZero(pendingDeviceNonce_, sizeof(pendingDeviceNonce_));
+  pendingPairingRole_ = static_cast<ControllerRole>(0xFFU);
+  pendingPairingVersion_ = 0U;
 }
 
 void KitsuBleSession::resetForSecureLink(uint32_t nowMillis) {
@@ -437,6 +429,7 @@ void KitsuBleSession::onLinkClosed(uint32_t nowMillis) {
       deadlineReached(nowMillis, pairingWindowDeadline_)) {
     pairingWindowOpen_ = false;
     pairingWindowDeadline_ = 0U;
+    pairingWindowRole_ = static_cast<ControllerRole>(0xFFU);
   }
   stateDeadline_ = 0U;
   closeAt_ = 0U;
@@ -446,18 +439,25 @@ void KitsuBleSession::onLinkClosed(uint32_t nowMillis) {
 }
 
 void KitsuBleSession::setPairingWindow(bool open, uint32_t remainingMs,
-                                       uint32_t nowMillis) {
+                                       uint32_t nowMillis,
+                                       ControllerRole role) {
   if (!begun_) return;
-  pairingWindowOpen_ = open && remainingMs != 0U && remainingMs <= 60000UL;
-  pairingWindowDeadline_ = pairingWindowOpen_
-      ? nowMillis + remainingMs
-      : 0U;
-  if (!pairingWindowOpen_ &&
-      (state_ == BleSessionState::PairingAwaitingPhysical ||
-       state_ == BleSessionState::PairingAwaitingCommit)) {
+  const bool requestedOpen = open && validPairingRole(role) &&
+      remainingMs != 0U && remainingMs <= 60000UL;
+  if (state_ == BleSessionState::PairingAwaitingPhysical ||
+      state_ == BleSessionState::PairingAwaitingCommit) {
     clearPendingPairing();
     state_ = BleSessionState::AwaitingHello;
   }
+  pairingWindowOpen_ = requestedOpen;
+  pairingWindowRole_ = requestedOpen
+      ? role
+      : static_cast<ControllerRole>(0xFFU);
+  pairingWindowDeadline_ = pairingWindowOpen_
+      ? nowMillis + remainingMs
+      : 0U;
+  pairingCompleted_ = false;
+  completedPairingRole_ = static_cast<ControllerRole>(0xFFU);
 }
 
 bool KitsuBleSession::sendControlError(const char* code) {
@@ -511,8 +511,8 @@ bool KitsuBleSession::handleClientHello(const uint8_t* json,
       allZero(controllerId_, sizeof(controllerId_))) {
     return false;
   }
-  controllerKnown_ = security_->findControllerRoot(controllerId_,
-                                                    controllerRoot_);
+  controllerKnown_ = security_->findControllerRoot(
+      controllerId_, controllerRoot_, controllerRole_);
   if (!controllerKnown_ &&
       !crypto_->randomBytes(controllerRoot_, sizeof(controllerRoot_))) {
     return false;
@@ -627,7 +627,8 @@ bool KitsuBleSession::handlePairRequest(const uint8_t* json,
   if (!parseFlatObject(json, jsonBytes, fields, count) ||
       !schemaMatches(fields, count, schema,
                      sizeof(schema) / sizeof(schema[0])) ||
-      !validVersion(fields, count) ||
+      (!versionEquals(fields, count, 1U) &&
+       !versionEquals(fields, count, 2U)) ||
       !stringFieldEquals(fields, count, "type", "pair_request") ||
       !decodeExact(fields, count, "client_nonce_b64", pendingClientNonce_,
                    sizeof(pendingClientNonce_))) {
@@ -647,6 +648,10 @@ bool KitsuBleSession::handlePairRequest(const uint8_t* json,
     sendControlError("pairing_closed");
     return true;
   }
+  const uint8_t requestVersion = versionEquals(fields, count, 1U) ? 1U : 2U;
+  if (requestVersion != pairingVersionForRole(pairingWindowRole_)) {
+    return false;
+  }
   if (security_->status().controllerCount >= kKitsuControllerCapacity) {
     clearPendingPairing();
     sendControlError("controller_full");
@@ -656,6 +661,10 @@ bool KitsuBleSession::handlePairRequest(const uint8_t* json,
                             sizeof(pendingDeviceNonce_))) {
     return false;
   }
+  pendingPairingVersion_ = requestVersion;
+  pendingPairingRole_ = pairingWindowRole_;
+  pairingCompleted_ = false;
+  completedPairingRole_ = static_cast<ControllerRole>(0xFFU);
 
   char deviceNonceB64[23]{};
   size_t deviceNonceBytes = 0U;
@@ -666,8 +675,13 @@ bool KitsuBleSession::handlePairRequest(const uint8_t* json,
   }
   const uint32_t remaining = pairingWindowDeadline_ - nowMillis;
   JsonWriter writer(jsonScratch_, companion::kMaximumHandshakeFrameBytes);
-  writer.literal("{\"v\":1,\"type\":\"pair_pending\","
-                 "\"device_nonce_b64\":");
+  if (pendingPairingVersion_ == 1U) {
+    writer.literal("{\"v\":1,\"type\":\"pair_pending\","
+                   "\"device_nonce_b64\":");
+  } else {
+    writer.literal("{\"v\":2,\"type\":\"pair_pending\","
+                   "\"role\":\"caretaker\",\"device_nonce_b64\":");
+  }
   writeQuoted(writer, deviceNonceB64, deviceNonceBytes);
   writer.literal(",\"expires_in_ms\":");
   writer.unsignedValue(remaining > 60000UL ? 60000UL : remaining);
@@ -681,11 +695,33 @@ bool KitsuBleSession::handlePairRequest(const uint8_t* json,
   return true;
 }
 
+bool KitsuBleSession::makePendingPairingProof(
+    const char* proofRole,
+    uint8_t output[companion::kEnvelopeMacBytes]) {
+  if (pendingPairingVersion_ == 1U &&
+      pendingPairingRole_ == ControllerRole::Owner) {
+    return companion::makePairingProof(
+               pendingControllerRoot_, proofRole, pendingControllerId_,
+               deviceUid_, pendingClientNonce_, pendingDeviceNonce_, *crypto_,
+               output) == companion::ProtocolResult::Ok;
+  }
+  if (pendingPairingVersion_ == 2U &&
+      pendingPairingRole_ == ControllerRole::Caretaker) {
+    return companion::makeRoleBoundPairingProof(
+               pendingControllerRoot_, proofRole, "caretaker",
+               pendingControllerId_, deviceUid_, pendingClientNonce_,
+               pendingDeviceNonce_, *crypto_, output) ==
+           companion::ProtocolResult::Ok;
+  }
+  return false;
+}
+
 bool KitsuBleSession::confirmPendingPairing(uint32_t nowMillis) {
   if (!begun_ || state_ != BleSessionState::PairingAwaitingPhysical ||
       !pairingWindowOpen_ || deadlineReached(nowMillis, stateDeadline_) ||
       !secureConnections_ || !linkEncrypted_ || !linkAuthenticated_ ||
-      !linkBonded_) {
+      !linkBonded_ || pendingPairingRole_ != pairingWindowRole_ ||
+      pendingPairingVersion_ != pairingVersionForRole(pairingWindowRole_)) {
     return false;
   }
   if (security_->generatePendingControllerRoot(
@@ -718,10 +754,7 @@ bool KitsuBleSession::confirmPendingPairing(uint32_t nowMillis) {
   }
 
   uint8_t proof[32]{};
-  if (companion::makePairingProof(
-          pendingControllerRoot_, "device", pendingControllerId_, deviceUid_,
-          pendingClientNonce_, pendingDeviceNonce_, *crypto_, proof) !=
-      companion::ProtocolResult::Ok) {
+  if (!makePendingPairingProof("device", proof)) {
     secureZero(proof, sizeof(proof));
     clearPendingPairing();
     failAndClose(nowMillis);
@@ -757,8 +790,13 @@ bool KitsuBleSession::confirmPendingPairing(uint32_t nowMillis) {
   }
 
   JsonWriter writer(jsonScratch_, companion::kMaximumHandshakeFrameBytes);
-  writer.literal("{\"v\":1,\"type\":\"pair_grant\","
-                 "\"controller_id_b64\":");
+  if (pendingPairingVersion_ == 1U) {
+    writer.literal("{\"v\":1,\"type\":\"pair_grant\","
+                   "\"controller_id_b64\":");
+  } else {
+    writer.literal("{\"v\":2,\"type\":\"pair_grant\","
+                   "\"role\":\"caretaker\",\"controller_id_b64\":");
+  }
   writeQuoted(writer, controllerB64, controllerBytes);
   writer.literal(",\"root_b64\":");
   writeQuoted(writer, rootB64, rootBytes);
@@ -786,22 +824,30 @@ bool KitsuBleSession::handlePairCommit(const uint8_t* json,
                                        uint32_t nowMillis) {
   FlatField fields[kMaximumControlFields]{};
   size_t count = 0U;
-  static const char* const schema[] = {"v", "type", "proof_b64"};
+  static const char* const schemaV1[] = {"v", "type", "proof_b64"};
+  static const char* const schemaV2[] = {"v", "type", "role", "proof_b64"};
+  const bool ownerV1 = pendingPairingVersion_ == 1U &&
+      pendingPairingRole_ == ControllerRole::Owner;
+  const bool caretakerV2 = pendingPairingVersion_ == 2U &&
+      pendingPairingRole_ == ControllerRole::Caretaker;
   uint8_t supplied[32]{};
   if (!parseFlatObject(json, jsonBytes, fields, count) ||
-      !schemaMatches(fields, count, schema,
-                     sizeof(schema) / sizeof(schema[0])) ||
-      !validVersion(fields, count) ||
+      !(ownerV1
+            ? schemaMatches(fields, count, schemaV1,
+                            sizeof(schemaV1) / sizeof(schemaV1[0])) &&
+                  versionEquals(fields, count, 1U)
+            : caretakerV2 &&
+                  schemaMatches(fields, count, schemaV2,
+                                sizeof(schemaV2) / sizeof(schemaV2[0])) &&
+                  versionEquals(fields, count, 2U) &&
+                  stringFieldEquals(fields, count, "role", "caretaker")) ||
       !stringFieldEquals(fields, count, "type", "pair_commit") ||
       !decodeExact(fields, count, "proof_b64", supplied, sizeof(supplied))) {
     secureZero(supplied, sizeof(supplied));
     return false;
   }
   uint8_t expected[32]{};
-  const bool calculated = companion::makePairingProof(
-      pendingControllerRoot_, "client", pendingControllerId_, deviceUid_,
-      pendingClientNonce_, pendingDeviceNonce_, *crypto_, expected) ==
-      companion::ProtocolResult::Ok;
+  const bool calculated = makePendingPairingProof("client", expected);
   const bool verified = calculated &&
       constantTimeEqual(expected, supplied, sizeof(expected));
   secureZero(expected, sizeof(expected));
@@ -809,16 +855,15 @@ bool KitsuBleSession::handlePairCommit(const uint8_t* json,
   if (!verified) return false;
 
   uint8_t okProof[32]{};
-  if (companion::makePairingProof(
-          pendingControllerRoot_, "ok", pendingControllerId_, deviceUid_,
-          pendingClientNonce_, pendingDeviceNonce_, *crypto_, okProof) !=
-      companion::ProtocolResult::Ok) {
+  if (!makePendingPairingProof("ok", okProof)) {
     secureZero(okProof, sizeof(okProof));
     return false;
   }
+  const ControllerRole committedRole = pendingPairingRole_;
+  const uint8_t committedVersion = pendingPairingVersion_;
   const SecurityResult committed = security_->commitControllerAfterPairing(
       pendingControllerId_, pendingControllerRoot_, secureConnections_,
-      linkEncrypted_, linkBonded_, true, true);
+      linkEncrypted_, linkBonded_, true, true, committedRole);
   if (committed != SecurityResult::Ok) {
     secureZero(okProof, sizeof(okProof));
     clearPendingPairing();
@@ -839,11 +884,18 @@ bool KitsuBleSession::handlePairCommit(const uint8_t* json,
     return false;
   }
   JsonWriter writer(jsonScratch_, companion::kMaximumHandshakeFrameBytes);
-  writer.literal("{\"v\":1,\"type\":\"pair_ok\",\"proof_b64\":");
+  if (committedVersion == 1U) {
+    writer.literal("{\"v\":1,\"type\":\"pair_ok\",\"proof_b64\":");
+  } else {
+    writer.literal("{\"v\":2,\"type\":\"pair_ok\","
+                   "\"role\":\"caretaker\",\"proof_b64\":");
+  }
   writeQuoted(writer, proofB64, proofBytes);
   writer.literal("}");
   const bool sent = writer.ok() &&
       transport_->sendBleJson(jsonScratch_, writer.size());
+  pairingCompleted_ = true;
+  completedPairingRole_ = committedRole;
   clearPendingPairing();
   state_ = BleSessionState::AwaitingHello;
   if (!sent) failAndClose(nowMillis);
@@ -882,9 +934,24 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
           json, jsonBytes, clientToDeviceKey_,
           companion::EnvelopeChannel::Request, expectedClientSequence_,
           *crypto_, request, payloadScratch_, sizeof(payloadScratch_));
+  const ControllerPermission permission = decoded == companion::ProtocolResult::Ok
+      ? controllerPermission(controllerRole_,
+                             controllerOperation(request.operation))
+      : ControllerPermission::InvalidArgument;
+  bool actionAuthorized = permission != ControllerPermission::ActionRequired;
+  if (permission == ControllerPermission::ActionRequired) {
+    BleActionCommand command{};
+    actionAuthorized = decodeBleActionCommand(
+                           payloadScratch_, request.payloadBytes, command) ==
+                           BleActionDecodeResult::Ok &&
+        controllerPermission(controllerRole_, controllerBleAction(command.kind)) ==
+            ControllerPermission::Allowed;
+    secureZero(&command, sizeof(command));
+  }
   if (decoded != companion::ProtocolResult::Ok ||
-      !operationAllowed(request.operation) ||
-      expectedClientSequence_ == UINT64_MAX) {
+      (permission != ControllerPermission::Allowed &&
+       permission != ControllerPermission::ActionRequired) ||
+      !actionAuthorized || expectedClientSequence_ == UINT64_MAX) {
     backoffUntil_ = nowMillis + kBleControllerBackoffMs;
     failAndClose(nowMillis);
     return false;
@@ -928,9 +995,9 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
     return true;
   }
   size_t responseBytes = 0U;
-  if (!operations_->handleBleRequest(
-          request, payloadScratch_, request.payloadBytes, responseScratch_,
-          sizeof(responseScratch_), responseBytes) ||
+  if (!operations_->handleAuthorizedBleRequest(
+          controllerRole_, request, payloadScratch_, request.payloadBytes,
+          responseScratch_, sizeof(responseScratch_), responseBytes) ||
       responseBytes == 0U || responseBytes > sizeof(responseScratch_)) {
     static const uint8_t rejected[] =
         "{\"ok\":false,\"error\":\"request_rejected\"}";
@@ -971,14 +1038,15 @@ void KitsuBleSession::onFrame(const uint8_t* json, size_t jsonBytes,
     case BleSessionState::AwaitingHello: {
       FlatField fields[kMaximumControlFields]{};
       size_t count = 0U;
-      if (parseFlatObject(json, jsonBytes, fields, count) &&
-          validVersion(fields, count) &&
-          stringFieldEquals(fields, count, "type", "client_hello")) {
-        handled = handleClientHello(json, jsonBytes, nowMillis);
-      } else if (parseFlatObject(json, jsonBytes, fields, count) &&
-                 validVersion(fields, count) &&
-                 stringFieldEquals(fields, count, "type", "pair_request")) {
-        handled = handlePairRequest(json, jsonBytes, nowMillis);
+      if (parseFlatObject(json, jsonBytes, fields, count)) {
+        if (validVersion(fields, count) &&
+            stringFieldEquals(fields, count, "type", "client_hello")) {
+          handled = handleClientHello(json, jsonBytes, nowMillis);
+        } else if ((versionEquals(fields, count, 1U) ||
+                    versionEquals(fields, count, 2U)) &&
+                   stringFieldEquals(fields, count, "type", "pair_request")) {
+          handled = handlePairRequest(json, jsonBytes, nowMillis);
+        }
       }
       break;
     }
@@ -1009,6 +1077,7 @@ void KitsuBleSession::loop(uint32_t nowMillis) {
       deadlineReached(nowMillis, pairingWindowDeadline_)) {
     pairingWindowOpen_ = false;
     pairingWindowDeadline_ = 0U;
+    pairingWindowRole_ = static_cast<ControllerRole>(0xFFU);
   }
   if ((state_ == BleSessionState::AwaitingHello ||
        state_ == BleSessionState::AwaitingClientAuth ||
@@ -1071,8 +1140,17 @@ BleSessionStatus KitsuBleSession::status(uint32_t nowMillis) const {
       !deadlineReached(nowMillis, pairingWindowDeadline_);
   output.physicalConfirmationPending =
       state_ == BleSessionState::PairingAwaitingPhysical;
+  output.pairingCompleted = pairingCompleted_;
+  if (output.pairingWindowOpen && validPairingRole(pairingWindowRole_)) {
+    output.pairingRole = pairingWindowRole_;
+  } else if (pairingCompleted_ && validPairingRole(completedPairingRole_)) {
+    output.pairingRole = completedPairingRole_;
+  }
   output.applicationAuthenticated =
       state_ == BleSessionState::Authenticated;
+  output.controllerRole = output.applicationAuthenticated
+      ? controllerRole_
+      : static_cast<ControllerRole>(0xFFU);
   output.authenticatedRequestBarrier = authenticatedRequestBarrier_;
   output.proofFailures = proofFailures_;
   output.nextClientSequence = expectedClientSequence_;

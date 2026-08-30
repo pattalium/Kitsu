@@ -139,6 +139,8 @@ class PortraitPlannerContractTest(unittest.TestCase):
             "securing",
             "open",
             "closed",
+            "caretakerGrant",
+            "caretakerResult",
         ):
             self.assertRegex(HOST_TEST, rf"const Label {phone_state}\[\]")
 

@@ -24,6 +24,9 @@ MAIN = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
 SESSION = (ROOT / "src" / "kitsu_ble_session.cpp").read_text(
     encoding="utf-8"
 )
+PERMISSIONS = (ROOT / "src" / "kitsu_controller_permissions.cpp").read_text(
+    encoding="utf-8"
+)
 REPEAT_WIRE = (ROOT / "src" / "kitsu_repeat_wire.cpp").read_text(
     encoding="utf-8"
 )
@@ -814,7 +817,7 @@ class ProvisioningAndApiSourceTests(unittest.TestCase):
         self.assertIn("ChannelRegionScope::Eu", v2)
         self.assertIn('output += "null"', v2)
 
-        allowed = cpp_function(SESSION, "bool operationAllowed(")
+        allowed = PERMISSIONS
         self.assertIn('"channels.get"', allowed)
         self.assertIn('"channels.get.v2"', allowed)
         handler_source = MAIN[
@@ -843,7 +846,7 @@ class ProvisioningAndApiSourceTests(unittest.TestCase):
             "reason",
         ):
             self.assertIn(required, storage)
-        allowed = cpp_function(SESSION, "bool operationAllowed(")
+        allowed = PERMISSIONS
         self.assertIn('"chat.storage.get"', allowed)
         handler_source = MAIN[
             MAIN.rindex(

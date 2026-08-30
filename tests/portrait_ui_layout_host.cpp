@@ -224,15 +224,17 @@ void testActivityVariants() {
 void testConnectVariants() {
   const Label labels[] = {
       {"CONNECT", 14, 1},      {"BLUETOOTH", 31, 2},
+      {"PAIR", 28, 1},         {"CARETAKER", 39, 1},
       {"CONTROLLERS", 31, 2}, {"BACK", 31, 2},
       {"UNAVAILABLE", 54, 1}, {"4 STORED", 54, 1},
       {"CONNECTED", 54, 1},   {"PAIRING", 54, 1},
       {"HOLD VIEW", 76, 1},   {"HOLD OPEN", 76, 1},
+      {"HOLD PAIR", 76, 1},
       {"HOLD MANAGE", 76, 1}, {"HOLD BACK", 76, 1},
       {"TAP NEXT", 108, 1},
   };
   assertScreen(labels);
-  const DotPlan dots = kitsu868::portrait::planDots(3, 60);
+  const DotPlan dots = kitsu868::portrait::planDots(4, 60);
   assert(dots.valid);
   assert(kitsu868::portrait::rectangleFits(
       (64 - dots.width) / 2, 94, dots.width, dots.size));
@@ -380,7 +382,7 @@ void testStatusPages() {
       {"SCORE 65535", 111, 1},
   };
   const Label diagnostics[] = {
-      {"KITSU", 5, 2},   {"0.20.3", 27, 1}, {"KTFFFF", 43, 1},
+      {"KITSU", 5, 2},   {"0.20.4", 27, 1}, {"KTFFFF", 43, 1},
       {"OLED ERR", 59, 1}, {"MESH ERR", 75, 1},
       {"STORE ERR", 91, 1}, {"NO PACK", 107, 1},
   };
@@ -467,6 +469,13 @@ void testPairPhoneVariants() {
       {"PAIR PHONE", 4, 1}, {"WINDOW", 29, 2},
       {"CLOSED", 48, 2}, {"HOLD REOPEN", 78, 1},
       {"TAP BACK", 106, 1}};
+  const Label caretakerGrant[] = {
+      {"PAIR", 2, 1}, {"CARETAKER", 11, 1}, {"CARETAKER", 23, 1},
+      {"HOLD", 44, 2}, {"PRG", 62, 2}, {"TO GRANT", 85, 1},
+      {"TAP CANCEL", 105, 1}};
+  const Label caretakerResult[] = {
+      {"PAIR", 2, 1}, {"CARETAKER", 11, 1}, {"CARETAKER", 34, 1},
+      {"PAIRED", 58, 2}, {"TAP CLOSE", 105, 1}};
   assertScreen(unavailable);
   assertScreen(storageBlocked);
   assertScreen(comparison);
@@ -475,6 +484,8 @@ void testPairPhoneVariants() {
   assertScreen(securing);
   assertScreen(open);
   assertScreen(closed);
+  assertCompleteScreen(caretakerGrant);
+  assertCompleteScreen(caretakerResult);
 }
 
 }  // namespace
@@ -502,6 +513,6 @@ int main() {
   puts("PASS portrait_ui_layout_host");
   puts("  canvas: 64x128; content: 60px");
   puts("  screens: pet menu connect inbox game-menu game listen sleep wild-encounter field-guide goals clock adventure activity status phone controller-recovery");
-  puts("  phone states: unavailable compare grant authenticated securing open closed");
+  puts("  phone states: unavailable compare grant paired authenticated securing open closed caretaker");
   return 0;
 }
