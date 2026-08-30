@@ -259,6 +259,29 @@ def test_truthful_local_only_state_and_supported_build_path() -> None:
         assert f"-<{active}>" not in profile, active
 
 
+def test_mesh_rx_rehydrates_verified_clients_after_successful_boot() -> None:
+    main = read("src/main.cpp")
+    start = main.index("void initMesh()")
+    end = main.index("\n}\n\n}  // namespace", start)
+    init_mesh = main[start:end]
+
+    begin = "meshInitStatus = meshTransport.begin(meshSettings, meshIdentity);"
+    stage = "(void)meshTransport.stageObservedContact("
+    assert begin in init_mesh
+    assert stage in init_mesh
+    assert init_mesh.index(begin) < init_mesh.index(stage)
+    assert (
+        "meshInitStatus == kitsu868::mesh::TransportStatus::Ok &&\n"
+        "      discoveryJournalReady"
+    ) in init_mesh
+    assert "discoveryJournal.peerAt(ordinal, peer)" in init_mesh
+    assert "if (peer.type != 1U) continue;" in init_mesh
+    assert "peer.publicKey, name, peer.type, peer.senderAdvertTimestamp" in init_mesh
+    assert "upsertContact(" not in init_mesh
+    assert "discoveryJournal.record(" not in init_mesh
+    assert "discoveryJournal.flush(" not in init_mesh
+
+
 def main() -> None:
     test_selected_environment()
     test_partition_layout_is_unencrypted_and_recoverable()
@@ -267,6 +290,7 @@ def main() -> None:
     test_compile_guard_executes_for_every_forbidden_configuration()
     test_runtime_contains_no_efuse_or_silicon_lock_api()
     test_truthful_local_only_state_and_supported_build_path()
+    test_mesh_rx_rehydrates_verified_clients_after_successful_boot()
     print("Kitsu reflashable profile audit: PASS")
 
 

@@ -15691,6 +15691,20 @@ void initMesh() {
     return;
   }
   meshInitStatus = meshTransport.begin(meshSettings, meshIdentity);
+  if (meshInitStatus == kitsu868::mesh::TransportStatus::Ok &&
+      discoveryJournalReady) {
+    for (size_t ordinal = 0U;
+         ordinal < kitsu868::discovery::kDiscoveryPeerCapacity; ++ordinal) {
+      kitsu868::discovery::DiscoveryPeer peer{};
+      if (!discoveryJournal.peerAt(ordinal, peer)) break;
+      if (peer.type != 1U) continue;
+      const char* const name = peer.name[0] != '\0'
+                                   ? peer.name
+                                   : "MeshCore peer";
+      (void)meshTransport.stageObservedContact(
+          peer.publicKey, name, peer.type, peer.senderAdvertTimestamp);
+    }
+  }
   radioReady = meshTransport.active();
   radioInitCode = meshTransport.radioCode();
   Serial.printf(
