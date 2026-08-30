@@ -766,11 +766,11 @@ test("publishes the byte-exact signed local-first Android 2.3.1 release", async 
     version: "2.3.1",
     versionCode: 35,
     minimumAndroidApi: 26,
-    url: "/downloads/kitsu-android-2.3.1-777a011c00a54547ddbbbc34455896bb.apk",
-    bytes: 3015887,
-    sha256: "777a011c00a54547ddbbbc34455896bb400290d2c392ad82c9e2ef996ee7173a",
+    url: "/downloads/kitsu-android-2.3.1-4ddbd5b4fde3527d8862c543968ba828.apk",
+    bytes: 3015896,
+    sha256: "4ddbd5b4fde3527d8862c543968ba828c13ff5867559f05574c7636d8c4ebee5",
     signingCertificateSha256: "a5a3cddb0d2c103630c6e622ac7f2051085a4c082db37aefdbadfc75d0a2d7fc",
-    publishedAt: "2026-08-30T21:23:07Z",
+    publishedAt: "2026-08-30T23:14:30Z",
   });
 
   const publicJWK = publicKey.export({ format: "jwk" });
@@ -807,7 +807,7 @@ test("publishes the byte-exact signed local-first Android 2.3.1 release", async 
     "kitsu-android-2.2.5-4f0cc3bb5fd1059c9d6096a41350aa8f.apk",
     "kitsu-android-2.2.6-12f462cd3d938ef9c32c5a9e4709d4c2.apk",
     "kitsu-android-2.3.0-0e7631b1489b9e4a01bf554caf48b300.apk",
-    "kitsu-android-2.3.1-777a011c00a54547ddbbbc34455896bb.apk",
+    "kitsu-android-2.3.1-4ddbd5b4fde3527d8862c543968ba828.apk",
     "kitsu-k32-android-2.0.0.apk",
   ]);
   for (const unpublishedVersion of ["2.2.7", "2.2.8", "2.2.9"]) {
@@ -1022,7 +1022,7 @@ test("ships every referenced local release asset", async () => {
     "downloads/kitsu-android-2.2.11-01c1b122dac3064ec5e9e422f7b61fb8.apk",
     "downloads/kitsu-android-2.2.12-b696af2a46e58ae478073b6ef16fcdbf.apk",
     "downloads/kitsu-android-2.3.0-0e7631b1489b9e4a01bf554caf48b300.apk",
-    "downloads/kitsu-android-2.3.1-777a011c00a54547ddbbbc34455896bb.apk",
+    "downloads/kitsu-android-2.3.1-4ddbd5b4fde3527d8862c543968ba828.apk",
     "downloads/kitsu-k32-android-2.0.0.apk",
     "downloads/android-stable-2.0.0-20260822t123928z.json",
     "downloads/android-stable-2.0.0-20260822t123928z.json.sig",
