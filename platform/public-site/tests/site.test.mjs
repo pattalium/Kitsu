@@ -1259,6 +1259,10 @@ test("publishes an accessible, fail-closed local unlock surface", async () => {
   assert.match(styles, /\.unlock-action\s*\{[^}]*min-width:[^}]*white-space:\s*nowrap/s);
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.unlock-action[\s\S]*width:\s*100%/);
   assert.match(styles, /\.unlock-status\[data-state="unsupported"\]/);
+  assert.match(styles, /\.pack-portrait\s*\{[^}]*filter:\s*invert\(1\)/s);
+  assert.match(styles, /html\[data-theme="dark"\] \.pack-portrait\s*\{[^}]*filter:\s*none/s);
+  assert.doesNotMatch(styles, /\.pack-portrait\s*\{[^}]*image-rendering:\s*pixelated/s);
+  assert.match(html, /class="pack-portrait"[^>]*width="768" height="768"/);
 
   for (const stateCopy of [
     "Web Serial is not available in this browser. Use Chrome or Edge on a desktop computer.",
@@ -1430,20 +1434,35 @@ test("rejects a valid-code response bound to a different Kitsu", () => {
   );
 });
 
-test("publishes the exact accepted 21-creature portrait metadata for gated wild packs", async () => {
+test("publishes the accepted packs with the current Android first-Idle portraits", async () => {
   const portraitManifest = JSON.parse(
     await readFile(path.join(projectRoot, "assets", "wild-portraits-manifest.json"), "utf8"),
   );
-  const expectedCatalog = portraitManifest.creatures.map((creature) => ({
-    schema: unlockCatalogModule.PUBLISHED_PACK_SCHEMA,
-    packId: creature.pack_id,
-    displayName: creature.display_name,
-    rarity: creature.rarity,
-    slug: creature.slug,
-    portraitUrl: `./portraits/${creature.portrait_png}`,
-    portraitSha256: creature.portrait_png_sha256,
-    bytes: creature.pack_bytes,
-    sha256: creature.pack_sha256,
+  const androidPortraitFor = (slug) => path.join(
+    projectRoot,
+    "platform",
+    "mobile",
+    "android",
+    "app",
+    "src",
+    "main",
+    "res",
+    "drawable-nodpi",
+    `guide_${slug.replaceAll("-", "_")}_idle.png`,
+  );
+  const expectedCatalog = await Promise.all(portraitManifest.creatures.map(async (creature) => {
+    const portraitSha256 = await sha256(androidPortraitFor(creature.slug));
+    return {
+      schema: unlockCatalogModule.PUBLISHED_PACK_SCHEMA,
+      packId: creature.pack_id,
+      displayName: creature.display_name,
+      rarity: creature.rarity,
+      slug: creature.slug,
+      portraitUrl: `./portraits/${creature.slug}.${portraitSha256}.png`,
+      portraitSha256,
+      bytes: creature.pack_bytes,
+      sha256: creature.pack_sha256,
+    };
   }));
 
   assert.equal(portraitManifest.schema, "kitsu-wild-static-portraits-v1");
@@ -1459,11 +1478,23 @@ test("publishes the exact accepted 21-creature portrait metadata for gated wild 
     assert.equal(unlockCatalogModule.publishedPackFor(entry.packId), entry);
     assert.equal("downloadUrl" in entry, false);
     assert.match(entry.portraitUrl, /^\.\/portraits\//);
-    assert.equal(
-      await sha256(path.join(root, "unlock", entry.portraitUrl.slice(2))),
-      entry.portraitSha256,
-    );
+    const publishedPortrait = await readFile(path.join(root, "unlock", entry.portraitUrl.slice(2)));
+    const androidPortrait = await readFile(androidPortraitFor(entry.slug));
+    assert.equal(createHash("sha256").update(publishedPortrait).digest("hex"), entry.portraitSha256);
+    assert.deepEqual(publishedPortrait, androidPortrait, `${entry.slug} must use the Android first-Idle bytes`);
+    assert.equal(publishedPortrait.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    assert.equal(publishedPortrait.readUInt32BE(16), 768, `${entry.slug} width`);
+    assert.equal(publishedPortrait.readUInt32BE(20), 768, `${entry.slug} height`);
+    assert.equal(publishedPortrait[24], 8, `${entry.slug} bit depth`);
+    assert.equal(publishedPortrait[25], 6, `${entry.slug} must retain RGBA alpha`);
   }
+  assert.deepEqual(
+    (await readdir(path.join(root, "unlock", "portraits"))).sort(),
+    unlockCatalogModule.PUBLISHED_WILD_PACKS
+      .map((entry) => path.basename(entry.portraitUrl))
+      .sort(),
+    "only current content-addressed portraits are published",
+  );
   const starterPackIds = {
     Cat: "FDC79D6F",
     Fox: "6C393E21",

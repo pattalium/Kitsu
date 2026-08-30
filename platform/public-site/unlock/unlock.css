@@ -255,12 +255,12 @@ html[data-theme="dark"] .unlock-mark img {
   background: var(--surface-strong);
   border: 1px solid var(--line);
   border-radius: 0.8rem;
-  image-rendering: pixelated;
+  filter: invert(1);
   object-fit: contain;
 }
 
 html[data-theme="dark"] .pack-portrait {
-  filter: invert(1);
+  filter: none;
 }
 
 .pack-result p {
