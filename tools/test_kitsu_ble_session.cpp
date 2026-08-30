@@ -12,6 +12,7 @@ using kitsu868::companion::DecodedEnvelope;
 using kitsu868::companion::EnvelopeChannel;
 using kitsu868::companion::ProtocolResult;
 using kitsu868::connectivity::BleOperationDelegate;
+using kitsu868::connectivity::BleCloseCause;
 using kitsu868::connectivity::BleSessionState;
 using kitsu868::connectivity::BleSessionTransport;
 using kitsu868::connectivity::ControllerRole;
@@ -228,11 +229,15 @@ class TestTransport final : public BleSessionTransport {
 
   bool bleTransmitIdle() const override { return transmitIdle; }
 
-  void disconnectBle() override { disconnected = true; }
+  void disconnectBle(BleCloseCause cause) override {
+    disconnected = true;
+    lastDisconnectCause = cause;
+  }
 
   std::vector<std::string> frames;
   bool applicationAuthenticated = false;
   bool disconnected = false;
+  BleCloseCause lastDisconnectCause = BleCloseCause::None;
   bool failSend = false;
   bool failAuthSwitch = false;
   bool transmitIdle = false;
@@ -646,6 +651,8 @@ void testPairingHandshakeEnvelopeAndReplay() {
   assert(fixture.session.status(2011U).state == BleSessionState::Closing);
   fixture.session.loop(2300U);
   assert(fixture.transport.disconnected);
+  assert(fixture.transport.lastDisconnectCause ==
+         BleCloseCause::SessionProtocolViolation);
 }
 
 void testCaretakerRoleIsEnforcedBeforeDelegation() {
@@ -869,6 +876,10 @@ void testUnsolicitedEventBarrierRequiresQueuedAuthenticatedResponse() {
     fixture.session.onFrame(requestJson, requestBytes, 2010U);
     assert(!fixture.session.status(2010U).authenticatedRequestBarrier);
     assert(fixture.session.status(2010U).state == BleSessionState::Closing);
+    fixture.session.loop(2300U);
+    assert(fixture.transport.disconnected);
+    assert(fixture.transport.lastDisconnectCause ==
+           BleCloseCause::ResponseSendFailed);
   }
 }
 
@@ -918,6 +929,8 @@ void testAuthenticatedControllerForgetDrainsReceipt() {
   fixture.transport.transmitIdle = true;
   fixture.session.loop(2012U);
   assert(fixture.transport.disconnected);
+  assert(fixture.transport.lastDisconnectCause ==
+         BleCloseCause::ControllerForget);
 }
 
 void testPartialControllerForgetCannotKeepUsingSession() {
@@ -963,6 +976,8 @@ void testPartialControllerForgetCannotKeepUsingSession() {
   fixture.transport.transmitIdle = true;
   fixture.session.loop(2011U);
   assert(fixture.transport.disconnected);
+  assert(fixture.transport.lastDisconnectCause ==
+         BleCloseCause::ControllerForget);
 }
 
 void testStrictControlsAndTimeout() {
@@ -985,6 +1000,8 @@ void testStrictControlsAndTimeout() {
          std::string::npos);
   fixture.session.loop(10800U);
   assert(fixture.transport.disconnected);
+  assert(fixture.transport.lastDisconnectCause ==
+         BleCloseCause::HandshakeTimeout);
 }
 
 void testPairingRoleDowngradeEscalationAndRetry() {
@@ -1414,17 +1431,23 @@ void testPairingCapacityAndAuthenticationBackoffRemainEnforced() {
     assert(fixture.session.status(openedAt + 4U).proofFailures == 3U);
     assert(fixture.session.status(openedAt + 4U).state ==
            BleSessionState::Closing);
+    fixture.session.loop(openedAt + 300U);
+    assert(fixture.transport.disconnected);
+    assert(fixture.transport.lastDisconnectCause ==
+           BleCloseCause::AuthenticationFailed);
 
-    fixture.session.onLinkClosed(openedAt + 5U);
-    assert(fixture.session.status(openedAt + 5U).state ==
+    fixture.session.onLinkClosed(openedAt + 301U);
+    assert(fixture.session.status(openedAt + 301U).state ==
            BleSessionState::Backoff);
-    assert(fixture.session.status(openedAt + 5U).pairingWindowOpen);
+    assert(fixture.session.status(openedAt + 301U).pairingWindowOpen);
     fixture.transport.disconnected = false;
     fixture.session.onSecureLinkEstablished(true, true, true, true,
-                                            openedAt + 6U);
-    assert(fixture.session.status(openedAt + 6U).state ==
+                                            openedAt + 302U);
+    assert(fixture.session.status(openedAt + 302U).state ==
            BleSessionState::Backoff);
     assert(fixture.transport.disconnected);
+    assert(fixture.transport.lastDisconnectCause ==
+           BleCloseCause::AuthenticationBackoff);
 
     const uint32_t backoffEnds = openedAt + 4U + kBleControllerBackoffMs;
     fixture.session.loop(backoffEnds);

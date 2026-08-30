@@ -105,16 +105,23 @@ class GattCallbackBindingPolicyTest {
         assertFalse(GattFrameTimeoutGenerationPolicy.accepts(13, 12))
     }
 
-    @Test fun peerSecurityTerminationBecomesAnActionableRepairCode() {
+    @Test fun peerTerminationIsTransientAndRetainsAuthenticationContext() {
         assertEquals(
-            "bluetooth_pairing_repair_required",
-            GattStatusPolicy.connectionFailure(19),
+            "gatt_peer_terminated",
+            GattStatusPolicy.connectionFailure(19, authenticatedSessionActive = true),
+        )
+        assertEquals(
+            "gatt_peer_terminated_before_auth",
+            GattStatusPolicy.connectionFailure(19, authenticatedSessionActive = false),
         )
         assertEquals(
             "gatt_local_host_terminated",
-            GattStatusPolicy.connectionFailure(22),
+            GattStatusPolicy.connectionFailure(22, authenticatedSessionActive = true),
         )
-        assertEquals("gatt_status_133", GattStatusPolicy.connectionFailure(133))
+        assertEquals(
+            "gatt_status_133",
+            GattStatusPolicy.connectionFailure(133, authenticatedSessionActive = false),
+        )
     }
 
     @Test fun freshBondMayRecoverFromLocalHostTerminationExactlyOnce() {
@@ -164,7 +171,10 @@ class GattCallbackBindingPolicyTest {
     @Test fun status22DuringPairRequestWriteRetainsItsBoundedRecoveryReason() {
         val completionStatus = GattWriteFailurePolicy.completionStatus(22)
         val failure = GattWriteFailurePolicy.pairingFailure(
-            GattStatusPolicy.connectionFailure(completionStatus),
+            GattStatusPolicy.connectionFailure(
+                completionStatus,
+                authenticatedSessionActive = false,
+            ),
         )
 
         assertEquals(22, completionStatus)

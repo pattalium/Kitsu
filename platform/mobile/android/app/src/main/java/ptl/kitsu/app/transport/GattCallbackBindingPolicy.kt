@@ -47,10 +47,16 @@ internal object GattFrameTimeoutGenerationPolicy {
 
 /** Maps Android's numeric GATT failures to stable, actionable app diagnostics. */
 internal object GattStatusPolicy {
-    fun connectionFailure(status: Int): String = when (status) {
-        // Android reports 0x13 when the peripheral terminates a link whose SMP
-        // keys no longer match. Retrying the same cached bond cannot repair it.
-        0x13 -> "bluetooth_pairing_repair_required"
+    fun connectionFailure(status: Int, authenticatedSessionActive: Boolean): String = when (status) {
+        // GATT_CONN_TERMINATE_PEER_USER says only that the peripheral ended the
+        // link. NimBLE uses this reason for ordinary firmware-requested closes;
+        // it is not evidence that Android's SMP bond is stale. Keep the phase so
+        // a post-authentication drop remains distinguishable from handshake loss.
+        0x13 -> if (authenticatedSessionActive) {
+            "gatt_peer_terminated"
+        } else {
+            "gatt_peer_terminated_before_auth"
+        }
         // GATT_CONN_TERMINATE_LOCAL_HOST. Immediately after a new LE bond,
         // Android can close its bonding link while the app's first GATT is
         // opening. Pairing may retry this one condition once after the device

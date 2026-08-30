@@ -122,6 +122,14 @@ internal data class ConnectionPresentation(
     val icon: ImageVector,
 )
 
+private val TRANSIENT_BLE_DISCONNECT_CODES = setOf(
+    "gatt_peer_terminated",
+    "gatt_peer_terminated_before_auth",
+    // Keep an old raw status value neutral if it survives in process state
+    // across an app upgrade.
+    "gatt_status_19",
+)
+
 internal fun connectionPresentation(owner: OwnerState): ConnectionPresentation = when {
     owner.connection.connected && owner.connection.warning != null -> ConnectionPresentation(
         label = "Connected",
@@ -141,7 +149,7 @@ internal fun connectionPresentation(owner: OwnerState): ConnectionPresentation =
         tone = StatusTone.ACTIVE,
         icon = Icons.Default.HourglassTop,
     )
-    owner.errorCode != null -> ConnectionPresentation(
+    owner.errorCode != null && owner.errorCode !in TRANSIENT_BLE_DISCONNECT_CODES -> ConnectionPresentation(
         label = "Needs attention",
         detail = owner.errorCode.humanized(),
         tone = StatusTone.NEGATIVE,
@@ -256,8 +264,11 @@ internal fun String.humanized(): String = when (this) {
         "This Kitsu already has a saved controller on this phone. Use Repair Bluetooth pairing, or explicitly forget the old controller before issuing a new one."
     "controller_full" ->
         "Kitsu already has four controllers. On Kitsu: CONNECT > CONTROLLERS; remove a slot; reopen Pair Phone; retry."
-    "gatt_status_19", "bluetooth_pairing_repair_required", "bond_missing_repair_required" ->
+    "bluetooth_pairing_repair_required", "bond_missing_repair_required" ->
         "Bluetooth security pairing needs repair"
+    "gatt_status_19", "gatt_peer_terminated" -> "Kitsu ended the Bluetooth connection"
+    "gatt_peer_terminated_before_auth" ->
+        "Kitsu ended the Bluetooth connection before authentication completed"
     "android_bluetooth_forget_required" ->
         "Forget the old Kitsu bond in Android Bluetooth settings to continue"
     "repair_bluetooth_permission_required" ->

@@ -15,6 +15,8 @@ enum class WalkStepAvailability {
 data class WalkStepSnapshot(
     val availability: WalkStepAvailability,
     val observing: Boolean,
+    /** True when a safe cumulative-counter baseline exists for the selected board/route. */
+    val sensorBaselineReady: Boolean = false,
     /** Canonical stable address of the board currently selected for phone-step tracking. */
     val deviceAddress: String? = null,
     val routeId: Long? = null,

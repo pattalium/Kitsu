@@ -44,6 +44,32 @@ bool notifyStatusRetryable(int code) {
   }
 }
 
+BleCloseCause closeCauseForEvent(BleLinkEvent event) {
+  switch (event) {
+    case BleLinkEvent::LinkRejected:
+      return BleCloseCause::LinkRejected;
+    case BleLinkEvent::FrameTimedOut:
+      return BleCloseCause::FrameTimedOut;
+    case BleLinkEvent::ProtocolViolation:
+      return BleCloseCause::ProtocolViolation;
+    case BleLinkEvent::TransportFailure:
+      return BleCloseCause::TransportFailure;
+    default:
+      return BleCloseCause::ApplicationRequest;
+  }
+}
+
+BleCloseCause closeCauseForUnexpectedHciReason(int reason) {
+  switch (reason) {
+    case 0x13:  // BLE_ERR_REM_USER_CONN_TERM
+      return BleCloseCause::RemoteUserTerminated;
+    case 0x08:  // BLE_ERR_CONN_SPVN_TMO
+      return BleCloseCause::SupervisionTimeout;
+    default:
+      return BleCloseCause::Unknown;
+  }
+}
+
 }  // namespace
 
 struct KitsuBleGattLink::Impl {
@@ -57,6 +83,9 @@ struct KitsuBleGattLink::Impl {
     bool disconnectReasonAvailable = false;
     int disconnectReason = 0;
     uint32_t disconnectAtMillis = 0U;
+    bool closeTelemetryAvailable = false;
+    BleCloseCause closeCause = BleCloseCause::None;
+    bool closeWasLocal = false;
   };
 
   class ServerCallbacks final : public NimBLEServerCallbacks {
@@ -149,6 +178,10 @@ struct KitsuBleGattLink::Impl {
     disconnectIssued = false;
     disconnectHandle = kNoConnection;
     disconnectGeneration = 0U;
+    pendingLocalClose = false;
+    pendingLocalCloseCause = BleCloseCause::None;
+    pendingLocalCloseHandle = kNoConnection;
+    pendingLocalCloseGeneration = 0U;
     parser.begin(rxStorage, sizeof(rxStorage),
                  companion::kMaximumHandshakeFrameBytes,
                  companion::kFrameAssemblyTimeoutMs);
@@ -173,9 +206,24 @@ struct KitsuBleGattLink::Impl {
     pushEventLocked(event, connectionGeneration, connectionHandle);
   }
 
+  void markLocalCloseLocked(BleCloseCause cause) {
+    if (!connected || connectionHandle == kNoConnection) return;
+    const bool sameConnection = pendingLocalClose &&
+        pendingLocalCloseHandle == connectionHandle &&
+        pendingLocalCloseGeneration == connectionGeneration;
+    // Preserve the first reason which actually initiated this generation's
+    // close. Follow-on callbacks must not relabel the diagnostic.
+    if (sameConnection) return;
+    pendingLocalClose = true;
+    pendingLocalCloseCause = cause;
+    pendingLocalCloseHandle = connectionHandle;
+    pendingLocalCloseGeneration = connectionGeneration;
+  }
+
   void requestDisconnectLocked(BleLinkEvent event) {
     pushEventLocked(event);
     if (connected && connectionHandle != kNoConnection) {
+      markLocalCloseLocked(closeCauseForEvent(event));
       disconnectRequested = true;
       disconnectIssued = true;
       disconnectHandle = connectionHandle;
@@ -223,11 +271,20 @@ struct KitsuBleGattLink::Impl {
     if (connectionHandle == connection.getConnHandle()) {
       const uint32_t departedGeneration = connectionGeneration;
       const uint16_t departedHandle = connectionHandle;
+      const bool localClose = pendingLocalClose &&
+          pendingLocalCloseHandle == departedHandle &&
+          pendingLocalCloseGeneration == departedGeneration;
+      const BleCloseCause closeCause = localClose
+          ? pendingLocalCloseCause
+          : closeCauseForUnexpectedHciReason(reason);
       disconnectReasonAvailable = true;
       lastDisconnectReason = reason;
       lastDisconnectedHandle = departedHandle;
       lastDisconnectedGeneration = departedGeneration;
       lastDisconnectAtMillis = nowMillis;
+      closeTelemetryAvailable = true;
+      lastCloseCause = closeCause;
+      lastCloseWasLocal = localClose;
       clearConnectionLocked();
       advertising = !localControllerRecoveryLocked;
       pushEventLocked(BleLinkEvent::Disconnected, departedGeneration,
@@ -237,6 +294,9 @@ struct KitsuBleGattLink::Impl {
       events[eventIndex].disconnectReasonAvailable = true;
       events[eventIndex].disconnectReason = reason;
       events[eventIndex].disconnectAtMillis = nowMillis;
+      events[eventIndex].closeTelemetryAvailable = true;
+      events[eventIndex].closeCause = closeCause;
+      events[eventIndex].closeWasLocal = localClose;
     }
     portEXIT_CRITICAL(&mux);
   }
@@ -462,11 +522,14 @@ struct KitsuBleGattLink::Impl {
   bool notifyAttemptActive = false;
   bool notifyStatusReady = false;
   bool disconnectReasonAvailable = false;
+  bool closeTelemetryAvailable = false;
   bool notifyStatusAvailable = false;
+  bool pendingLocalClose = false;
   uint16_t connectionHandle = kNoConnection;
   uint16_t disconnectHandle = kNoConnection;
   uint16_t notifyAttemptHandle = kNoConnection;
   uint16_t lastDisconnectedHandle = kNoConnection;
+  uint16_t pendingLocalCloseHandle = kNoConnection;
   uint16_t mtu = 23U;
   uint32_t numericComparison = 0U;
   uint32_t numericDeadline = 0U;
@@ -484,7 +547,11 @@ struct KitsuBleGattLink::Impl {
   int lastNotifyStatus = 0;
   uint32_t lastDisconnectAtMillis = 0U;
   uint32_t lastDisconnectedGeneration = 0U;
+  uint32_t pendingLocalCloseGeneration = 0U;
   uint32_t lastNotifyStatusAtMillis = 0U;
+  BleCloseCause pendingLocalCloseCause = BleCloseCause::None;
+  BleCloseCause lastCloseCause = BleCloseCause::None;
+  bool lastCloseWasLocal = false;
 };
 
 KitsuBleGattLink::KitsuBleGattLink() = default;
@@ -591,11 +658,15 @@ void KitsuBleGattLink::loop(uint32_t nowMillis) {
       deadlineReached(nowMillis, impl_->pairingWindowDeadline)) {
     impl_->pairingWindowOpen = false;
     impl_->pairingWindowDeadline = 0U;
-    if (impl_->numericPending) rejectNumeric = true;
+    if (impl_->numericPending) {
+      impl_->markLocalCloseLocked(BleCloseCause::LinkRejected);
+      rejectNumeric = true;
+    }
   }
   if (impl_->numericPending &&
       deadlineReached(nowMillis, impl_->numericDeadline)) {
     rejectNumeric = true;
+    impl_->markLocalCloseLocked(BleCloseCause::FrameTimedOut);
     impl_->pushEventLocked(BleLinkEvent::FrameTimedOut);
   }
   disconnectNow = impl_->disconnectRequested && impl_->connected &&
@@ -642,6 +713,11 @@ void KitsuBleGattLink::loop(uint32_t nowMillis) {
       eventStatus.lastDisconnectedHandle = record.handle;
       eventStatus.lastDisconnectedGeneration = record.generation;
       eventStatus.lastDisconnectAtMillis = record.disconnectAtMillis;
+    }
+    if (record.closeTelemetryAvailable) {
+      eventStatus.closeTelemetryAvailable = true;
+      eventStatus.lastCloseCause = record.closeCause;
+      eventStatus.lastCloseWasLocal = record.closeWasLocal;
     }
     // A queued connect/auth/failure event must never mutate a session after
     // its link has closed or after generation B replaced generation A, even
@@ -795,6 +871,7 @@ void KitsuBleGattLink::closePairingWindow() {
   impl_->pairingWindowOpen = false;
   impl_->pairingWindowDeadline = 0U;
   reject = impl_->numericPending;
+  if (reject) impl_->markLocalCloseLocked(BleCloseCause::LinkRejected);
   portEXIT_CRITICAL(&impl_->mux);
   if (reject) confirmNumericComparison(false);
 }
@@ -811,6 +888,7 @@ bool KitsuBleGattLink::setLocalControllerRecoveryLocked(bool locked) {
     rejectNumeric = impl_->numericPending;
     connected = impl_->connected;
     if (connected) {
+      impl_->markLocalCloseLocked(BleCloseCause::ControllerRecovery);
       impl_->disconnectRequested = true;
       impl_->disconnectIssued = true;
       impl_->disconnectHandle = impl_->connectionHandle;
@@ -870,6 +948,9 @@ bool KitsuBleGattLink::confirmNumericComparison(bool accept) {
   uint16_t handle = kNoConnection;
   portENTER_CRITICAL(&impl_->mux);
   if (impl_->numericPending) {
+    if (!accept) {
+      impl_->markLocalCloseLocked(BleCloseCause::LinkRejected);
+    }
     handle = impl_->connectionHandle;
     impl_->numericPending = false;
     impl_->numericComparison = 0U;
@@ -932,9 +1013,16 @@ bool KitsuBleGattLink::queueFrame(const uint8_t* json, size_t jsonBytes) {
 }
 
 void KitsuBleGattLink::disconnect() {
+  disconnect(BleCloseCause::ApplicationRequest);
+}
+
+void KitsuBleGattLink::disconnect(BleCloseCause cause) {
   if (!impl_) return;
   portENTER_CRITICAL(&impl_->mux);
   if (impl_->connected && impl_->connectionHandle != kNoConnection) {
+    impl_->markLocalCloseLocked(
+        cause == BleCloseCause::None ? BleCloseCause::ApplicationRequest
+                                     : cause);
     impl_->disconnectRequested = true;
     impl_->disconnectIssued = true;
     impl_->disconnectHandle = impl_->connectionHandle;
@@ -968,6 +1056,9 @@ BleLinkStatus KitsuBleGattLink::status(uint32_t nowMillis) const {
   output.lastDisconnectedHandle = impl_->lastDisconnectedHandle;
   output.lastDisconnectedGeneration = impl_->lastDisconnectedGeneration;
   output.lastDisconnectAtMillis = impl_->lastDisconnectAtMillis;
+  output.closeTelemetryAvailable = impl_->closeTelemetryAvailable;
+  output.lastCloseCause = impl_->lastCloseCause;
+  output.lastCloseWasLocal = impl_->lastCloseWasLocal;
   output.notifyStatusAvailable = impl_->notifyStatusAvailable;
   output.lastNotifyStatus = impl_->lastNotifyStatus;
   output.lastNotifyStatusAtMillis = impl_->lastNotifyStatusAtMillis;
@@ -1007,6 +1098,7 @@ int KitsuBleGattLink::bondCount() const { return -1; }
 bool KitsuBleGattLink::setApplicationAuthenticated(bool) { return false; }
 bool KitsuBleGattLink::queueFrame(const uint8_t*, size_t) { return false; }
 void KitsuBleGattLink::disconnect() {}
+void KitsuBleGattLink::disconnect(BleCloseCause) {}
 BleLinkStatus KitsuBleGattLink::status(uint32_t) const {
   return BleLinkStatus{};
 }

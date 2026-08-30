@@ -1,6 +1,7 @@
 #include "../src/kitsu_ble_gatt.h"
 
 #include <assert.h>
+#include <string.h>
 
 #include <utility>
 #include <vector>
@@ -9,11 +10,14 @@
 #include "NimBLEDevice.h"
 
 using kitsu868::connectivity::BleFrameDelegate;
+using kitsu868::connectivity::BleCloseCause;
 using kitsu868::connectivity::BleLinkEvent;
 using kitsu868::connectivity::BleLinkStatus;
 using kitsu868::connectivity::KitsuBleGattLink;
+using kitsu868::connectivity::bleCloseCauseName;
 using kitsu868::connectivity::kBleNumericComparisonTimeoutMs;
 using kitsu868::connectivity::kBleNotifyCompletionTimeoutMs;
+using kitsu868::companion::kFrameAssemblyTimeoutMs;
 
 namespace fake_nimble {
 inline uint8_t clientConfigurationPermissions = 0U;
@@ -617,6 +621,180 @@ void testUnsubscribeAbortsQueuedResponseAndMultiChunkCompletesExactlyOnce() {
   }
 }
 
+void testCloseTelemetryDistinguishesPeerAndLocalCauses() {
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kFirstHandle, 4000U);
+    setFakeMillis(4001U);
+    fixture.server->simulateDisconnect(kFirstHandle, 19);
+    const BleLinkStatus status = fixture.link.status(4001U);
+    assert(status.closeTelemetryAvailable);
+    assert(status.lastCloseCause == BleCloseCause::RemoteUserTerminated);
+    assert(!status.lastCloseWasLocal);
+    assert(status.disconnectReasonAvailable);
+    assert(status.lastDisconnectReason == 19);
+    assert(status.lastDisconnectedHandle == kFirstHandle);
+    assert(status.lastDisconnectAtMillis == 4001U);
+  }
+
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kSecondHandle, 4100U);
+    fixture.tx->simulateSubscribe(kSecondHandle, 0U);
+    fixture.link.loop(4101U);
+    setFakeMillis(4102U);
+    fixture.server->simulateDisconnect(kSecondHandle, 19);
+    const BleLinkStatus status = fixture.link.status(4102U);
+    assert(status.closeTelemetryAvailable);
+    assert(status.lastCloseCause == BleCloseCause::TransportFailure);
+    assert(status.lastCloseWasLocal);
+    assert(status.lastDisconnectReason == 19);
+  }
+
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kThirdHandle, 4200U);
+    fixture.link.disconnect();
+    fixture.link.loop(4201U);
+    setFakeMillis(4202U);
+    fixture.server->simulateDisconnect(kThirdHandle, 19);
+    const BleLinkStatus status = fixture.link.status(4202U);
+    assert(status.lastCloseCause == BleCloseCause::ApplicationRequest);
+    assert(status.lastCloseWasLocal);
+  }
+}
+
+void testCloseTelemetryIsBoundToConnectionGeneration() {
+  Fixture fixture;
+  fixture.secureAndSubscribe(kFirstHandle, 4300U);
+  fixture.tx->simulateSubscribe(kFirstHandle, 0U);
+  fixture.link.loop(4301U);
+  setFakeMillis(4302U);
+  fixture.server->simulateDisconnect(kFirstHandle, 19);
+  const uint32_t firstGeneration =
+      fixture.link.status(4302U).lastDisconnectedGeneration;
+
+  fixture.secureAndSubscribe(kSecondHandle, 4303U);
+  setFakeMillis(4304U);
+  fixture.server->simulateDisconnect(kSecondHandle, 8);
+  const BleLinkStatus status = fixture.link.status(4304U);
+  assert(status.lastDisconnectedGeneration != firstGeneration);
+  assert(status.lastCloseCause == BleCloseCause::SupervisionTimeout);
+  assert(!status.lastCloseWasLocal);
+  assert(status.lastDisconnectReason == 8);
+}
+
+void testUnexpectedHciReasonClassificationIsHonest() {
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kFirstHandle, 4800U);
+    setFakeMillis(4801U);
+    fixture.server->simulateDisconnect(kFirstHandle, 0x08);
+    const BleLinkStatus status = fixture.link.status(4801U);
+    assert(status.lastCloseCause == BleCloseCause::SupervisionTimeout);
+    assert(!status.lastCloseWasLocal);
+    assert(status.lastDisconnectReason == 0x08);
+  }
+
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kSecondHandle, 4900U);
+    setFakeMillis(4901U);
+    fixture.server->simulateDisconnect(kSecondHandle, 0x7f);
+    const BleLinkStatus status = fixture.link.status(4901U);
+    assert(status.lastCloseCause == BleCloseCause::Unknown);
+    assert(!status.lastCloseWasLocal);
+    assert(status.lastDisconnectReason == 0x7f);
+  }
+}
+
+void testSessionCloseCausePassesThroughGattUnchanged() {
+  Fixture fixture;
+  fixture.secureAndSubscribe(kThirdHandle, 5000U);
+  fixture.link.disconnect(BleCloseCause::HandshakeTimeout);
+  fixture.link.loop(5001U);
+  setFakeMillis(5002U);
+  fixture.server->simulateDisconnect(kThirdHandle, 0x13);
+  const BleLinkStatus status = fixture.link.status(5002U);
+  assert(status.lastCloseCause == BleCloseCause::HandshakeTimeout);
+  assert(status.lastCloseWasLocal);
+  assert(status.lastDisconnectReason == 0x13);
+}
+
+void testCloseCauseNamesAreStableAndNonSecret() {
+  assert(strcmp(bleCloseCauseName(BleCloseCause::RemoteUserTerminated),
+                "remote_user_terminated") == 0);
+  assert(strcmp(bleCloseCauseName(BleCloseCause::SupervisionTimeout),
+                "supervision_timeout") == 0);
+  assert(strcmp(bleCloseCauseName(BleCloseCause::Unknown), "unknown") == 0);
+  assert(strcmp(bleCloseCauseName(BleCloseCause::HandshakeTimeout),
+                "handshake_timeout") == 0);
+  assert(strcmp(bleCloseCauseName(BleCloseCause::ResponseSendFailed),
+                "response_send_failed") == 0);
+  assert(strcmp(bleCloseCauseName(BleCloseCause::ControllerForget),
+                "controller_forget") == 0);
+}
+
+void testCloseTelemetryRetainsSpecificLocalFailureCause() {
+  {
+    Fixture fixture;
+    fixture.connect(kFirstHandle, 4400U);
+    fixture.server->simulateAuthenticationComplete(
+        NimBLEConnInfo(kFirstHandle, 247U, true, false, true, 16U));
+    fixture.link.loop(4401U);
+    setFakeMillis(4402U);
+    fixture.server->simulateDisconnect(kFirstHandle, 19);
+    const BleLinkStatus status = fixture.link.status(4402U);
+    assert(status.lastCloseCause == BleCloseCause::LinkRejected);
+    assert(status.lastCloseWasLocal);
+  }
+
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kSecondHandle, 4500U);
+    static const uint8_t invalidFrame[] = {
+        0U, 0U, 0U, 0U,
+    };
+    fixture.rx->simulateWrite(kSecondHandle, invalidFrame,
+                              sizeof(invalidFrame));
+    fixture.link.loop(4501U);
+    setFakeMillis(4502U);
+    fixture.server->simulateDisconnect(kSecondHandle, 19);
+    const BleLinkStatus status = fixture.link.status(4502U);
+    assert(status.lastCloseCause == BleCloseCause::ProtocolViolation);
+    assert(status.lastCloseWasLocal);
+  }
+
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kThirdHandle, 4600U);
+    static const uint8_t partialFrame[] = {
+        0U, 0U, 0U, 2U, '{',
+    };
+    fixture.rx->simulateWrite(kThirdHandle, partialFrame,
+                              sizeof(partialFrame));
+    fixture.link.loop(4601U + kFrameAssemblyTimeoutMs);
+    setFakeMillis(4602U + kFrameAssemblyTimeoutMs);
+    fixture.server->simulateDisconnect(kThirdHandle, 19);
+    const BleLinkStatus status =
+        fixture.link.status(4602U + kFrameAssemblyTimeoutMs);
+    assert(status.lastCloseCause == BleCloseCause::FrameTimedOut);
+    assert(status.lastCloseWasLocal);
+  }
+
+  {
+    Fixture fixture;
+    fixture.secureAndSubscribe(kFirstHandle, 4700U);
+    assert(fixture.link.setLocalControllerRecoveryLocked(true));
+    fixture.link.loop(4701U);
+    setFakeMillis(4702U);
+    fixture.server->simulateDisconnect(kFirstHandle, 19);
+    const BleLinkStatus status = fixture.link.status(4702U);
+    assert(status.lastCloseCause == BleCloseCause::ControllerRecovery);
+    assert(status.lastCloseWasLocal);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -635,5 +813,11 @@ int main() {
   testWriteFromDepartedHandleCannotCloseReplacementLink();
   testIdleUnsubscribeAndNeverSubscribedWriteCloseBoundedly();
   testUnsubscribeAbortsQueuedResponseAndMultiChunkCompletesExactlyOnce();
+  testCloseTelemetryDistinguishesPeerAndLocalCauses();
+  testCloseTelemetryIsBoundToConnectionGeneration();
+  testCloseTelemetryRetainsSpecificLocalFailureCause();
+  testUnexpectedHciReasonClassificationIsHonest();
+  testSessionCloseCausePassesThroughGattUnchanged();
+  testCloseCauseNamesAreStableAndNonSecret();
   return 0;
 }

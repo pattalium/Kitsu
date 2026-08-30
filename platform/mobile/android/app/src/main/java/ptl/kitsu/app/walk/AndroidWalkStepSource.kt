@@ -321,6 +321,7 @@ class AndroidWalkStepSource(context: Context) : WalkStepSource, SensorEventListe
     private fun snapshotLocked(): WalkStepSnapshot = WalkStepSnapshot(
         availability = availability,
         observing = observing,
+        sensorBaselineReady = ledger.hasSafeCounterBaseline,
         deviceAddress = ledger.selectedDeviceAddress,
         routeId = ledger.activeCheckpoint?.routeId,
         stepsTotal = ledger.activeCheckpoint?.stepsTotal ?: 0L,

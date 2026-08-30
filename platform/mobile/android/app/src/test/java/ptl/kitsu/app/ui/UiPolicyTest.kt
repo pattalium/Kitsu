@@ -104,6 +104,42 @@ class UiPolicyTest {
         )
     }
 
+    @Test fun authenticatedPeerTerminationIsAnOrdinaryDisconnectNotPairingAttention() {
+        val presentation = connectionPresentation(
+            OwnerState(
+                connection = ConnectionState(
+                    mode = ConnectionMode.OFFLINE,
+                    connected = false,
+                    detail = "gatt_peer_terminated",
+                ),
+                activeDeviceAddress = "00:11:22:33:44:55",
+                errorCode = "gatt_peer_terminated",
+            ),
+        )
+
+        assertEquals("Disconnected", presentation.label)
+        assertEquals(StatusTone.NEUTRAL, presentation.tone)
+        assertEquals("Kitsu ended the Bluetooth connection", presentation.detail)
+    }
+
+    @Test fun independentBluetoothSecurityFailureStillNeedsAttention() {
+        val presentation = connectionPresentation(
+            OwnerState(
+                connection = ConnectionState(
+                    mode = ConnectionMode.OFFLINE,
+                    connected = false,
+                    detail = "bluetooth_pairing_repair_required",
+                ),
+                activeDeviceAddress = "00:11:22:33:44:55",
+                errorCode = "bluetooth_pairing_repair_required",
+            ),
+        )
+
+        assertEquals("Needs attention", presentation.label)
+        assertEquals(StatusTone.NEGATIVE, presentation.tone)
+        assertEquals("Bluetooth security pairing needs repair", presentation.detail)
+    }
+
     @Test fun completedFirmwareRequiresAnExplicitOtherSlotConfirmation() {
         assertEquals(
             FirmwareInstallAction("Install on selected Kitsu", false),

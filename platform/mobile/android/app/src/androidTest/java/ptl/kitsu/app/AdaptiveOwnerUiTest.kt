@@ -104,7 +104,10 @@ class AdaptiveOwnerUiTest {
     @Test
     fun fieldGuideListsThePublicRosterWithoutAConnection() {
         compose.onNodeWithTag("nav-companion").performClick()
-        compose.onNodeWithText("Creature guide").performClick()
+        compose.onNodeWithText("Creature guide").assertIsDisplayed()
+        compose.onAllNodesWithText("Accessible view").assertCountEquals(0)
+        compose.onAllNodesWithText("Pet Studio").assertCountEquals(0)
+        compose.onNodeWithText("Open creature guide").performClick()
         compose.onNodeWithTag("screen-field-guide").assertIsDisplayed()
         compose.onNodeWithTag("field-guide-summary").assertIsDisplayed()
         compose.onNodeWithTag("screen-field-guide")

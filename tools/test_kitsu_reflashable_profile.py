@@ -282,6 +282,83 @@ def test_mesh_rx_rehydrates_verified_clients_after_successful_boot() -> None:
     assert "discoveryJournal.flush(" not in init_mesh
 
 
+def test_ble_close_telemetry_is_volatile_and_visible_in_selftest() -> None:
+    header = read("src/kitsu_ble_gatt.h")
+    adapter = read("src/kitsu_ble_gatt.cpp")
+    session_header = read("src/kitsu_ble_session.h")
+    session = read("src/kitsu_ble_session.cpp")
+    main_source = read("src/main.cpp")
+    selftest = main_source[
+        main_source.index("void printSelfTest()"):
+        main_source.index("void printSync()")
+    ]
+
+    for cause in (
+        "RemoteUserTerminated",
+        "SupervisionTimeout",
+        "Unknown",
+        "LinkRejected",
+        "FrameTimedOut",
+        "ProtocolViolation",
+        "TransportFailure",
+        "SecureLinkRejected",
+        "HandshakeTimeout",
+        "AuthenticationFailed",
+        "SessionProtocolViolation",
+        "ResponseSendFailed",
+        "ControllerForget",
+        "ApplicationRequest",
+        "ControllerRecovery",
+    ):
+        assert cause in header
+    for field in (
+        "ble_connected",
+        "ble_application_authenticated",
+        "ble_last_close_available",
+        "ble_last_close_cause",
+        "ble_last_close_local",
+        "ble_last_disconnect_reason_available",
+        "ble_last_disconnect_reason",
+        "ble_last_disconnect_at_ms",
+        "ble_last_notify_status_available",
+        "ble_last_notify_status",
+    ):
+        assert field.replace('"', '\\"') in selftest
+    assert (
+        'if (command == "status" || command == "selftest") printSelfTest();'
+        in main_source
+    )
+    assert "case 0x13:" in adapter
+    assert "BleCloseCause::RemoteUserTerminated" in adapter
+    assert "case 0x08:" in adapter
+    assert "BleCloseCause::SupervisionTimeout" in adapter
+    assert "return BleCloseCause::Unknown;" in adapter
+    assert "disconnectBle(BleCloseCause cause)" in session_header
+    assert "BleCloseCause pendingCloseCause_" in session_header
+    for propagated in (
+        "HandshakeTimeout",
+        "AuthenticationFailed",
+        "SessionProtocolViolation",
+        "ResponseSendFailed",
+        "ControllerForget",
+    ):
+        assert f"BleCloseCause::{propagated}" in session
+    assert "link_.disconnect(cause);" in main_source
+
+    # The adapter owns only process-lifetime state. Diagnostics must never
+    # create flash wear or become another pairing/controller data store.
+    combined = header + adapter
+    for persistence_api in (
+        "Preferences",
+        "nvs_set_",
+        "nvs_commit",
+        ".putUInt(",
+        ".putBytes(",
+        ".putString(",
+    ):
+        assert persistence_api not in combined
+
+
 def main() -> None:
     test_selected_environment()
     test_partition_layout_is_unencrypted_and_recoverable()
@@ -291,6 +368,7 @@ def main() -> None:
     test_runtime_contains_no_efuse_or_silicon_lock_api()
     test_truthful_local_only_state_and_supported_build_path()
     test_mesh_rx_rehydrates_verified_clients_after_successful_boot()
+    test_ble_close_telemetry_is_volatile_and_visible_in_selftest()
     print("Kitsu reflashable profile audit: PASS")
 
 

@@ -15,6 +15,8 @@ class WalkStepLedgerTest {
         val beforeRoute = WalkStepLedger().observeCounter(10_000L).next
         val bound = beforeRoute.bindRoute(DEVICE_A, routeId = 7L, firmwareStepsTotal = 120L).next
 
+        assertTrue(beforeRoute.hasSafeCounterBaseline)
+        assertTrue(bound.hasSafeCounterBaseline)
         assertEquals(DEVICE_A, bound.activeCheckpoint?.deviceAddress)
         assertEquals(10_000L, bound.activeCheckpoint?.lastCounter)
         assertEquals(120L, bound.activeCheckpoint?.stepsTotal)
@@ -22,6 +24,30 @@ class WalkStepLedgerTest {
         val walked = bound.observeCounter(10_015L).next
         assertEquals(135L, walked.activeCheckpoint?.stepsTotal)
         assertEquals(10_015L, walked.activeCheckpoint?.lastCounter)
+    }
+
+    @Test
+    fun firstIdleSampleAfterDeviceSelectionSeedsTheNextRoute() {
+        val selected = WalkStepLedger().selectDevice(DEVICE_A).next
+        assertFalse(selected.hasSafeCounterBaseline)
+        assertTrue(selected.freshBaselineRequired)
+
+        val sampled = selected.observeCounter(5_000L)
+        assertFalse(sampled.storageChanged)
+        assertTrue(sampled.next.hasSafeCounterBaseline)
+        assertFalse(sampled.next.freshBaselineRequired)
+        assertEquals(selected.persisted, sampled.next.persisted)
+
+        val bound = sampled.next.bindRoute(
+            DEVICE_A,
+            routeId = 7L,
+            firmwareStepsTotal = 120L,
+        )
+        assertTrue(bound.storageChanged)
+        assertEquals(5_000L, bound.next.activeCheckpoint?.lastCounter)
+
+        val walked = bound.next.observeCounter(5_015L).next
+        assertEquals(135L, walked.activeCheckpoint?.stepsTotal)
     }
 
     @Test
@@ -73,9 +99,11 @@ class WalkStepLedgerTest {
         ledger = ledger.bindRoute(DEVICE_B, 7L, 40L).next
         assertEquals(40L, ledger.activeCheckpoint?.stepsTotal)
         assertNull(ledger.activeCheckpoint?.lastCounter)
+        assertFalse(ledger.hasSafeCounterBaseline)
         // First callback after the switch is a fresh baseline, even if Android batched old steps.
         ledger = ledger.observeCounter(830L).next
         assertEquals(40L, ledger.activeCheckpoint?.stepsTotal)
+        assertTrue(ledger.hasSafeCounterBaseline)
         ledger = ledger.observeCounter(835L).next
         assertEquals(45L, ledger.activeCheckpoint?.stepsTotal)
 

@@ -525,16 +525,6 @@ fun KitsuOwnerApp(
                                     CompanionDestination.GUIDE,
                                 )
                             },
-                            onOpenAccessibility = {
-                                companionDestination = CompanionDestination.ACCESSIBILITY
-                                if (owner.companionProfileSupported) {
-                                    viewModel.capturePetPresentation()
-                                }
-                            },
-                            onOpenStudio = {
-                                companionDestination = CompanionDestination.STUDIO
-                                viewModel.capturePetPresentation()
-                            },
                             modifier = screenModifier,
                         )
                     }

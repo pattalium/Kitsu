@@ -1104,7 +1104,10 @@ class BleKitsuTransport(
     private val callback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(callbackGatt: BluetoothGatt, status: Int, newState: Int) {
-            val failureCode = GattStatusPolicy.connectionFailure(status)
+            var failureCode = GattStatusPolicy.connectionFailure(
+                status,
+                authenticatedSessionActive = false,
+            )
             var disconnected = false
             var interruptedWrite: CompletableDeferred<Int>? = null
             var interruptedHandshake: CompletableDeferred<ByteArray>? = null
@@ -1114,6 +1117,14 @@ class BleKitsuTransport(
                 if (!GattCallbackBindingPolicy.accepts(this@BleKitsuTransport.gatt, callbackGatt)) {
                     false
                 } else {
+                    // Snapshot application authentication before a disconnect
+                    // clears the session fields. Status 0x13 is otherwise easily
+                    // misreported as a broken OS bond after a healthy session.
+                    failureCode = GattStatusPolicy.connectionFailure(
+                        status,
+                        authenticatedSessionActive = envelopeSession != null &&
+                            connectedDeviceAddress != null && connectedControllerRole != null,
+                    )
                     when {
                         newState == BluetoothProfile.STATE_DISCONNECTED -> {
                             disconnected = true

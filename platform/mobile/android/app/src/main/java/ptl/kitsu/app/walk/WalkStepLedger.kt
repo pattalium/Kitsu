@@ -57,6 +57,10 @@ internal data class WalkStepLedger(
             persisted.checkpoints.firstOrNull { it.key == key }
         }
 
+    val hasSafeCounterBaseline: Boolean
+        get() = activeCheckpoint?.lastCounter != null ||
+            (activeCheckpoint == null && latestCounter != null && !freshBaselineRequired)
+
     /** Stops crediting the previously selected board without deleting its durable checkpoint. */
     fun selectDevice(deviceAddress: String): WalkStepLedgerTransition {
         val canonical = WalkStepDeviceIdentity.normalize(deviceAddress)
@@ -162,7 +166,10 @@ internal data class WalkStepLedger(
     fun observeCounter(counter: Long): WalkStepLedgerTransition {
         require(counter >= 0L) { "invalid_step_counter" }
         val current = activeCheckpoint ?: return WalkStepLedgerTransition(
-            next = copy(latestCounter = counter),
+            // When a physical board was selected while idle, this is the first
+            // unambiguous post-switch sample. It is now safe to seed that board's
+            // next route from this counter instead of discarding another batch.
+            next = copy(latestCounter = counter, freshBaselineRequired = false),
             storageChanged = false,
         )
         val previousCounter = current.lastCounter

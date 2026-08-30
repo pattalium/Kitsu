@@ -253,7 +253,7 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         self.assertIn("ble_bonds", main)
         self.assertIn("controllers", main)
 
-    def test_android_status19_repair_reuses_one_saved_controller(self) -> None:
+    def test_android_status19_is_transient_and_repair_reuses_one_saved_controller(self) -> None:
         android = ROOT / "platform/mobile/android/app/src/main/java/ptl/kitsu/app"
         transport = (android / "transport/BleKitsuTransport.kt").read_text(
             encoding="utf-8"
@@ -266,7 +266,10 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         )
         ui = (android / "ui/KitsuSettingsScreen.kt").read_text(encoding="utf-8")
 
-        self.assertIn('0x13 -> "bluetooth_pairing_repair_required"', callback_policy)
+        self.assertIn("0x13 -> if (authenticatedSessionActive)", callback_policy)
+        self.assertIn('"gatt_peer_terminated"', callback_policy)
+        self.assertIn('"gatt_peer_terminated_before_auth"', callback_policy)
+        self.assertNotIn('0x13 -> "bluetooth_pairing_repair_required"', callback_policy)
         callback = transport.split(
             "private val callback = object : BluetoothGattCallback()", 1
         )[1].split("private fun acceptBytes", 1)[0]
@@ -280,6 +283,13 @@ class LocalConnectivityFoundationTests(unittest.TestCase):
         ):
             section = callback.split(f"override fun {lifecycle}", 1)[1]
             self.assertIn("GattCallbackBindingPolicy.accepts", section, lifecycle)
+        connection_change = callback.split(
+            "override fun onConnectionStateChange", 1
+        )[1].split("override fun onServicesDiscovered", 1)[0]
+        self.assertIn(
+            "authenticatedSessionActive = envelopeSession != null",
+            connection_change,
+        )
 
         repair_transport = transport.split(
             "override suspend fun repairBluetoothPairing", 1

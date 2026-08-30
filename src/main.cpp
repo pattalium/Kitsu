@@ -1070,12 +1070,16 @@ class FirmwareBleBridge final
         if (status.disconnectReasonAvailable) {
           Serial.printf(
               "KITSU_BLE_DISCONNECT {\"reason\":%ld,\"at_ms\":%lu,"
-              "\"handle\":%u,\"generation\":%lu}\n",
+              "\"handle\":%u,\"generation\":%lu,\"cause\":\"%s\","
+              "\"local\":%s}\n",
               static_cast<long>(status.lastDisconnectReason),
               static_cast<unsigned long>(status.lastDisconnectAtMillis),
               static_cast<unsigned>(status.lastDisconnectedHandle),
               static_cast<unsigned long>(
-                  status.lastDisconnectedGeneration));
+                  status.lastDisconnectedGeneration),
+              kitsu868::connectivity::bleCloseCauseName(
+                  status.lastCloseCause),
+              status.lastCloseWasLocal ? "true" : "false");
         }
         if (!status.connected &&
             status.eventConnectionGeneration != 0U &&
@@ -1119,7 +1123,10 @@ class FirmwareBleBridge final
                  size_t payloadBytes) {
     return begun_ && session_.sendEvent(operation, payload, payloadBytes);
   }
-  void disconnectBle() override { link_.disconnect(); }
+  void disconnectBle(
+      kitsu868::connectivity::BleCloseCause cause) override {
+    link_.disconnect(cause);
+  }
   bool handleBleRequest(
       const kitsu868::companion::DecodedEnvelope& request,
       const uint8_t* payload, size_t payloadBytes, uint8_t* responsePayload,
@@ -14765,6 +14772,8 @@ void printSelfTest() {
       adventureProgression.view();
   const kitsu868::activities::ActivityView selftestActivity =
       activitySuite.view(millis());
+  const kitsu868::connectivity::BleLinkStatus selftestBle =
+      companionBle.linkStatus(millis());
   const char* gameName = activeGame == ActiveGame::SignalCatch
                              ? "signal"
                              : activeGame == ActiveGame::PounceFetch
@@ -14854,7 +14863,17 @@ void printSelfTest() {
       "\"progression_actions\":%lu,\"social_ready\":%s,\"friends\":%u,"
       "\"adventure_ready\":%s,\"adventure_phase\":%u,"
       "\"journal_entries\":%u,\"activity_ready\":%s,"
-      "\"activity\":\"%s\",\"ble_bonds\":%d,\"controllers\":%u}\n",
+      "\"activity\":\"%s\",\"ble_connected\":%s,"
+      "\"ble_application_authenticated\":%s,"
+      "\"ble_last_close_available\":%s,"
+      "\"ble_last_close_cause\":\"%s\","
+      "\"ble_last_close_local\":%s,"
+      "\"ble_last_disconnect_reason_available\":%s,"
+      "\"ble_last_disconnect_reason\":%ld,"
+      "\"ble_last_disconnect_at_ms\":%lu,"
+      "\"ble_last_notify_status_available\":%s,"
+      "\"ble_last_notify_status\":%ld,"
+      "\"ble_bonds\":%d,\"controllers\":%u}\n",
       lastPeerUid,
       lastEncounterTrait == 0xff ? -1 : static_cast<int>(lastEncounterTrait),
       lastEncounterGift == 0xff ? -1 : static_cast<int>(lastEncounterGift),
@@ -14878,7 +14897,18 @@ void printSelfTest() {
       static_cast<unsigned>(selftestAdventure.phase),
       adventureProgression.journalCount(),
       activityStateReady ? "true" : "false",
-      kitsu868::activities::activityName(selftestActivity.kind), bleBondCount,
+      kitsu868::activities::activityName(selftestActivity.kind),
+      selftestBle.connected ? "true" : "false",
+      selftestBle.applicationAuthenticated ? "true" : "false",
+      selftestBle.closeTelemetryAvailable ? "true" : "false",
+      kitsu868::connectivity::bleCloseCauseName(
+          selftestBle.lastCloseCause),
+      selftestBle.lastCloseWasLocal ? "true" : "false",
+      selftestBle.disconnectReasonAvailable ? "true" : "false",
+      static_cast<long>(selftestBle.lastDisconnectReason),
+      static_cast<unsigned long>(selftestBle.lastDisconnectAtMillis),
+      selftestBle.notifyStatusAvailable ? "true" : "false",
+      static_cast<long>(selftestBle.lastNotifyStatus), bleBondCount,
       static_cast<unsigned>(controllerCount));
 }
 

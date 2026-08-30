@@ -391,6 +391,7 @@ void KitsuBleSession::resetForSecureLink(uint32_t nowMillis) {
   stateDeadline_ = nowMillis + kBleHandshakeTotalTimeoutMs;
   closeAt_ = 0U;
   closeAfterTransmit_ = false;
+  pendingCloseCause_ = BleCloseCause::None;
 }
 
 void KitsuBleSession::onSecureLinkEstablished(
@@ -403,12 +404,12 @@ void KitsuBleSession::onSecureLinkEstablished(
   linkBonded_ = bonded;
   if (!secureConnections_ || !linkEncrypted_ || !linkAuthenticated_ ||
       !linkBonded_) {
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::SecureLinkRejected);
     return;
   }
   if (backoffUntil_ != 0U && !deadlineReached(nowMillis, backoffUntil_)) {
     state_ = BleSessionState::Backoff;
-    transport_->disconnectBle();
+    transport_->disconnectBle(BleCloseCause::AuthenticationBackoff);
     return;
   }
   backoffUntil_ = 0U;
@@ -434,6 +435,7 @@ void KitsuBleSession::onLinkClosed(uint32_t nowMillis) {
   stateDeadline_ = 0U;
   closeAt_ = 0U;
   closeAfterTransmit_ = false;
+  pendingCloseCause_ = BleCloseCause::None;
   state_ = backoffUntil_ == 0U ? BleSessionState::Disconnected
                               : BleSessionState::Backoff;
 }
@@ -480,15 +482,22 @@ void KitsuBleSession::failProof(uint32_t nowMillis) {
     state_ = BleSessionState::Closing;
     closeAt_ = nowMillis + kCloseDelayMs;
     closeAfterTransmit_ = false;
+    pendingCloseCause_ = BleCloseCause::AuthenticationFailed;
   } else {
     state_ = BleSessionState::AwaitingHello;
   }
 }
 
-void KitsuBleSession::failAndClose(uint32_t nowMillis) {
+void KitsuBleSession::failAndClose(uint32_t nowMillis,
+                                   BleCloseCause cause) {
   clearPendingPairing();
   clearSessionSecrets();
   transport_->setBleApplicationAuthenticated(false);
+  if (pendingCloseCause_ == BleCloseCause::None) {
+    pendingCloseCause_ = cause == BleCloseCause::None
+        ? BleCloseCause::ApplicationRequest
+        : cause;
+  }
   state_ = BleSessionState::Closing;
   closeAt_ = nowMillis + kCloseDelayMs;
   closeAfterTransmit_ = false;
@@ -749,7 +758,7 @@ bool KitsuBleSession::confirmPendingPairing(uint32_t nowMillis) {
   }
   if (!unique) {
     clearPendingPairing();
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::PairingFailed);
     return false;
   }
 
@@ -757,7 +766,7 @@ bool KitsuBleSession::confirmPendingPairing(uint32_t nowMillis) {
   if (!makePendingPairingProof("device", proof)) {
     secureZero(proof, sizeof(proof));
     clearPendingPairing();
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::PairingFailed);
     return false;
   }
   char controllerB64[23]{};
@@ -785,7 +794,7 @@ bool KitsuBleSession::confirmPendingPairing(uint32_t nowMillis) {
       clientNonceBytes != 22U || deviceNonceBytes != 22U ||
       proofBytes != 43U) {
     clearPendingPairing();
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::PairingFailed);
     return false;
   }
 
@@ -812,7 +821,7 @@ bool KitsuBleSession::confirmPendingPairing(uint32_t nowMillis) {
   if (!writer.ok() ||
       !transport_->sendBleJson(jsonScratch_, writer.size())) {
     clearPendingPairing();
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::ResponseSendFailed);
     return false;
   }
   state_ = BleSessionState::PairingAwaitingCommit;
@@ -880,7 +889,7 @@ bool KitsuBleSession::handlePairCommit(const uint8_t* json,
   secureZero(okProof, sizeof(okProof));
   if (!encoded || proofBytes != 43U) {
     clearPendingPairing();
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::PairingFailed);
     return false;
   }
   JsonWriter writer(jsonScratch_, companion::kMaximumHandshakeFrameBytes);
@@ -898,7 +907,7 @@ bool KitsuBleSession::handlePairCommit(const uint8_t* json,
   completedPairingRole_ = committedRole;
   clearPendingPairing();
   state_ = BleSessionState::AwaitingHello;
-  if (!sent) failAndClose(nowMillis);
+  if (!sent) failAndClose(nowMillis, BleCloseCause::ResponseSendFailed);
   return sent;
 }
 
@@ -953,7 +962,7 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
        permission != ControllerPermission::ActionRequired) ||
       !actionAuthorized || expectedClientSequence_ == UINT64_MAX) {
     backoffUntil_ = nowMillis + kBleControllerBackoffMs;
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::SessionProtocolViolation);
     return false;
   }
   ++expectedClientSequence_;
@@ -982,7 +991,7 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
     if (!sendAuthenticated(companion::EnvelopeChannel::Response,
                            request.requestId, request.operation,
                            response, responseBytes)) {
-      failAndClose(nowMillis);
+      failAndClose(nowMillis, BleCloseCause::ResponseSendFailed);
       return false;
     }
     if (revoked == SecurityResult::Ok || !controllerStillAuthorized) {
@@ -991,6 +1000,7 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
       state_ = BleSessionState::Closing;
       closeAfterTransmit_ = true;
       closeAt_ = nowMillis + kTransmitDrainTimeoutMs;
+      pendingCloseCause_ = BleCloseCause::ControllerForget;
     }
     return true;
   }
@@ -1007,7 +1017,7 @@ bool KitsuBleSession::handleAuthenticatedEnvelope(const uint8_t* json,
   if (!sendAuthenticated(companion::EnvelopeChannel::Response,
                           request.requestId, request.operation,
                           responseScratch_, responseBytes)) {
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::ResponseSendFailed);
     return false;
   }
   // An authenticated session alone is not enough to emit unsolicited events:
@@ -1022,14 +1032,18 @@ void KitsuBleSession::onFrame(const uint8_t* json, size_t jsonBytes,
   if (!begun_ || !json || jsonBytes == 0U ||
       !secureConnections_ || !linkEncrypted_ || !linkAuthenticated_ ||
       !linkBonded_) {
-    failAndClose(nowMillis);
+    const bool secureLink = secureConnections_ && linkEncrypted_ &&
+        linkAuthenticated_ && linkBonded_;
+    failAndClose(nowMillis,
+                 secureLink ? BleCloseCause::SessionProtocolViolation
+                            : BleCloseCause::SecureLinkRejected);
     return;
   }
   if ((state_ == BleSessionState::AwaitingHello ||
        state_ == BleSessionState::AwaitingClientAuth) &&
       deadlineReached(nowMillis, stateDeadline_)) {
     sendControlError("timeout");
-    failAndClose(nowMillis);
+    failAndClose(nowMillis, BleCloseCause::HandshakeTimeout);
     return;
   }
 
@@ -1086,18 +1100,23 @@ void KitsuBleSession::loop(uint32_t nowMillis) {
       stateDeadline_ != 0U && deadlineReached(nowMillis, stateDeadline_)) {
     clearPendingPairing();
     sendControlError("timeout");
-    failAndClose(nowMillis);
+    const BleCloseCause timeoutCause =
+        state_ == BleSessionState::PairingAwaitingPhysical ||
+            state_ == BleSessionState::PairingAwaitingCommit
+        ? BleCloseCause::PairingTimeout
+        : BleCloseCause::HandshakeTimeout;
+    failAndClose(nowMillis, timeoutCause);
   }
   if (state_ == BleSessionState::Closing && closeAfterTransmit_ &&
       transport_->bleTransmitIdle()) {
     closeAt_ = 0U;
     closeAfterTransmit_ = false;
-    transport_->disconnectBle();
+    transport_->disconnectBle(pendingCloseCause_);
   } else if (state_ == BleSessionState::Closing && closeAt_ != 0U &&
              deadlineReached(nowMillis, closeAt_)) {
     closeAt_ = 0U;
     closeAfterTransmit_ = false;
-    transport_->disconnectBle();
+    transport_->disconnectBle(pendingCloseCause_);
   }
   if (state_ == BleSessionState::Backoff && backoffUntil_ != 0U &&
       deadlineReached(nowMillis, backoffUntil_)) {

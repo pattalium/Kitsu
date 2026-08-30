@@ -1147,7 +1147,7 @@ private fun LocalAutomationCard(
         modifier = Modifier.testTag("settings-local-automation"),
     ) {
         Text(
-            "Launcher shortcuts open a visible confirmation. Tasker can use the same safe pet, focus, walk, accessibility, and Studio actions after you enable a private capability on this phone.",
+            "Launcher shortcuts open a visible confirmation. Optional Tasker access can use the app's local companion actions after you enable a private capability on this phone.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(

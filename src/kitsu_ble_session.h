@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "kitsu_companion_protocol.h"
+#include "kitsu_ble_gatt.h"
 #include "kitsu_device_security.h"
 
 namespace kitsu868 {
@@ -54,7 +55,7 @@ class BleSessionTransport {
   virtual bool sendBleJson(const uint8_t* json, size_t jsonBytes) = 0;
   virtual bool setBleApplicationAuthenticated(bool authenticated) = 0;
   virtual bool bleTransmitIdle() const = 0;
-  virtual void disconnectBle() = 0;
+  virtual void disconnectBle(BleCloseCause cause) = 0;
 };
 
 class BleOperationDelegate {
@@ -126,7 +127,7 @@ class KitsuBleSession {
   void clearPendingPairing();
   void resetForSecureLink(uint32_t nowMillis);
   void failProof(uint32_t nowMillis);
-  void failAndClose(uint32_t nowMillis);
+  void failAndClose(uint32_t nowMillis, BleCloseCause cause);
   bool sendControlError(const char* code);
   bool handleClientHello(const uint8_t* json, size_t jsonBytes,
                          uint32_t nowMillis);
@@ -166,6 +167,7 @@ class KitsuBleSession {
   uint32_t pairingWindowDeadline_ = 0U;
   uint32_t closeAt_ = 0U;
   bool closeAfterTransmit_ = false;
+  BleCloseCause pendingCloseCause_ = BleCloseCause::None;
   uint32_t backoffUntil_ = 0U;
   uint64_t expectedClientSequence_ = 1U;
   uint64_t nextDeviceSequence_ = 1U;

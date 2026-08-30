@@ -6,13 +6,16 @@ import org.junit.Test
 import ptl.kitsu.app.security.BondedCompanion
 
 class BluetoothPairingRepairPolicyTest {
-    @Test fun status19AndMissingBondOfferDedicatedRepair() {
+    @Test fun onlyIndependentBondEvidenceOffersDedicatedRepair() {
         assertTrue(BluetoothPairingRepairPolicy.shouldOfferRepair(
             BluetoothPairingRepairPolicy.REPAIR_REQUIRED,
         ))
         assertTrue(BluetoothPairingRepairPolicy.shouldOfferRepair(
             BluetoothPairingRepairPolicy.BOND_MISSING,
         ))
+        assertFalse(BluetoothPairingRepairPolicy.shouldOfferRepair("gatt_peer_terminated"))
+        assertFalse(BluetoothPairingRepairPolicy.shouldOfferRepair("gatt_peer_terminated_before_auth"))
+        assertFalse(BluetoothPairingRepairPolicy.shouldOfferRepair("gatt_status_19"))
         assertFalse(BluetoothPairingRepairPolicy.shouldOfferRepair("gatt_status_133"))
     }
 

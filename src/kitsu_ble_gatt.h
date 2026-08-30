@@ -35,6 +35,59 @@ enum class BleLinkEvent : uint8_t {
   Disconnected,
 };
 
+// Volatile diagnostic classification for the most recently closed BLE link.
+// This never contains an address, controller identifier, key, or other peer
+// material, and is deliberately not persisted.
+enum class BleCloseCause : uint8_t {
+  None = 0,
+  RemoteUserTerminated,
+  SupervisionTimeout,
+  Unknown,
+  LinkRejected,
+  FrameTimedOut,
+  ProtocolViolation,
+  TransportFailure,
+  SecureLinkRejected,
+  HandshakeTimeout,
+  AuthenticationFailed,
+  SessionProtocolViolation,
+  ResponseSendFailed,
+  PairingFailed,
+  PairingTimeout,
+  ControllerForget,
+  AuthenticationBackoff,
+  ApplicationRequest,
+  ControllerRecovery,
+};
+
+inline const char* bleCloseCauseName(BleCloseCause cause) {
+  switch (cause) {
+    case BleCloseCause::None: return "none";
+    case BleCloseCause::RemoteUserTerminated:
+      return "remote_user_terminated";
+    case BleCloseCause::SupervisionTimeout: return "supervision_timeout";
+    case BleCloseCause::Unknown: return "unknown";
+    case BleCloseCause::LinkRejected: return "link_rejected";
+    case BleCloseCause::FrameTimedOut: return "frame_timed_out";
+    case BleCloseCause::ProtocolViolation: return "protocol_violation";
+    case BleCloseCause::TransportFailure: return "transport_failure";
+    case BleCloseCause::SecureLinkRejected: return "secure_link_rejected";
+    case BleCloseCause::HandshakeTimeout: return "handshake_timeout";
+    case BleCloseCause::AuthenticationFailed: return "authentication_failed";
+    case BleCloseCause::SessionProtocolViolation:
+      return "session_protocol_violation";
+    case BleCloseCause::ResponseSendFailed: return "response_send_failed";
+    case BleCloseCause::PairingFailed: return "pairing_failed";
+    case BleCloseCause::PairingTimeout: return "pairing_timeout";
+    case BleCloseCause::ControllerForget: return "controller_forget";
+    case BleCloseCause::AuthenticationBackoff:
+      return "authentication_backoff";
+    case BleCloseCause::ApplicationRequest: return "application_request";
+    case BleCloseCause::ControllerRecovery: return "controller_recovery";
+  }
+  return "none";
+}
+
 struct BleLinkStatus {
   bool begun = false;
   bool advertising = false;
@@ -61,6 +114,9 @@ struct BleLinkStatus {
   uint16_t lastDisconnectedHandle = 0xffffU;
   uint32_t lastDisconnectedGeneration = 0U;
   uint32_t lastDisconnectAtMillis = 0U;
+  bool closeTelemetryAvailable = false;
+  BleCloseCause lastCloseCause = BleCloseCause::None;
+  bool lastCloseWasLocal = false;
   bool notifyStatusAvailable = false;
   int32_t lastNotifyStatus = 0;
   uint32_t lastNotifyStatusAtMillis = 0U;
@@ -127,6 +183,7 @@ class KitsuBleGattLink {
   // chunked to the peer MTU; false means the caller must retry later.
   bool queueFrame(const uint8_t* json, size_t jsonBytes);
   void disconnect();
+  void disconnect(BleCloseCause cause);
   BleLinkStatus status(uint32_t nowMillis) const;
 
  private:
