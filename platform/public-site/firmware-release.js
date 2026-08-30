@@ -9,7 +9,7 @@ const CHUNK_BYTES = 4096;
 const MANIFEST_SCHEMA = "kitsu.ble-firmware.v1";
 const DEVICE_CLASS = "heltec-wifi-lora-32-v3-esp32s3-8mb";
 const IMAGE_FORMAT = "esp32s3-app";
-const REQUIRED_FIRMWARE_VERSION = "0.20.3";
+const REQUIRED_FIRMWARE_VERSION = "0.20.5";
 const IDENTITY_MAGIC = ascii("KITSU-ID1|");
 const IDENTITY_MAX_BYTES = 384;
 const IDENTITY_SCHEMA = 1;
@@ -48,15 +48,15 @@ const SEMVER_PATTERN = new RegExp(
 );
 const MAXIMUM_SEMVER_CORE = 9_223_372_036_854_775_807n;
 
-// Exact production-signed package accepted for the migrated 0.20.3 layout.
+// Exact production-signed package accepted for the current migrated layout.
 // The content-addressed path and all four remaining fields are independently
 // enforced before verified bytes can be offered through a Blob URL.
 export const publishedFirmwareRelease = Object.freeze({
-  url: "/downloads/kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw",
-  bytes: 1228050,
-  sha256: "022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51",
-  releaseId: "kitsu-0.20.3-reflashable-1",
-  firmwareVersion: "0.20.3",
+  url: "/downloads/kitsu-firmware-0.20.5-9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9.kitsu-fw",
+  bytes: 1267730,
+  sha256: "9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9",
+  releaseId: "kitsu-0.20.5-reflashable-1",
+  firmwareVersion: "0.20.5",
 });
 let activeFirmwareObjectUrl = null;
 
@@ -477,7 +477,7 @@ export async function initializeFirmwareRelease({
   disableDownload(elements);
   if (contract === null) {
     elements.status.textContent = "Firmware package unavailable";
-    elements.title.textContent = "Kitsu firmware 0.20.3";
+    elements.title.textContent = "Kitsu firmware 0.20.5";
     elements.detail.textContent = "No physically accepted signed firmware package is published yet.";
     elements.download.textContent = "Download unavailable";
     elements.digest.textContent = "This control remains disabled until one exact signed package passes release acceptance.";

@@ -25,8 +25,13 @@
       <section class="hero">
         <p class="eyebrow">Historical-layout USB recovery</p>
         <h1>Recover a legacy Kitsu safely.</h1>
-        <p>This installer is only for a Heltec that still has the exact reviewed pre-0.20.3 partition layout. It reads and hashes the physical partition table before enabling installation and again before the first write. A board already migrated to the 256&nbsp;KiB NVS layout is blocked here and uses Android's signed <code>.kitsu-fw</code> updater instead. Pet replacement remains a separate, explicit destructive choice.</p>
+        <p>This installer is only for a Heltec that still has the exact reviewed pre-0.20.3 partition layout. It reads and hashes the physical partition table before enabling installation and again before the first write. A board already migrated to the 256&nbsp;KiB NVS layout is blocked here and uses <a href="https://k32.run/#firmware">Kitsu Android 2.3.1 with signed firmware 0.20.5</a> instead. Pet replacement remains a separate, explicit destructive choice.</p>
       </section>
+
+      <aside class="notice current-layout-notice">
+        <strong>Already migrated? Do not connect here.</strong>
+        <span>A board running firmware 0.20.3 or newer, or any board already using the current 256&nbsp;KiB NVS layout, must not use this historical installer. Open the <a href="https://k32.run/#firmware">verified Kitsu Android 2.3.1 and signed firmware 0.20.5 updater</a>.</span>
+      </aside>
 
       <section class="grid" aria-label="Flashing workflow">
         <article>
@@ -76,7 +81,7 @@
 
       <aside class="notice">
         <strong>Owner-reflashable by design.</strong>
-        <span>This historical recovery installer writes the reviewed legacy-layout Kitsu bootloader so its Bluetooth updates can roll back safely and clears only the retired partition that held legacy Wi-Fi, gateway, and server credentials. It never calls full-chip erase and never writes OTA data, controller records, MeshCore state, coredump, or eFuses. The companion slot stays byte-for-byte untouched in the default mode. A different species requires two explicit confirmations plus separate PREPARED-before-pack and COMMITTED-after-readback records. A pending replacement cannot be silently discarded when its physical source pack is no longer intact. The 0.20.3 storage transition is a separate private table-last ceremony; after migration, use signed Android Bluetooth OTA or the dedicated restore procedure, never these legacy offsets.</span>
+        <span>This historical recovery installer writes the reviewed legacy-layout Kitsu bootloader so its Bluetooth updates can roll back safely and clears only the retired partition that held legacy Wi-Fi, gateway, and server credentials. It never calls full-chip erase and never writes OTA data, controller records, MeshCore state, coredump, or eFuses. The companion slot stays byte-for-byte untouched in the default mode. A different species requires two explicit confirmations plus separate PREPARED-before-pack and COMMITTED-after-readback records. A pending replacement cannot be silently discarded when its physical source pack is no longer intact. The 0.20.3 storage transition is a separate private table-last ceremony; after migration, use <a href="https://k32.run/#firmware">Kitsu Android 2.3.1 with signed firmware 0.20.5</a> or the dedicated restore procedure, never these legacy offsets.</span>
       </aside>
     </main>
     <footer><span>K32 · Kitsu</span><span>Signed stable channel · fail closed</span></footer>

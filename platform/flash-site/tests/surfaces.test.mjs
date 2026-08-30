@@ -78,6 +78,12 @@ test("static product, manual, and historical pre-0.20.3 USB surfaces link safe d
   assert.match(flasher, /app0 and app1/);
   assert.match(flasher, /clean private OTA journal in each slot/);
   assert.match(flasher, /isolated retired connectivity partition/);
+  assert.match(flasher, /Already migrated\? Do not connect here\./i);
+  assert.match(flasher, /firmware 0\.20\.3 or newer/i);
+  assert.match(flasher, /current 256(?:&nbsp;|\s)KiB NVS layout/i);
+  assert.match(flasher, /Kitsu Android 2\.3\.1 with signed firmware 0\.20\.5/i);
+  assert.match(flasher, /href="https:\/\/k32\.run\/#firmware"/i);
+  assert.doesNotMatch(flasher, /href="[^"]+\.kitsu-fw/i);
   assert.match(historicalWeb, /immutable historical pre-0\.20\.3 Web Serial installer/i);
   assert.match(historicalWeb, /noncurrent and unsupported for migrated or unknown-layout boards/i);
   assert.doesNotMatch(`${product}\n${manual}\n${flasher}`, /link pending|placeholder|app\.k32\.run/i);

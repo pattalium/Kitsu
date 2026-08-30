@@ -51,7 +51,7 @@ active = re.findall(
     r'  bytes: ([1-9][0-9]*),\r?\n'
     r'  sha256: "([0-9a-f]{64})",\r?\n'
     r'  releaseId: "([0-9A-Za-z][0-9A-Za-z._-]{0,63})",\r?\n'
-    r'  firmwareVersion: "(0\.20\.3)",\r?\n'
+    r'  firmwareVersion: "(0\.20\.5)",\r?\n'
     r'\}\);',
     text,
 )
@@ -807,7 +807,7 @@ match = re.search(
     r'  bytes: ([1-9][0-9]*),\r?\n'
     r'  sha256: "([0-9a-f]{64})",\r?\n'
     r'  releaseId: "([0-9A-Za-z][0-9A-Za-z._-]{0,63})",\r?\n'
-    r'  firmwareVersion: "(0\.20\.3)",\r?\n'
+    r'  firmwareVersion: "(0\.20\.5)",\r?\n'
     r'\}\);',
     text,
 )
@@ -1259,7 +1259,7 @@ firmware_active = re.findall(
     r'  bytes: ([1-9][0-9]*),\r?\n'
     r'  sha256: "([0-9a-f]{64})",\r?\n'
     r'  releaseId: "([0-9A-Za-z][0-9A-Za-z._-]{0,63})",\r?\n'
-    r'  firmwareVersion: "(0\.20\.3)",\r?\n'
+    r'  firmwareVersion: "(0\.20\.5)",\r?\n'
     r'\}\);',
     firmware_text,
 )

@@ -10,11 +10,11 @@ const firmware = await import(pathToFileURL(path.join(root, "firmware-release.js
 const productionPackagePath = path.join(
   root,
   "downloads",
-  "kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw",
+  "kitsu-firmware-0.20.5-9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9.kitsu-fw",
 );
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const authorityRaw = Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url");
-const releaseId = "kitsu-0.20.3-test-1";
+const releaseId = "kitsu-0.20.5-test-1";
 
 function crc32(bytes) {
   let value = 0xffff_ffff;
@@ -28,7 +28,7 @@ function crc32(bytes) {
 }
 
 function identityMarker({
-  version = "0.20.3",
+  version = "0.20.5",
   app1 = "00350000",
   crcOverride = null,
 } = {}) {
@@ -69,7 +69,7 @@ function application({ markers = [identityMarker()] } = {}) {
 function manifestBytes(image, overrides = {}) {
   const value = {
     releaseId,
-    firmwareVersion: "0.20.3",
+    firmwareVersion: "0.20.5",
     deviceClass: "heltec-wifi-lora-32-v3-esp32s3-8mb",
     imageFormat: "esp32s3-app",
     imageBytes: image.byteLength,
@@ -104,11 +104,11 @@ function bundle({ image = application(), manifest = null, signature = null } = {
 function contractFor(bytes, overrides = {}) {
   const digest = createHash("sha256").update(bytes).digest("hex");
   return {
-    url: `/downloads/kitsu-firmware-0.20.3-${digest}.kitsu-fw`,
+    url: `/downloads/kitsu-firmware-0.20.5-${digest}.kitsu-fw`,
     bytes: bytes.byteLength,
     sha256: digest,
     releaseId,
-    firmwareVersion: "0.20.3",
+    firmwareVersion: "0.20.5",
     ...overrides,
   };
 }
@@ -161,11 +161,11 @@ test("ships the exact five-field production package contract", async () => {
     ["url", "bytes", "sha256", "releaseId", "firmwareVersion"],
   );
   assert.deepEqual(firmware.publishedFirmwareRelease, {
-    url: "/downloads/kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw",
-    bytes: 1_228_050,
-    sha256: "022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51",
-    releaseId: "kitsu-0.20.3-reflashable-1",
-    firmwareVersion: "0.20.3",
+    url: "/downloads/kitsu-firmware-0.20.5-9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9.kitsu-fw",
+    bytes: 1_267_730,
+    sha256: "9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9",
+    releaseId: "kitsu-0.20.5-reflashable-1",
+    firmwareVersion: "0.20.5",
   });
   const packageBytes = await readFile(productionPackagePath);
   assert.equal(packageBytes.byteLength, firmware.publishedFirmwareRelease.bytes);
@@ -194,16 +194,16 @@ test("the shipped production package passes the enabled browser verifier", async
     cryptoObject: webcrypto,
   });
   assert.equal(verified.packageDigest, firmware.publishedFirmwareRelease.sha256);
-  assert.equal(verified.manifest.release_id, "kitsu-0.20.3-reflashable-1");
-  assert.equal(verified.manifest.firmware_version, "0.20.3");
-  assert.equal(verified.manifest.image_bytes, 1_227_616);
+  assert.equal(verified.manifest.release_id, "kitsu-0.20.5-reflashable-1");
+  assert.equal(verified.manifest.firmware_version, "0.20.5");
+  assert.equal(verified.manifest.image_bytes, 1_267_296);
   assert.equal(
     verified.imageDigest,
-    "d148442c4f5ca737056a471f981fbacb6d39be045e6f629ad5d37d75cfb260b2",
+    "fc9bb38dd1d123895366f080d92cea59a4a675d23bad3255ad524f3aa1087a57",
   );
-  assert.equal(verified.identity.markerOffset, 0xddb4);
+  assert.equal(verified.identity.markerOffset, 0xf200);
   assert.equal(verified.identity.markerBytes, 331);
-  assert.equal(verified.identity.identityCrc32, "068e9051");
+  assert.equal(verified.identity.identityCrc32, "2275f192");
 
   const documentObject = fakeDocument();
   let fetches = 0;
@@ -239,13 +239,13 @@ test("the shipped production package passes the enabled browser verifier", async
   assert.deepEqual(revoked, ["blob:https://k32.run/production-firmware"]);
 });
 
-test("mirrors the frozen 0.20.3 identity bytes exactly", () => {
+test("mirrors the frozen 0.20.5 identity bytes exactly", () => {
   const expected =
-    "KITSU-ID1|schema=1|length=0331|version=0.20.3|device_class=heltec-v3.2|" +
+    "KITSU-ID1|schema=1|length=0331|version=0.20.5|device_class=heltec-v3.2|" +
     "layout=kitsu-8m-dual-ota-3m-v1|flash=00800000|nvs=00009000/00040000|" +
     "otadata=00049000/00002000|app0=00050000|app1=00350000|slot=00300000|" +
     "journal=00001000|max=002ff000|spiffs=00670000/00140000|" +
-    "conn=007b0000/00040000|coredump=007f0000/00010000|crc32=068e9051|end\0";
+    "conn=007b0000/00040000|coredump=007f0000/00010000|crc32=2275f192|end\0";
   assert.equal(identityMarker().toString("ascii"), expected);
   assert.equal(Buffer.byteLength(expected, "ascii"), 331);
 });
@@ -302,7 +302,7 @@ test("enables only after the exact package, signature, image, and identity verif
     cryptoObject: webcrypto,
     authorityRaw,
   });
-  assert.equal(verified.manifest.firmware_version, "0.20.3");
+  assert.equal(verified.manifest.firmware_version, "0.20.5");
   assert.equal(verified.identity.layout, "kitsu-8m-dual-ota-3m-v1");
   assert.equal(verified.identity.partitionBytes, 0x300000);
   assert.equal(verified.identity.journalBytes, 0x1000);
@@ -396,7 +396,7 @@ test("rejects truncated, trailing, wrong-size, and wrong-package-digest bytes", 
   );
   const digestContract = contractFor(original);
   digestContract.sha256 = "0".repeat(64);
-  digestContract.url = `/downloads/kitsu-firmware-0.20.3-${digestContract.sha256}.kitsu-fw`;
+  digestContract.url = `/downloads/kitsu-firmware-0.20.5-${digestContract.sha256}.kitsu-fw`;
   await assert.rejects(
     firmware.verifyFirmwarePackage({
       bytes: original,
@@ -442,7 +442,7 @@ test("keeps the verified Blob URL through BFCache and revokes it on real exit", 
 test("rejects noncanonical, reordered, wrong-device, and wrong-version manifests", () => {
   const image = application();
   const canonical = manifestBytes(image);
-  assert.equal(firmware.parseCanonicalFirmwareManifest(canonical).firmware_version, "0.20.3");
+  assert.equal(firmware.parseCanonicalFirmwareManifest(canonical).firmware_version, "0.20.5");
   for (const manifest of [
     Buffer.concat([canonical, Buffer.from("\n")]),
     Buffer.from(canonical.toString("ascii").replace(

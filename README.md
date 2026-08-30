@@ -51,7 +51,7 @@ temporary audit is removed only when those services are retired.
 ## First use
 
 1. Confirm the Heltec is already prepared for the current 8 MiB dual-OTA
-   layout and runs the accepted 0.20.3 firmware. If it is still on 0.20.2 or
+   layout and runs the accepted 0.20.5 firmware. If it is still on 0.20.2 or
    its layout is unknown, stop: that one-time transition is a private,
    double-backed-up, physically supervised service procedure.
 2. Install the production-signed Android APK from the product page.

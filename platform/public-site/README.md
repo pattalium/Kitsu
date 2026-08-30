@@ -17,7 +17,7 @@ accepted signed firmware package is available.
 
 The download card exposes only a signed local-first Android release. A valid
 historical manifest or APK may remain in `downloads/` for audit and rollback,
-but `site.js` exposes only the exact Android 2.2.12 / version-code 33 production
+but `site.js` exposes only the exact Android 2.3.1 / version-code 35 production
 contract. Install the accepted release directly from the browser on a supported
 Android device.
 
@@ -35,7 +35,7 @@ design. `downloads/latest.json.sig` is a raw 64-byte Ed25519 signature over the
 exact `downloads/latest.json` bytes.
 
 The browser accepts only a same-origin content-addressed APK path, the
-stable/release package `ptl.kitsu.app`, exact version 2.2.12 / code 33, bounded
+stable/release package `ptl.kitsu.app`, exact version 2.3.1 / code 35, bounded
 numeric fields, canonical lowercase SHA-256, the pinned direct-download APK
 certificate, and a valid manifest timestamp. Repository tests additionally
 verify the detached signature and hash the exact APK bytes.
@@ -54,9 +54,11 @@ manifests remain available under immutable names. The 2.0.0 authority is
 `downloads/android-stable-2.2.4-20260828t092529z.json`; the 2.2.5 authority is
 `downloads/android-stable-2.2.5-20260828t143256z.json`; the 2.2.6 authority is
 `downloads/android-stable-2.2.6-20260829t015805z.json`; the 2.2.10 authority is
-`downloads/android-stable-2.2.10-20260829t090920z.json`; and the immediately
-prior 2.2.11 authority is
-`downloads/android-stable-2.2.11-20260829t231938z.json`. Each retains its raw
+`downloads/android-stable-2.2.10-20260829t090920z.json`; the 2.2.11 authority is
+`downloads/android-stable-2.2.11-20260829t231938z.json`; the 2.2.12 authority is
+`downloads/android-stable-2.2.12-20260830t020208z.json`; and the immediately
+prior 2.3.0 authority is
+`downloads/android-stable-2.3.0-20260830t091718z.json`. Each retains its raw
 detached signature. Historical APK and testing-preview bytes remain available
 for audit and rollback but are not advertised as the current download.
 Android 2.2.7 through 2.2.9 were never public release authorities, so their
@@ -65,13 +67,13 @@ candidate manifests and APKs are intentionally absent from the public tree.
 ## Firmware release trust
 
 `firmware-release.js` now pins the one production-signed package accepted for
-public firmware 0.20.3:
+public firmware 0.20.5:
 
-- URL: `/downloads/kitsu-firmware-0.20.3-022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51.kitsu-fw`
-- bytes: `1228050`
-- SHA-256: `022e01c0106007c6bb86ef3854a8ebd3c7fb41a2bdeda9a9285474eebe91af51`
-- release ID: `kitsu-0.20.3-reflashable-1`
-- firmware version: `0.20.3`
+- URL: `/downloads/kitsu-firmware-0.20.5-9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9.kitsu-fw`
+- bytes: `1267730`
+- SHA-256: `9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9`
+- release ID: `kitsu-0.20.5-reflashable-1`
+- firmware version: `0.20.5`
 
 Candidate images, unsigned manifests, private acceptance evidence, and
 migration artifacts must never be copied into this public directory.
@@ -89,7 +91,7 @@ link is enabled, the browser verifies all of the following:
 4. The signed manifest binds the exact ESP32-S3 application bytes, SHA-256,
    device class, 3 MiB A/B slot, 4 KiB journal, rollback flag, and 4 KiB chunks.
 5. The application has valid ESP segment bounds, checksum, appended digest, and
-   exactly one bounded `KITSU-ID1` marker for firmware 0.20.3 and the current
+   exactly one bounded `KITSU-ID1` marker for firmware 0.20.5 and the current
    8 MiB dual-OTA flash geometry.
 
 The signed inner package is the firmware authority. There is no second outer
@@ -99,7 +101,7 @@ opens only the exact package route. If a future source snapshot deliberately
 sets the contract to `null`, it must contain no firmware package and the script
 creates no firmware route or probe.
 
-Public firmware 0.20.3 is only for a Heltec V3 board already migrated to the
+Public firmware 0.20.5 is only for a Heltec V3 board already migrated to the
 current layout. The one-time 0.20.2 to 0.20.3 transition is a private,
 double-backed-up, table-last serial procedure and is not an owner download.
 The historical seven-write browser installer must not be used on a migrated or
