@@ -665,7 +665,10 @@ void KitsuBleGattLink::loop(uint32_t nowMillis) {
       impl_->requestDisconnectLocked(BleLinkEvent::FrameTimedOut);
     }
   }
-  if (impl_->frameReady && !impl_->requestInFlight &&
+  // The outbound slot is shared by replies and unsolicited events.  An event
+  // does not set requestInFlight, so txQueued must independently hold the next
+  // request in the RX queue until the event notification has fully retired.
+  if (impl_->frameReady && !impl_->requestInFlight && !impl_->txQueued &&
       impl_->parser.frame(frame, frameBytes)) {
     impl_->requestInFlight = true;
     impl_->deliveringFrame = true;

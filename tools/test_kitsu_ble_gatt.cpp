@@ -371,6 +371,48 @@ void testOneNextRequestQueuesDuringDelayedNotifyAndFurtherPipeliningCloses() {
   assert(fixture.delegate.frameCount == 2U);
 }
 
+void testInboundRequestWaitsForUnsolicitedEventToDrain() {
+  Fixture fixture;
+  fixture.secureAndSubscribe(kFirstHandle, 80U);
+  fixture.tx->notifyResult = true;
+  fixture.tx->statusOnNotify = false;
+
+  static const uint8_t event[] = {'{', '"', 'e', 'v', 'e', 'n', 't', '"',
+                                  ':', '1', '}'};
+  static const uint8_t requestFrame[] = {
+      0U, 0U, 0U, 7U, 'r', 'e', 'q', 'u', 'e', 's', 't',
+  };
+
+  // A companion.refresh event is not associated with an inbound request, so
+  // the private requestInFlight flag is false while its txQueued slot drains.
+  assert(fixture.link.queueFrame(event, sizeof(event)));
+  fixture.link.loop(81U);
+  assert(fixture.tx->notifiedValues.size() == 1U);
+
+  // The phone may write its next request after receiving the event but before
+  // NimBLE retires NOTIFY_TX. Preserve that request in the one-frame RX queue;
+  // delivering it now would make its response collide with the queued event
+  // and force KitsuBleSession::failAndClose().
+  fixture.rx->simulateWrite(kFirstHandle, requestFrame,
+                            sizeof(requestFrame));
+  fixture.link.loop(82U);
+  assert(fixture.delegate.frameCount == 0U);
+  assert(fixture.server->disconnectCalls.empty());
+  assert(!hasEvent(fixture.delegate, BleLinkEvent::ProtocolViolation));
+
+  // The loop turn which consumes NOTIFY_TX still leaves delivery deferred.
+  // The following turn delivers the saved request exactly once.
+  fixture.tx->simulateStatus(0);
+  fixture.link.loop(83U);
+  assert(fixture.delegate.frameCount == 0U);
+  fixture.link.loop(84U);
+  assert(fixture.delegate.frameCount == 1U);
+  assert(fixture.delegate.frames[0] ==
+         std::vector<uint8_t>(requestFrame + 4U,
+                              requestFrame + sizeof(requestFrame)));
+  assert(fixture.server->disconnectCalls.empty());
+}
+
 void testRetryableNotifyStatusIsBoundedAndNeverProtocolViolation() {
   Fixture fixture;
   fixture.secureAndSubscribe(kFirstHandle, 100U);
@@ -585,6 +627,7 @@ int main() {
   testNotifySuccessUsesInternalNonzeroHandleToken();
   testNotifyFalseWithoutCallbackRetriesWithoutAdvancing();
   testOneNextRequestQueuesDuringDelayedNotifyAndFurtherPipeliningCloses();
+  testInboundRequestWaitsForUnsolicitedEventToDrain();
   testRetryableNotifyStatusIsBoundedAndNeverProtocolViolation();
   testTerminalNotifyStatusAndMissingCallbackTimeout();
   testGenerationClearsStaleDisconnectAndQueuedFailure();
