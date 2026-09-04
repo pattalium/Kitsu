@@ -58,8 +58,8 @@ test("status checks only the retained static release surfaces", async () => {
   assert.doesNotMatch(script, /issuer|oidc|auth\.k32\.run|kind === "ready"/i);
 });
 
-test("static product, manual, and historical pre-0.20.3 USB surfaces link safe destinations", async () => {
-  const [product, manual, flasher, historicalWeb] = await Promise.all([
+test("static product, manual, and USB flasher surfaces link safe destinations", async () => {
+  const [product, manual, flasher, webReadme] = await Promise.all([
     text("public-site/index.html"),
     text("docs-site/index.html"),
     text("flash-site/index.html"),
@@ -71,33 +71,24 @@ test("static product, manual, and historical pre-0.20.3 USB surfaces link safe d
   assert.match(product, /Verifying the package signature, application image, and flash layout/);
   assert.doesNotMatch(product, /https:\/\/flash\.k32\.run/);
   assert.match(manual, /https:\/\/github\.com\/pattalium\/Kitsu/);
-  assert.match(flasher, /seven verified core writes/);
-  assert.match(flasher, /no intermediate starter is booted/);
-  assert.match(flasher, /One final reset/);
-  assert.match(flasher, /rollback-enabled Kitsu bootloader/);
-  assert.match(flasher, /app0 and app1/);
-  assert.match(flasher, /clean private OTA journal in each slot/);
-  assert.match(flasher, /isolated retired connectivity partition/);
-  assert.match(flasher, /Already migrated\? Do not connect here\./i);
-  assert.match(flasher, /firmware 0\.20\.3 or newer/i);
-  assert.match(flasher, /current 256(?:&nbsp;|\s)KiB NVS layout/i);
-  assert.match(flasher, /Kitsu Android 2\.3\.1 with signed firmware 0\.20\.5/i);
-  assert.match(flasher, /href="https:\/\/k32\.run\/#firmware"/i);
+  assert.match(flasher, /Install the latest Kitsu/);
+  assert.match(flasher, /signed firmware 0\.20\.5/i);
+  assert.match(flasher, /writes only the application slot selected by the bootloader/i);
+  assert.match(flasher, /custom companion pack is never written/i);
   assert.doesNotMatch(flasher, /href="[^"]+\.kitsu-fw/i);
-  assert.match(historicalWeb, /immutable historical pre-0\.20\.3 Web Serial installer/i);
-  assert.match(historicalWeb, /noncurrent and unsupported for migrated or unknown-layout boards/i);
+  assert.match(webReadme, /immutable historical pre-0\.20\.3 Web Serial installer/i);
   assert.doesNotMatch(`${product}\n${manual}\n${flasher}`, /link pending|placeholder|app\.k32\.run/i);
 });
 
-test("flasher keeps its firmware controls while exposing a persistent accessible theme choice", async () => {
-  const [html, theme, styles, app, packs] = await Promise.all([
+test("flasher offers latest firmware without a companion-pack write surface", async () => {
+  const [html, theme, styles, app, currentRelease] = await Promise.all([
     text("flash-site/index.html"),
     text("flash-site/src/theme.js"),
     text("flash-site/src/styles.css"),
     text("flash-site/src/app.js"),
-    text("flash-site/src/packs.js"),
+    text("flash-site/src/current-release.js"),
   ]);
-  for (const id of ["connect", "disconnect", "refresh", "pack-select", "unlocked-pack-field", "unlocked-pack-file", "pack-detail", "install", "progress", "progress-detail", "log"]) {
+  for (const id of ["connect", "disconnect", "refresh", "device-detail", "install", "progress", "progress-detail", "log"]) {
     assert.match(html, new RegExp(`id="${id}"`), id);
   }
   assert.match(html, /type="button" data-theme-toggle/u);
@@ -109,50 +100,16 @@ test("flasher keeps its firmware controls while exposing a persistent accessible
   assert.match(styles, /--canvas: #f3efe5/u);
   assert.match(styles, /html\[data-theme="dark"\][\s\S]*--canvas: #12110f/u);
   assert.match(styles, /--display: Georgia/u);
-  assert.match(html, /<option value="preserve" selected>Keep current pet<\/option>/u);
-  for (const pet of ["fox", "cat", "dog"]) assert.match(html, new RegExp(`<option value="${pet}">`, "u"));
-  assert.match(html, /<option value="unlocked">Replace with unlocked \.k868 file<\/option>/u);
-  assert.match(html, /<input id="unlocked-pack-file"[^>]+type="file"[^>]+accept="\.k868,application\/octet-stream"[^>]+aria-describedby="pack-detail"/iu);
-  assert.doesNotMatch(html, /<option value="(?:frog|hamster|turtle|rabbit|hedgehog|ferret|otter|axolotl|chinchilla|raccoon|capybara|sugar_glider|red_panda|pangolin|tasmanian_devil|snow_leopard|okapi|shoebill|cat_girl|rabbit_girl|deer_girl)">/iu);
-  assert.match(styles, /\.pack-choice select/u);
-  assert.match(styles, /\.unlocked-pack-field input/u);
-  assert.match(app, /loadUnlockedPack/u);
-  assert.match(app, /packSelect\.value = "preserve"/u);
-  assert.match(app, /window\.addEventListener\("pageshow"[\s\S]*event\.persisted[\s\S]*packSelect\.value = "preserve"/u);
-  assert.match(app, /inspectInstalledPack\(loader\)/u);
-  assert.match(app, /inspectReplacementTransaction\(loader\)/u);
-  assert.match(app, /DESTRUCTIVE PET REPLACEMENT/u);
-  assert.match(app, /currentTransaction\.preparedBytes\.slice\(\)[\s\S]*buildReplacementIntent\(transition\.sourcePackId, latestPack\)/u);
-  assert.match(app, /companionPackTransition\(currentPack, latestPack, currentTransaction\)/u);
-  assert.match(app, /if \(\["empty", "prepared", "committed"\]\.includes\(installedReplacementTransaction\?\.status\)[\s\S]*replacementTransactionsMatch/u);
-  assert.match(app, /const explicitRepair = latestPack[\s\S]*currentTransaction\.status === "empty"[\s\S]*installedPack\?\.status === "invalid"/u);
-  assert.match(packs, /if \(!targetPack\)[\s\S]*current\?\.status === "valid"[\s\S]*current\.packId === transaction\.sourcePackId/u);
-  assert.match(packs, /current\?\.status === "invalid" && transaction\?\.status === "empty"/u);
-  assert.match(packs, /replacementTransactionTargets\(transaction, targetPack\)/u);
-  assert.match(app, /replacementRetryCoreArtifacts\(verifiedRelease\)/u);
-  assert.match(app, /PREPARED\/COMMITTED remain untouched/u);
-  assert.match(app, /packForInstall\(selectedPackId, selectedPack\)/u);
-  assert.match(app, /fileArray: \[\{ data: latestPack\.bytes, address: latestPack\.record\.offset \}\]/u);
-  assert.match(app, /let packVerified = !packRequested/u);
-  assert.match(app, /resetAttempted = true;\s+await loader\.after\("hard_reset"\)/u);
-  assert.match(app, /Every selected region passed SHA-256 readback[\s\S]*No second automatic reset was attempted/u);
-  assert.match(app, /const holdInLoader = destructiveReplacement[\s\S]*replacementRetry \|\| packWriteStarted/u);
-  assert.match(app, /closeTransport\(\{ reset: !resetAttempted && !holdInLoader, announce: true \}\)/u);
-  assert.ok(
-    app.indexOf("data: replacementPrepared.bytes")
-      < app.indexOf("fileArray: [{ data: latestPack.bytes"),
-    "PREPARED must be written before any target pack byte",
-  );
-  assert.ok(
-    app.indexOf("await verifyReadback(latestPack")
-      < app.indexOf("data: replacementCommitted.bytes"),
-    "COMMITTED must be written only after exact target pack readback",
-  );
-  assert.match(app, /if \(!replacementRetry\)[\s\S]*data: replacementPrepared\.bytes/u);
-  assert.match(app, /await verifyReadback\(replacementPrepared[\s\S]*packWriteStarted = true/u);
-  assert.match(app, /Keep current pet cannot clear the pending PREPARED/u);
-  assert.match(app, /No PREPARED or COMMITTED record will be written/u);
-  assert.match(app, /preserves legacy vitals[\s\S]*clears pack-specific traits and gifts/u);
+  assert.doesNotMatch(`${html}\n${app}`, /pack-select|unlocked-pack|loadUnlockedPack|DESTRUCTIVE PET REPLACEMENT/u);
+  assert.match(app, /inspectCurrentOtaSelection\(loader\)/u);
+  assert.match(app, /fileArray: \[\{ data: artifact\.bytes, address: artifact\.record\.offset \}\]/u);
+  assert.match(app, /custom companion-pack bytes changed during firmware install/u);
+  assert.match(app, /eraseAll: false/u);
+  assert.doesNotMatch(app, /from "\.\/packs\.js"|eraseAll:\s*true/u);
+  assert.match(currentRelease, /app0Offset: 0x050000/u);
+  assert.match(currentRelease, /app1Offset: 0x350000/u);
+  assert.match(currentRelease, /companionPackOffset: 0x670000/u);
+  assert.match(currentRelease, /companionPackBytes: 0x140000/u);
   assert.doesNotMatch(html, /class="step">\d/u);
 });
 

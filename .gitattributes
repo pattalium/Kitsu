@@ -4,6 +4,7 @@ platform/public-site/downloads/*.json -text
 platform/public-site/downloads/*.json.sig binary
 platform/public-site/downloads/*.apk binary
 platform/public-site/downloads/*.kitsu-fw -text
+platform/flash-site/public/downloads/*.kitsu-fw -text
 platform/public-site/demo/*.wasm binary
 platform/public-site/demo/assets/*.k868 binary
 platform/public-site/unlock/assets/*.k868 binary

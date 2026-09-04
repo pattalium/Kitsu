@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="K32 Kitsu signed firmware and companion installer for Heltec V3." />
+    <meta name="description" content="Install the latest signed Kitsu firmware on a Heltec WiFi LoRa 32 V3." />
     <meta name="theme-color" content="#f3efe5" />
     <script type="module" src="/src/theme.js"></script>
     <script type="module" src="/src/app.js"></script>
@@ -23,14 +23,14 @@
     </header>
     <main id="main-content">
       <section class="hero">
-        <p class="eyebrow">Historical-layout USB recovery</p>
-        <h1>Recover a legacy Kitsu safely.</h1>
-        <p>This installer is only for a Heltec that still has the exact reviewed pre-0.20.3 partition layout. It reads and hashes the physical partition table before enabling installation and again before the first write. A board already migrated to the 256&nbsp;KiB NVS layout is blocked here and uses <a href="https://k32.run/#firmware">Kitsu Android 2.3.1 with signed firmware 0.20.5</a> instead. Pet replacement remains a separate, explicit destructive choice.</p>
+        <p class="eyebrow">Heltec V3 · signed stable firmware</p>
+        <h1>Install the latest Kitsu.</h1>
+        <p>Connect a Heltec WiFi LoRa 32 V3 over USB to install signed firmware 0.20.5. On a current-layout board, this page writes only the application slot selected by the bootloader. Your custom companion pack is never written and its complete flash region must match before and after installation.</p>
       </section>
 
-      <aside class="notice current-layout-notice">
-        <strong>Already migrated? Do not connect here.</strong>
-        <span>A board running firmware 0.20.3 or newer, or any board already using the current 256&nbsp;KiB NVS layout, must not use this historical installer. Open the <a href="https://k32.run/#firmware">verified Kitsu Android 2.3.1 and signed firmware 0.20.5 updater</a>.</span>
+      <aside class="notice">
+        <strong>Your companion stays yours.</strong>
+        <span>There is no companion selection or pack write in this installer. It does not erase the whole chip. Current-layout installs also leave the partition table, bootloader, NVS, OTA metadata, other app slot, journals, connectivity data, and coredump untouched.</span>
       </aside>
 
       <section class="grid" aria-label="Flashing workflow">
@@ -45,29 +45,14 @@
         </article>
         <article>
           <span class="step">Release</span>
-          <h2>Verify the release</h2>
-          <p id="release-detail" aria-live="polite">Checking the latest signed production release…</p>
+          <h2>Verify 0.20.5</h2>
+          <p id="release-detail" aria-live="polite">Checking the signed latest firmware package…</p>
           <button id="refresh" class="secondary" type="button">Check Again</button>
         </article>
         <article>
           <span class="step">Device</span>
-          <h2>Write and read back</h2>
-          <p><strong>Legacy layout only.</strong> Install unlocks only for an ESP32-S3 with 8&nbsp;MiB flash and the exact historical partition-table hash. On that approved source layout, the recovery performs seven verified core writes: the rollback-enabled Kitsu bootloader, partition table, the same accepted app in app0 and app1, a clean private OTA journal in each slot, and one exact clear over the isolated retired connectivity partition. Keep current pet is forced on every page load. If you explicitly choose a different species, a PREPARED record preserving the original pet identity is verified before any pack byte; a separate matching COMMITTED record is verified only after exact pack readback. Interrupted replacements resume only with that bound target and preserve both transaction sectors while re-clearing the retired suffix. One final reset boots the complete result; no intermediate starter is booted.</p>
-          <div class="pack-choice">
-            <label for="pack-select">Pet installed with Kitsu</label>
-            <select id="pack-select" name="companion-pack" autocomplete="off" aria-describedby="pack-detail">
-              <option value="preserve" selected>Keep current pet</option>
-              <option value="fox">Replace with Fox</option>
-              <option value="cat">Replace with Cat</option>
-              <option value="dog">Replace with Dog</option>
-              <option value="unlocked">Replace with unlocked .k868 file</option>
-            </select>
-            <div id="unlocked-pack-field" class="unlocked-pack-field" hidden>
-              <label for="unlocked-pack-file">Unlocked companion file</label>
-              <input id="unlocked-pack-file" name="unlocked-companion-pack" type="file" accept=".k868,application/octet-stream" autocomplete="off" aria-describedby="pack-detail" disabled />
-            </div>
-            <small id="pack-detail" aria-live="polite">Keep current pet is the safe default. The companion-pack slot and pet progress will not be written. Choosing a different species requires a separate destructive confirmation.</small>
-          </div>
+          <h2>Install to the active slot</h2>
+          <p id="device-detail" aria-live="polite">Connect the Heltec so this page can verify its chip, 8&nbsp;MiB flash, exact partition layout, and selected application slot before enabling installation.</p>
           <button id="install" type="button" disabled>Install unavailable</button>
           <progress id="progress" max="100" value="0" aria-label="Install progress" hidden></progress>
           <small id="progress-detail" aria-live="polite"></small>
@@ -80,8 +65,8 @@
       </section>
 
       <aside class="notice">
-        <strong>Owner-reflashable by design.</strong>
-        <span>This historical recovery installer writes the reviewed legacy-layout Kitsu bootloader so its Bluetooth updates can roll back safely and clears only the retired partition that held legacy Wi-Fi, gateway, and server credentials. It never calls full-chip erase and never writes OTA data, controller records, MeshCore state, coredump, or eFuses. The companion slot stays byte-for-byte untouched in the default mode. A different species requires two explicit confirmations plus separate PREPARED-before-pack and COMMITTED-after-readback records. A pending replacement cannot be silently discarded when its physical source pack is no longer intact. The 0.20.3 storage transition is a separate private table-last ceremony; after migration, use <a href="https://k32.run/#firmware">Kitsu Android 2.3.1 with signed firmware 0.20.5</a> or the dedicated restore procedure, never these legacy offsets.</span>
+        <strong>Older layout detected?</strong>
+        <span>The same page recognizes the exact legacy partition layout and offers only its signed historical recovery. It still preserves OTA metadata and the complete custom companion-pack region. It does not silently migrate or write an unknown layout.</span>
       </aside>
     </main>
     <footer><span>K32 · Kitsu</span><span>Signed stable channel · fail closed</span></footer>

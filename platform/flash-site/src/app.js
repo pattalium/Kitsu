@@ -2,36 +2,30 @@ import { ESPLoader, Transport } from "esptool-js";
 import {
   fetchVerifiedRelease,
   FLASH_PLAN,
-  replacementRetryCoreArtifacts,
   reverifyArtifacts,
   sha256Hex,
 } from "./release.js";
-import { requireLegacyFlashLayout } from "./layout-gate.js";
+import { inspectInstalledFlashLayout } from "./layout-gate.js";
 import {
-  buildReplacementIntent,
-  companionPackTransition,
-  fetchOfficialPack,
-  inspectInstalledPack,
-  inspectReplacementTransaction,
-  loadUnlockedPack,
-  PACK_SLOT,
-  REPLACEMENT_TRANSACTION,
-  replacementTransactionTargets,
-  reverifyPack,
-  UNLOCKED_PACK_ID,
-} from "./packs.js";
+  CURRENT_FLASH_PLAN,
+  fetchVerifiedCurrentRelease,
+  inspectCurrentOtaSelection,
+} from "./current-release.js";
 import "./styles.css";
+
+const LEGACY_OTA_DATA = Object.freeze({ offset: 0x00e000, bytes: 0x002000 });
+const COMPANION_PACK = Object.freeze({
+  offset: CURRENT_FLASH_PLAN.companionPackOffset,
+  bytes: CURRENT_FLASH_PLAN.companionPackBytes,
+});
 
 const connectButton = document.querySelector("#connect");
 const disconnectButton = document.querySelector("#disconnect");
 const installButton = document.querySelector("#install");
-const packSelect = document.querySelector("#pack-select");
-const unlockedPackField = document.querySelector("#unlocked-pack-field");
-const unlockedPackInput = document.querySelector("#unlocked-pack-file");
-const packDetail = document.querySelector("#pack-detail");
 const refreshButton = document.querySelector("#refresh");
 const browserDetail = document.querySelector("#browser-detail");
 const releaseDetail = document.querySelector("#release-detail");
+const deviceDetail = document.querySelector("#device-detail");
 const progress = document.querySelector("#progress");
 const progressDetail = document.querySelector("#progress-detail");
 const log = document.querySelector("#log");
@@ -42,10 +36,9 @@ let loader;
 let detectedChip;
 let detectedFlashSize;
 let installedFlashLayout;
-let verifiedRelease;
-let verifiedPack;
-let installedPack;
-let installedReplacementTransaction;
+let installedOtaSelection;
+let verifiedLegacyRelease;
+let verifiedCurrentRelease;
 let busy = false;
 const serialSupported = "serial" in navigator && window.isSecureContext;
 
@@ -58,131 +51,36 @@ function append(message) {
   log.scrollTop = log.scrollHeight;
 }
 
-function packMatchesSelection(packId, pack = verifiedPack) {
-  if (packId === "preserve") return true;
-  if (packId === UNLOCKED_PACK_ID) {
-    return pack?.definition.id === UNLOCKED_PACK_ID
-      && pack.definition.source === "unlocked_file";
-  }
-  return pack?.definition.id === packId && pack.definition.source !== "unlocked_file";
+function setProgress(value, detail) {
+  progress.hidden = false;
+  progress.value = Math.max(0, Math.min(100, value));
+  progressDetail.textContent = detail;
 }
 
-function packIntegrityDescription(pack) {
-  return pack.definition.source === "unlocked_file"
-    ? "K868PK1 structure, bounds, CRC32, and SHA-256 verified"
-    : "exact official bundle and SHA-256 verified";
-}
-
-function installedPackDescription(pack = installedPack) {
-  if (pack?.status === "valid") {
-    return `${pack.name} (ID ${pack.packId.toString(16).padStart(8, "0").toUpperCase()}, revision ${pack.revision})`;
-  }
-  if (pack?.status === "empty") return "an empty companion slot";
-  return "an unreadable or invalid companion slot";
-}
-
-function installedPackMatches(left, right) {
-  if (!left || !right || left.status !== right.status) return false;
-  if (left.status === "empty") return true;
-  if (left.status !== "valid") return false;
-  return left.packId === right.packId
-    && left.revision === right.revision
-    && left.bytes === right.bytes
-    && left.sha256 === right.sha256;
-}
-
-function replacementTransactionPending(transaction = installedReplacementTransaction) {
-  return transaction?.status === "prepared" || transaction?.status === "committed";
-}
-
-function replacementTransactionDescription(transaction = installedReplacementTransaction) {
-  if (transaction?.status === "prepared") {
-    return `PREPARED replacement from ID ${transaction.sourcePackId.toString(16).padStart(8, "0").toUpperCase()} to ID ${transaction.targetPackId.toString(16).padStart(8, "0").toUpperCase()}`;
-  }
-  if (transaction?.status === "committed") {
-    return `COMMITTED replacement from ID ${transaction.sourcePackId.toString(16).padStart(8, "0").toUpperCase()} to ID ${transaction.targetPackId.toString(16).padStart(8, "0").toUpperCase()}`;
-  }
-  if (transaction?.status === "invalid") return "an invalid replacement transaction";
-  return "no pending replacement transaction";
-}
-
-function byteArraysMatch(left, right) {
-  if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array)
-    || left.byteLength !== right.byteLength) return false;
-  return left.every((value, index) => value === right[index]);
-}
-
-function replacementTransactionsMatch(left, right) {
-  if (!left || !right || left.status !== right.status) return false;
-  if (left.status === "empty") return true;
-  if (!replacementTransactionPending(left)) return false;
-  return left.sourcePackId === right.sourcePackId
-    && left.committedState === right.committedState
-    && left.targetPackId === right.targetPackId
-    && left.targetRevision === right.targetRevision
-    && left.targetBytes === right.targetBytes
-    && left.targetPayloadCrc32 === right.targetPayloadCrc32
-    && left.targetHeaderCrc32 === right.targetHeaderCrc32
-    && byteArraysMatch(left.preparedBytes, right.preparedBytes)
-    && (left.status !== "committed"
-      || byteArraysMatch(left.committedBytes, right.committedBytes));
-}
-
-function pendingReplacementCanBeCancelled(
-  transaction = installedReplacementTransaction,
-  physicalPack = installedPack,
-) {
-  return replacementTransactionPending(transaction)
-    && physicalPack?.status === "valid"
-    && physicalPack.packId === transaction.sourcePackId;
-}
-
-function replacementSelectionReady(pack = verifiedPack) {
-  if (packSelect.value === "preserve") {
-    return !replacementTransactionPending() || pendingReplacementCanBeCancelled();
-  }
-  if (installedReplacementTransaction?.status === "invalid") return false;
-  if (replacementTransactionPending()) {
-    try {
-      return replacementTransactionTargets(installedReplacementTransaction, pack);
-    } catch {
-      return false;
-    }
-  }
-  return installedPack?.status === "valid"
-    || installedPack?.status === "empty"
-    || (installedReplacementTransaction?.status === "empty"
-      && installedPack?.status === "invalid");
+function releaseForInstalledLayout() {
+  if (installedFlashLayout?.kind === "migrated") return verifiedCurrentRelease;
+  if (installedFlashLayout?.kind === "legacy") return verifiedLegacyRelease;
+  return undefined;
 }
 
 function updateControls() {
   const connected = Boolean(loader)
     && loader.chip?.CHIP_NAME === "ESP32-S3"
     && detectedFlashSize === FLASH_PLAN.flashSize
-    && installedFlashLayout?.kind === "legacy";
+    && ["legacy", "migrated"].includes(installedFlashLayout?.kind);
+  const release = releaseForInstalledLayout();
   connectButton.disabled = !serialSupported || busy || Boolean(transport);
   disconnectButton.disabled = busy || !transport;
   refreshButton.disabled = busy;
-  packSelect.disabled = busy;
-  const unlockedSelected = packSelect.value === UNLOCKED_PACK_ID;
-  unlockedPackField.hidden = !unlockedSelected;
-  unlockedPackInput.disabled = busy || !unlockedSelected;
-  const packReady = packMatchesSelection(packSelect.value);
-  const replacementSourceReady = replacementSelectionReady();
-  installButton.disabled = busy || !connected || !verifiedRelease || !packReady || !replacementSourceReady;
+  installButton.disabled = busy || !connected || !release;
   if (busy) installButton.textContent = "Install in progress";
-  else if (connected && verifiedRelease && packReady) {
-    installButton.textContent = verifiedPack
-      ? `Install Kitsu + ${verifiedPack.definition.name}`
-      : `Install ${verifiedRelease.manifest.firmware_version}`;
+  else if (connected && installedFlashLayout.kind === "migrated" && release) {
+    installButton.textContent = `Install latest ${release.manifest.firmware_version}`;
+  } else if (connected && installedFlashLayout.kind === "legacy" && release) {
+    installButton.textContent = `Install legacy recovery ${release.manifest.firmware_version}`;
+  } else {
+    installButton.textContent = "Install unavailable";
   }
-  else installButton.textContent = "Install unavailable";
-}
-
-function setProgress(value, detail) {
-  progress.hidden = false;
-  progress.value = Math.max(0, Math.min(100, value));
-  progressDetail.textContent = detail;
 }
 
 async function closeTransport({ reset = true, announce = true } = {}) {
@@ -194,8 +92,7 @@ async function closeTransport({ reset = true, announce = true } = {}) {
   detectedChip = undefined;
   detectedFlashSize = undefined;
   installedFlashLayout = undefined;
-  installedPack = undefined;
-  installedReplacementTransaction = undefined;
+  installedOtaSelection = undefined;
   updateControls();
   if (!activeTransport) return;
   if (reset && activeLoader) {
@@ -222,7 +119,7 @@ async function connect() {
     const usb = [info.usbVendorId, info.usbProductId]
       .map((value) => value === undefined ? "unknown" : `0x${value.toString(16).padStart(4, "0")}`)
       .join(":");
-    append(`Selected USB serial device ${usb}. Entering the ROM loader for identity checks.`);
+    append(`Selected USB serial device ${usb}. Entering the ROM loader for read-only checks.`);
 
     transport = new Transport(serialPort, false);
     transport.setDeviceLostCallback(() => {
@@ -233,8 +130,7 @@ async function connect() {
       detectedChip = undefined;
       detectedFlashSize = undefined;
       installedFlashLayout = undefined;
-      installedPack = undefined;
-      installedReplacementTransaction = undefined;
+      installedOtaSelection = undefined;
       updateControls();
     });
     loader = new ESPLoader({ transport, baudrate: 460800, debugLogging: false });
@@ -246,365 +142,284 @@ async function connect() {
     if (detectedFlashSize !== FLASH_PLAN.flashSize) {
       throw new Error(`unsupported flash size ${detectedFlashSize}; 8MB required`);
     }
-    installedFlashLayout = await requireLegacyFlashLayout(loader);
-    append(`Partition-table gate passed: exact reviewed legacy layout ${installedFlashLayout.sha256}.`);
-    try {
-      installedReplacementTransaction = await inspectReplacementTransaction(loader);
-      append(`Replacement transaction gate: ${replacementTransactionDescription()}.`);
-      if (replacementTransactionPending()) {
-        append("Recovery mode: only the exact target bound by PREPARED can be retried. The physical companion slot is not used as the source identity.");
-        if (installedReplacementTransaction.committedState === "invalid") {
-          append(`COMMITTED is invalid and cannot authorize replacement: ${installedReplacementTransaction.committedError}. PREPARED remains valid for exact-target recovery.`);
-        }
-      }
-    } catch (error) {
-      installedReplacementTransaction = Object.freeze({ status: "invalid", error: errorMessage(error) });
-      append(`Replacement transaction is invalid: ${errorMessage(error)}. Pet writes are blocked; Keep current pet remains non-destructive.`);
+
+    installedFlashLayout = await inspectInstalledFlashLayout(loader);
+    if (installedFlashLayout.kind === "unknown") {
+      throw new Error(`partition-table check failed: ${installedFlashLayout.reason}`);
     }
-    try {
-      installedPack = await inspectInstalledPack(loader);
-      append(`Current pet verified before writing: ${installedPackDescription()}.`);
-    } catch (error) {
-      installedPack = Object.freeze({ status: "invalid", error: errorMessage(error) });
-      append(
-        `Current pet could not be validated: ${errorMessage(error)}. `
-        + (replacementTransactionPending()
-          ? "PREPARED preserves the original identity; Keep current pet is blocked and only its exact target may retry."
-          : installedReplacementTransaction?.status === "empty"
-            ? "Keep current pet remains available. An explicitly selected verified pack can repair physical pack bytes, but no species-reset authorization will be written."
-            : "Firmware-only preserve mode remains available; pet replacement is blocked."),
-      );
+    if (installedFlashLayout.kind === "migrated") {
+      installedOtaSelection = await inspectCurrentOtaSelection(loader);
+      browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. Current Kitsu layout verified; ${installedOtaSelection.label} is selected for a firmware-only reinstall.`;
+      deviceDetail.textContent = `The signed latest application will be written only to ${installedOtaSelection.label} at 0x${installedOtaSelection.offset.toString(16).padStart(6, "0")}. OTA metadata and the complete companion-pack region are hashed before and after.`;
+      append(`Current layout verified. Boot selection: ${installedOtaSelection.label}, sequence ${installedOtaSelection.sequence ?? "initial"}, state ${installedOtaSelection.stateName}.`);
+    } else {
+      browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. Exact legacy Kitsu layout verified for the signed recovery release.`;
+      deviceDetail.textContent = "This board still uses the legacy layout. The historical signed recovery remains available and keeps the companion-pack region byte-for-byte unchanged.";
+      append(`Legacy layout verified: ${installedFlashLayout.sha256}.`);
     }
-    if (packSelect.value === "preserve") await loadSelectedPack();
-    browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash and the exact reviewed legacy partition table verified through Espressif ROM loader. Current physical pack: ${installedPackDescription()}; ${replacementTransactionDescription()}.`;
-    append(`Device gate passed: ${detectedChip}; chip family ESP32-S3; flash ${detectedFlashSize}; legacy partition table exact.`);
+    append("Custom pack protection is active: this page has no companion-pack write path.");
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       append("Port selection was cancelled. Nothing was written.");
     } else {
-      append(`Device gate closed: ${errorMessage(error)}. Nothing was written.`);
+      append(`Device check stopped: ${errorMessage(error)}. Nothing was written.`);
     }
-    await closeTransport({
-      reset: !replacementTransactionPending(installedReplacementTransaction),
-      announce: false,
-    });
+    await closeTransport({ reset: true, announce: false });
   } finally {
     busy = false;
     updateControls();
   }
-}
-
-async function loadSelectedPack({ allowMissingUnlockedFile = false } = {}) {
-  const packId = packSelect.value;
-  verifiedPack = undefined;
-  if (packId === "preserve") {
-    if (replacementTransactionPending() && !pendingReplacementCanBeCancelled()) {
-      packDetail.textContent = `Keep current pet cannot clear the pending PREPARED record while the physical slot is ${installedPackDescription()}. Choose the exact bound target ID ${installedReplacementTransaction.targetPackId.toString(16).padStart(8, "0").toUpperCase()} to recover without losing the saved source identity.`;
-    } else if (pendingReplacementCanBeCancelled()) {
-      packDetail.textContent = `Keep current pet safely cancels stale ${installedReplacementTransaction.status.toUpperCase()} because the physical pack still matches its saved source ID. The companion slot and pet progress will not be written.`;
-    } else {
-      packDetail.textContent = `Keep current pet selected. ${installedPackDescription()} and all pet progress will be preserved; the companion-pack slot will not be written.`;
-    }
-    return null;
-  }
-  if (packId === UNLOCKED_PACK_ID && !unlockedPackInput.files?.[0]) {
-    packDetail.textContent = "Choose the unlocked .k868 file you downloaded. It stays on this device and must pass every local format and integrity check.";
-    if (allowMissingUnlockedFile) return null;
-  }
-  const pack = packId === UNLOCKED_PACK_ID
-    ? await loadUnlockedPack(unlockedPackInput.files?.[0])
-    : await fetchOfficialPack(packId);
-  verifiedPack = pack;
-  if (installedReplacementTransaction?.status === "invalid") {
-    packDetail.textContent = `${pack.definition.name} is verified, but companion writes are blocked because the on-device replacement transaction is malformed. Keep current pet remains available.`;
-  } else if (replacementTransactionPending()) {
-    if (replacementTransactionTargets(installedReplacementTransaction, pack)) {
-      packDetail.textContent = `${pack.definition.name} exactly matches the pending ${installedReplacementTransaction.status.toUpperCase()} replacement target. Retrying will use the preserved source ID ${installedReplacementTransaction.sourcePackId.toString(16).padStart(8, "0").toUpperCase()}, never the current physical pack, and requires destructive confirmation again.`;
-    } else {
-      packDetail.textContent = `${pack.definition.name} is verified but blocked. The pending replacement is bound to target ID ${installedReplacementTransaction.targetPackId.toString(16).padStart(8, "0").toUpperCase()}; only that exact pack can resume it.`;
-    }
-  } else if (installedPack?.status === "valid" && installedPack.packId !== pack.definition.packId) {
-    packDetail.textContent = `${pack.definition.name} is ready: ${packIntegrityDescription(pack)}. This is a different species from ${installedPackDescription()}; replacement is destructive and requires a separate confirmation before any write.`;
-  } else if (installedPack?.status === "valid") {
-    packDetail.textContent = `${pack.definition.name} is ready: ${packIntegrityDescription(pack)}. Its pack ID matches the installed pet, so care and bond progress will be preserved.`;
-  } else if (installedPack?.status === "empty") {
-    packDetail.textContent = `${pack.definition.name} is ready: ${packIntegrityDescription(pack)}. The companion slot is empty: firmware will preserve legacy vitals, establish this pack's brain identity, and clear pack-specific traits and gifts.`;
-  } else if (installedReplacementTransaction?.status === "empty" && installedPack?.status === "invalid") {
-    packDetail.textContent = `${pack.definition.name} is ready for explicit physical-pack repair. No PREPARED or COMMITTED record will be written. Firmware activates it only if its ID matches durable companion state or the device is legacy packless; otherwise it quarantines the pack without resetting species state.`;
-  } else {
-    packDetail.textContent = `${pack.definition.name} is verified, but replacement stays blocked until the current companion slot can be validated.`;
-  }
-  return pack;
-}
-
-async function checkSelectedPack() {
-  busy = true;
-  updateControls();
-  try {
-    unlockedPackInput.removeAttribute("aria-invalid");
-    const pack = await loadSelectedPack();
-    if (pack) append(`Pet gate passed: ${pack.definition.name}; ${packIntegrityDescription(pack)} for the dedicated slot at 0x670000.`);
-    else append("Pet choice: preserve the current companion-pack slot.");
-  } catch (error) {
-    if (packSelect.value === UNLOCKED_PACK_ID) unlockedPackInput.setAttribute("aria-invalid", "true");
-    packDetail.textContent = "This file was rejected. Choose the downloaded .k868 file again, or download a fresh unlocked copy and retry.";
-    append(`Pet gate closed: ${errorMessage(error)}`);
-  } finally {
-    busy = false;
-    updateControls();
-  }
-}
-
-async function checkUnlockedPackFile() {
-  if (packSelect.value !== UNLOCKED_PACK_ID) return;
-  verifiedPack = undefined;
-  if (!unlockedPackInput.files?.[0]) {
-    unlockedPackInput.removeAttribute("aria-invalid");
-    packDetail.textContent = "Choose the unlocked .k868 file you downloaded. It stays on this device and must pass every local format and integrity check.";
-    updateControls();
-    return;
-  }
-  await checkSelectedPack();
-}
-
-async function packForInstall(packId, selectedPack) {
-  if (packId === "preserve") return null;
-  if (packId === UNLOCKED_PACK_ID) {
-    if (!packMatchesSelection(packId, selectedPack)) {
-      throw new Error("selected unlocked companion pack is not loaded");
-    }
-    await reverifyPack(selectedPack);
-    return selectedPack;
-  }
-  return fetchOfficialPack(packId);
 }
 
 async function checkRelease() {
   busy = true;
-  verifiedRelease = undefined;
-  verifiedPack = undefined;
-  releaseDetail.textContent = "Checking the Ed25519 manifest authority and every bootstrap artifact…";
+  verifiedLegacyRelease = undefined;
+  verifiedCurrentRelease = undefined;
+  releaseDetail.textContent = "Verifying the latest signed firmware and the legacy recovery release…";
   updateControls();
   try {
-    const [release] = await Promise.all([
+    const [currentResult, legacyResult] = await Promise.allSettled([
+      fetchVerifiedCurrentRelease(),
       fetchVerifiedRelease(),
-      loadSelectedPack({ allowMissingUnlockedFile: true }),
     ]);
-    verifiedRelease = release;
-    const totalBytes = release.artifacts.reduce((total, artifact) => total + artifact.bytes.byteLength, 0);
-    releaseDetail.textContent = `Kitsu ${release.manifest.firmware_version} is signed, physically accepted, and ready for seven bounded core writes (${totalBytes.toLocaleString()} bytes).`;
-    append(`Release gate passed: ${release.manifest.release_id}; exact manifest signature and all seven SHA-256 write images verified.`);
+    if (currentResult.status === "fulfilled") {
+      verifiedCurrentRelease = currentResult.value;
+      append(`Latest firmware verified: ${verifiedCurrentRelease.manifest.release_id}; package and ESP32-S3 application signatures/hashes passed.`);
+    } else {
+      append(`Latest firmware unavailable: ${errorMessage(currentResult.reason)}`);
+    }
+    if (legacyResult.status === "fulfilled") {
+      verifiedLegacyRelease = legacyResult.value;
+      append(`Legacy recovery verified: ${verifiedLegacyRelease.manifest.release_id}; all seven signed write images passed.`);
+    } else {
+      append(`Legacy recovery unavailable: ${errorMessage(legacyResult.reason)}`);
+    }
+    if (!verifiedCurrentRelease && !verifiedLegacyRelease) {
+      throw new Error("no signed firmware release passed verification");
+    }
+    releaseDetail.textContent = verifiedCurrentRelease
+      ? `Latest Kitsu ${verifiedCurrentRelease.manifest.firmware_version} is signed, byte-verified, and ready for current-layout Heltec V3 boards.${verifiedLegacyRelease ? ` Legacy recovery ${verifiedLegacyRelease.manifest.firmware_version} is also available.` : ""}`
+      : `Latest firmware is unavailable. Legacy recovery ${verifiedLegacyRelease.manifest.firmware_version} is verified.`;
   } catch (error) {
-    releaseDetail.textContent = "No installable production release passed every signature, schema, acceptance, and artifact gate.";
-    append(`Release gate closed: ${errorMessage(error)}`);
+    releaseDetail.textContent = "No installable firmware passed the signature, image, and hash checks.";
+    append(`Release check stopped: ${errorMessage(error)}`);
   } finally {
     busy = false;
     updateControls();
   }
 }
 
-async function verifyReadback(artifact, index, artifacts, start = 65, end = 99) {
-  const totalBytes = artifacts.reduce((total, item) => total + item.record.bytes, 0);
-  const precedingBytes = artifacts
-    .slice(0, index)
-    .reduce((total, item) => total + item.record.bytes, 0);
+async function readRegionDigest(offset, bytes, label, start, end) {
+  const data = await loader.readFlash(offset, bytes, (_packet, received, total) => {
+    const ratio = total === 0 ? 0 : Math.min(1, received / total);
+    setProgress(start + ratio * (end - start), `Reading ${label}: ${received.toLocaleString()} / ${total.toLocaleString()} bytes`);
+  });
+  if (data.byteLength !== bytes) throw new Error(`${label} read was incomplete`);
+  return sha256Hex(data);
+}
+
+function otaRegion(layout) {
+  return layout.kind === "migrated"
+    ? { offset: CURRENT_FLASH_PLAN.otaDataOffset, bytes: CURRENT_FLASH_PLAN.otaDataBytes }
+    : LEGACY_OTA_DATA;
+}
+
+async function capturePreservedRegions(layout, start = 2, end = 18) {
+  const ota = otaRegion(layout);
+  const middle = start + (end - start) * 0.15;
+  const otaSha256 = await readRegionDigest(ota.offset, ota.bytes, "OTA metadata", start, middle);
+  const packSha256 = await readRegionDigest(
+    COMPANION_PACK.offset,
+    COMPANION_PACK.bytes,
+    "custom companion pack",
+    middle,
+    end,
+  );
+  append(`Preservation baseline captured: OTA metadata ${otaSha256}; companion pack ${packSha256}.`);
+  return Object.freeze({ otaSha256, packSha256 });
+}
+
+async function verifyPreservedRegions(layout, baseline, start = 82, end = 98) {
+  const ota = otaRegion(layout);
+  const middle = start + (end - start) * 0.15;
+  const otaSha256 = await readRegionDigest(ota.offset, ota.bytes, "preserved OTA metadata", start, middle);
+  const packSha256 = await readRegionDigest(
+    COMPANION_PACK.offset,
+    COMPANION_PACK.bytes,
+    "preserved custom companion pack",
+    middle,
+    end,
+  );
+  if (otaSha256 !== baseline.otaSha256) throw new Error("OTA metadata changed during firmware install");
+  if (packSha256 !== baseline.packSha256) throw new Error("custom companion-pack bytes changed during firmware install");
+  append("Preservation verified: OTA metadata and the complete custom companion-pack region are byte-for-byte unchanged.");
+}
+
+async function verifyArtifactReadback(artifact, start, end) {
   const readback = await loader.readFlash(
     artifact.record.offset,
     artifact.record.bytes,
     (_packet, received, total) => {
-      const ratio = Math.min(1, received / total);
-      const completedBytes = precedingBytes + (artifact.record.bytes * ratio);
-      setProgress(start + (completedBytes / totalBytes) * (end - start), `Reading back ${artifact.record.role}: ${received.toLocaleString()} / ${total.toLocaleString()} bytes`);
+      const ratio = total === 0 ? 0 : Math.min(1, received / total);
+      setProgress(start + ratio * (end - start), `Reading back ${artifact.record.role}: ${received.toLocaleString()} / ${total.toLocaleString()} bytes`);
     },
   );
   if (readback.byteLength !== artifact.record.bytes) {
-    throw new Error(`${artifact.record.role} readback length differs from the verified install plan`);
+    throw new Error(`${artifact.record.role} readback length is wrong`);
   }
   if (await sha256Hex(readback) !== artifact.record.sha256) {
-    throw new Error(`${artifact.record.role} readback SHA-256 differs from the verified artifact`);
+    throw new Error(`${artifact.record.role} readback SHA-256 is wrong`);
   }
   append(`Readback verified: ${artifact.record.role} at 0x${artifact.record.offset.toString(16).padStart(6, "0")}.`);
 }
 
-async function install() {
-  if (busy || !loader || !verifiedRelease) return;
-  const selectedPackId = packSelect.value;
-  const packRequested = selectedPackId !== "preserve";
-  const selectedPack = verifiedPack;
-  if (packRequested && !packMatchesSelection(selectedPackId, selectedPack)) return;
-  const selectedPackName = selectedPack?.definition.name;
+function sameOtaSelection(left, right) {
+  return left?.label === right?.label
+    && left?.offset === right?.offset
+    && left?.sequence === right?.sequence
+    && left?.state === right?.state
+    && left?.sha256 === right?.sha256;
+}
+
+async function installCurrent() {
+  if (!verifiedCurrentRelease) return;
   busy = true;
   updateControls();
-  setProgress(0, "Checking the latest signed stable release");
-  let coreVerified = false;
-  let packVerified = !packRequested;
-  let replacementPreparedVerified = true;
-  let replacementCommittedVerified = true;
-  let destructiveReplacement = false;
-  let replacementRetry = false;
-  let packWriteStarted = false;
+  setProgress(0, "Rechecking signed latest firmware");
+  let writeStarted = false;
+  let completeVerified = false;
   let resetAttempted = false;
   try {
-    if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== FLASH_PLAN.flashSize) {
-      throw new Error("device identity gate is no longer valid");
+    if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== CURRENT_FLASH_PLAN.flashSize) {
+      throw new Error("device identity check is no longer valid");
     }
-    const currentFlashLayout = await requireLegacyFlashLayout(loader);
-    if (installedFlashLayout?.kind !== "legacy" || currentFlashLayout.sha256 !== installedFlashLayout.sha256) {
-      throw new Error("partition table changed after connection; reconnect and use the dedicated recovery path");
+    const latest = await fetchVerifiedCurrentRelease();
+    if (latest.packageSha256 !== verifiedCurrentRelease.packageSha256) {
+      append(`The signed latest package changed from ${verifiedCurrentRelease.manifest.release_id} to ${latest.manifest.release_id}; the new verified package will be used.`);
     }
-    const [latestRelease, latestPack] = await Promise.all([
-      fetchVerifiedRelease(),
-      packForInstall(selectedPackId, selectedPack),
-    ]);
-    if (latestRelease.manifest.release_id !== verifiedRelease.manifest.release_id) {
-      append(
-        `A newer signed release is available: ${latestRelease.manifest.release_id}; `
-        + "the installer switched to it before writing.",
-      );
+    verifiedCurrentRelease = latest;
+    const layout = await inspectInstalledFlashLayout(loader);
+    if (layout.kind !== "migrated" || layout.sha256 !== installedFlashLayout.sha256) {
+      throw new Error("current partition layout changed after connection; reconnect before installing");
     }
-    verifiedRelease = latestRelease;
-    verifiedPack = latestPack ?? undefined;
-    releaseDetail.textContent = `Kitsu ${verifiedRelease.manifest.firmware_version} is the latest signed, physically accepted, byte-verified release.`;
-    await reverifyArtifacts(verifiedRelease);
-    if (latestPack) await reverifyPack(latestPack);
-
-    let currentTransaction;
-    try {
-      currentTransaction = await inspectReplacementTransaction(loader);
-    } catch (error) {
-      currentTransaction = Object.freeze({ status: "invalid", error: errorMessage(error) });
+    const selection = await inspectCurrentOtaSelection(loader);
+    if (!sameOtaSelection(installedOtaSelection, selection)) {
+      throw new Error("OTA boot selection changed after connection; reconnect before installing");
     }
-    if (latestPack && currentTransaction.status === "invalid") {
-      throw new Error(`replacement transaction is invalid: ${currentTransaction.error}`);
-    }
-    if (["empty", "prepared", "committed"].includes(installedReplacementTransaction?.status)
-      && !replacementTransactionsMatch(installedReplacementTransaction, currentTransaction)) {
-      throw new Error("replacement transaction changed after connection; reconnect and review it again");
-    }
-    installedReplacementTransaction = currentTransaction;
-
-    let currentPack;
-    try {
-      currentPack = await inspectInstalledPack(loader);
-    } catch (error) {
-      const explicitRepair = latestPack
-        && currentTransaction.status === "empty"
-        && installedPack?.status === "invalid";
-      if (latestPack && !replacementTransactionPending(currentTransaction) && !explicitRepair) {
-        throw new Error(`current companion changed or is invalid: ${errorMessage(error)}`);
-      }
-      currentPack = Object.freeze({ status: "invalid", error: errorMessage(error) });
-    }
-    if (!replacementTransactionPending(currentTransaction)
-      && (installedPack?.status === "valid" || installedPack?.status === "empty")
-      && !installedPackMatches(installedPack, currentPack)) {
-      throw new Error("current companion changed after connection; reconnect and review it again");
-    }
-    if (latestPack && installedPack?.status === "invalid" && currentPack.status !== "invalid") {
-      throw new Error("the physical companion changed after its failed connection-time inspection; reconnect before any pack write");
-    }
-    installedPack = currentPack;
-    const transition = companionPackTransition(currentPack, latestPack, currentTransaction);
-    destructiveReplacement = transition.destructive;
-    replacementRetry = Boolean(transition.retry);
-
-    let replacementPrepared;
-    let replacementCommitted;
-    if (destructiveReplacement) {
-      // On retry, retain the exact validated PREPARED bytes read before the
-      // core phase. Never rebuild the source identity from a target or partial
-      // physical companion slot.
-      const intentBytes = replacementRetry
-        ? currentTransaction.preparedBytes.slice()
-        : buildReplacementIntent(transition.sourcePackId, latestPack);
-      const intentSha256 = await sha256Hex(intentBytes);
-      replacementPrepared = Object.freeze({
-        record: Object.freeze({
-          role: "companion_replacement_prepared",
-          offset: REPLACEMENT_TRANSACTION.prepared.offset,
-          bytes: intentBytes.byteLength,
-          sha256: intentSha256,
-        }),
-        bytes: intentBytes,
-      });
-      replacementCommitted = Object.freeze({
-        record: Object.freeze({
-          role: "companion_replacement_committed",
-          offset: REPLACEMENT_TRANSACTION.committed.offset,
-          bytes: intentBytes.byteLength,
-          sha256: intentSha256,
-        }),
-        bytes: intentBytes,
-      });
-      replacementPreparedVerified = false;
-      replacementCommittedVerified = false;
-    }
-
-    const coreArtifacts = replacementRetry
-      ? await replacementRetryCoreArtifacts(verifiedRelease)
-      : verifiedRelease.artifacts;
-
-    const destructiveSource = replacementRetry
-      ? `stored pet ID ${transition.sourcePackId.toString(16).padStart(8, "0").toUpperCase()} recovered from PREPARED (physical slot: ${installedPackDescription(currentPack)})`
-      : installedPackDescription(currentPack);
-    const packPlan = !latestPack
-      ? `The current companion slot (${installedPackDescription(currentPack)}) will not be written, and all pet progress stays untouched. `
-      : destructiveReplacement
-        ? `The validated ${latestPack.definition.name} pack will replace ${destructiveSource}. A separate destructive confirmation is required. PREPARED is verified before the companion slot is written; matching COMMITTED is written only after exact target SHA-256 readback. `
-        : transition.repair
-          ? `The physical companion slot is invalid, so the validated ${latestPack.definition.name} pack will be written as an explicit repair with no PREPARED or COMMITTED authorization. Firmware activates it only if its ID matches durable state or this is a legacy packless first assignment; otherwise it quarantines it without a species-state reset. `
-        : currentPack.status === "empty"
-          ? `The validated ${latestPack.definition.name} pack will be assigned to the empty companion slot. Firmware preserves legacy vitals, establishes the new pack brain identity, and clears pack-specific traits and gifts. `
-          : `The validated ${latestPack.definition.name} pack has the same companion ID as ${installedPackDescription(currentPack)}, so pet progress stays untouched. `;
     const confirmed = window.confirm(
-      `${latestPack ? `Install Kitsu and ${latestPack.definition.name}` : "Install Kitsu"} now?\n\n`
-      + "This writes the reviewed rollback-enabled bootloader, partition table, the same application in app0 and app1, and an empty OTA journal at the end of each application slot. "
-      + (replacementRetry
-        ? "Because this is an interrupted replacement retry, it preserves the two transaction sectors and rewrites only the signed erased suffix of the retired connectivity partition. "
-        : "It writes an exact clear image over the retired connectivity partition. ")
-      + "Every selected region is read back. "
-      + packPlan
-      + "It never calls full-chip erase and does not write OTA data, controller records, MeshCore state, coredump, or eFuses.",
+      `Install signed Kitsu ${latest.manifest.firmware_version} to ${selection.label} now?\n\n`
+      + `Only the ${selection.label} application at 0x${selection.offset.toString(16).padStart(6, "0")} will be written and read back. `
+      + "The page never performs a full-chip erase and never writes the partition table, bootloader, NVS, OTA metadata, other application slot, private journals, custom companion pack, connectivity data, or coredump.",
     );
     if (!confirmed) {
       append("Install cancelled. Nothing was written.");
       return;
     }
-    if (destructiveReplacement) {
-      const destructiveConfirmed = window.confirm(
-        `DESTRUCTIVE PET REPLACEMENT\n\n`
-        + `Current: ${destructiveSource}\n`
-        + `New: ${latestPack.definition.name} (ID ${latestPack.definition.packId.toString(16).padStart(8, "0").toUpperCase()})\n\n`
-        + "This permanently resets the current pet's care stats, bond progress, memories, traits, and gifts. Firmware updates do not require this. Choose Cancel to keep the current pet and use Keep current pet instead.",
-      );
-      if (!destructiveConfirmed) {
-        append("Destructive pet replacement cancelled. Nothing was written.");
-        return;
-      }
-    }
 
-    const finalFlashLayout = await requireLegacyFlashLayout(loader);
-    if (finalFlashLayout.sha256 !== currentFlashLayout.sha256) {
-      throw new Error("partition table changed before the first write; nothing was written");
+    const finalLayout = await inspectInstalledFlashLayout(loader);
+    const finalSelection = await inspectCurrentOtaSelection(loader);
+    if (finalLayout.kind !== "migrated" || finalLayout.sha256 !== layout.sha256
+      || !sameOtaSelection(selection, finalSelection)) {
+      throw new Error("layout or OTA selection changed before the first write; nothing was written");
     }
+    const preserved = await capturePreservedRegions(finalLayout);
+    const artifact = Object.freeze({
+      record: Object.freeze({
+        role: `latest_firmware_${selection.label}`,
+        offset: selection.offset,
+        bytes: latest.image.byteLength,
+        sha256: latest.imageDigest,
+      }),
+      bytes: latest.image,
+    });
+    setProgress(18, `Writing signed Kitsu ${latest.manifest.firmware_version} to ${selection.label}`);
+    append(`Writing one bounded application image to ${selection.label}; no companion-pack write exists in this plan.`);
+    writeStarted = true;
+    await loader.writeFlash({
+      fileArray: [{ data: artifact.bytes, address: artifact.record.offset }],
+      flashMode: "keep",
+      flashFreq: "keep",
+      flashSize: "keep",
+      eraseAll: false,
+      compress: true,
+      reportProgress(_fileIndex, written, total) {
+        const ratio = total === 0 ? 0 : Math.min(1, written / total);
+        setProgress(18 + ratio * 42, `Writing ${selection.label}: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
+      },
+    });
+    await verifyArtifactReadback(artifact, 60, 82);
+    await verifyPreservedRegions(finalLayout, preserved);
+    const postLayout = await inspectInstalledFlashLayout(loader);
+    if (postLayout.kind !== "migrated" || postLayout.sha256 !== finalLayout.sha256) {
+      throw new Error("partition table changed during firmware install");
+    }
+    completeVerified = true;
+    setProgress(99, "Application and preserved regions verified; resetting once");
+    resetAttempted = true;
+    await loader.after("hard_reset");
+    setProgress(100, `Kitsu ${latest.manifest.firmware_version} installed`);
+    append(`Kitsu ${latest.manifest.firmware_version} installed to ${selection.label}. Application readback, OTA metadata, and custom pack verification all passed.`);
+    await closeTransport({ reset: false, announce: true });
+  } catch (error) {
+    if (resetAttempted && completeVerified) {
+      setProgress(progress.value, "Install verified; automatic reset could not be confirmed");
+      append(`The application and preserved regions passed, but reset could not be confirmed: ${errorMessage(error)}. Press RST once.`);
+      await closeTransport({ reset: false, announce: true });
+    } else if (writeStarted) {
+      setProgress(progress.value, "Install stopped; Heltec left in ROM loader");
+      append(`Install stopped after writing began: ${errorMessage(error)}. The Heltec is left in the ROM loader for a clean retry; no automatic reset was attempted.`);
+      await closeTransport({ reset: false, announce: true });
+    } else {
+      setProgress(progress.value, "Install stopped before writing");
+      append(`Install stopped before any write: ${errorMessage(error)}.`);
+      await closeTransport({ reset: true, announce: true });
+    }
+  } finally {
+    busy = false;
+    updateControls();
+  }
+}
 
-    setProgress(4, "Latest release verified; starting seven bounded writes");
-    append(
-      `Install authorized for latest release ${verifiedRelease.manifest.release_id}. `
-      + (replacementRetry
-        ? "Starting six exact signed core writes plus the SHA-bound erased connectivity suffix at 0x7b2000; PREPARED/COMMITTED remain untouched."
-        : "Starting the exact seven-write signed core phase.")
-      + " Erase-all remains disabled.",
+async function installLegacy() {
+  if (!verifiedLegacyRelease) return;
+  busy = true;
+  updateControls();
+  setProgress(0, "Rechecking signed legacy recovery");
+  let writeStarted = false;
+  let completeVerified = false;
+  let resetAttempted = false;
+  try {
+    if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== FLASH_PLAN.flashSize) {
+      throw new Error("device identity check is no longer valid");
+    }
+    const latest = await fetchVerifiedRelease();
+    verifiedLegacyRelease = latest;
+    await reverifyArtifacts(latest);
+    const layout = await inspectInstalledFlashLayout(loader);
+    if (layout.kind !== "legacy" || layout.sha256 !== installedFlashLayout.sha256) {
+      throw new Error("legacy partition layout changed after connection; reconnect before installing");
+    }
+    const confirmed = window.confirm(
+      `Install signed legacy recovery ${latest.manifest.firmware_version} now?\n\n`
+      + "This performs the seven reviewed recovery writes and reads each one back. It never performs a full-chip erase. OTA metadata and the complete custom companion-pack region are hashed before and after and must remain identical.",
     );
-    if (latestPack) append(`Selected pet phase: ${latestPack.definition.name}, ${latestPack.record.bytes.toLocaleString()} bytes at 0x670000; ${packIntegrityDescription(latestPack)}.`);
-    else append("Selected pet phase: preserve the current companion-pack slot without writing it.");
-
-    const totalWriteBytes = coreArtifacts.reduce((total, artifact) => total + artifact.record.bytes, 0);
-    const precedingWriteBytes = coreArtifacts.map((_, index) => coreArtifacts
+    if (!confirmed) {
+      append("Install cancelled. Nothing was written.");
+      return;
+    }
+    const finalLayout = await inspectInstalledFlashLayout(loader);
+    if (finalLayout.kind !== "legacy" || finalLayout.sha256 !== layout.sha256) {
+      throw new Error("partition layout changed before the first write; nothing was written");
+    }
+    const preserved = await capturePreservedRegions(finalLayout);
+    const artifacts = latest.artifacts;
+    const totalWriteBytes = artifacts.reduce((total, artifact) => total + artifact.record.bytes, 0);
+    const precedingWriteBytes = artifacts.map((_, index) => artifacts
       .slice(0, index)
       .reduce((total, artifact) => total + artifact.record.bytes, 0));
+    writeStarted = true;
     await loader.writeFlash({
-      fileArray: coreArtifacts.map((artifact) => ({
+      fileArray: artifacts.map((artifact) => ({
         data: artifact.bytes,
         address: artifact.record.offset,
       })),
@@ -615,180 +430,59 @@ async function install() {
       compress: true,
       reportProgress(fileIndex, written, total) {
         const ratio = total === 0 ? 0 : Math.min(1, written / total);
-        const artifact = coreArtifacts[fileIndex];
-        const completedBytes = precedingWriteBytes[fileIndex] + (artifact.record.bytes * ratio);
-        setProgress(4 + (completedBytes / totalWriteBytes) * 54, `Writing signed core ${artifact.record.role}: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
+        const completed = precedingWriteBytes[fileIndex] + artifacts[fileIndex].record.bytes * ratio;
+        setProgress(18 + (completed / totalWriteBytes) * 42, `Writing ${artifacts[fileIndex].record.role}: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
       },
     });
-
-    const coreReadbackEnd = replacementPrepared ? 76 : latestPack ? 82 : 99;
-    for (const [index, artifact] of coreArtifacts.entries()) {
-      await verifyReadback(artifact, index, coreArtifacts, 58, coreReadbackEnd);
+    for (const [index, artifact] of artifacts.entries()) {
+      const start = 60 + (index / artifacts.length) * 22;
+      const end = 60 + ((index + 1) / artifacts.length) * 22;
+      await verifyArtifactReadback(artifact, start, end);
     }
-    coreVerified = true;
-    append("Signed core phase complete: all seven regions passed SHA-256 readback.");
-
-    if (latestPack) {
-      await reverifyPack(latestPack);
-      if (replacementPrepared) {
-        setProgress(76, replacementRetry
-          ? "Core verified; checking retained PREPARED before the companion pack"
-          : "Core verified; writing PREPARED before any companion-pack byte");
-        if (!replacementRetry) {
-          await loader.writeFlash({
-            fileArray: [{
-              data: replacementPrepared.bytes,
-              address: replacementPrepared.record.offset,
-            }],
-            flashMode: "dio",
-            flashFreq: "80m",
-            flashSize: "8MB",
-            eraseAll: false,
-            compress: true,
-            reportProgress(_fileIndex, written, total) {
-              const ratio = total === 0 ? 0 : Math.min(1, written / total);
-              setProgress(76 + ratio * 3, `Writing PREPARED: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
-            },
-          });
-        }
-        await verifyReadback(replacementPrepared, 0, [replacementPrepared], 79, 82);
-        replacementPreparedVerified = true;
-        append(`${replacementRetry ? "Retained, never erased" : "New"} PREPARED replacement record passed SHA-256 readback before the target pack write.`);
-      }
-
-      setProgress(82, `Core verified; writing ${latestPack.definition.name} to the companion slot`);
-      packWriteStarted = true;
-      await loader.writeFlash({
-        fileArray: [{ data: latestPack.bytes, address: latestPack.record.offset }],
-        flashMode: "dio",
-        flashFreq: "80m",
-        flashSize: "8MB",
-        eraseAll: false,
-        compress: true,
-        reportProgress(_fileIndex, written, total) {
-          const ratio = total === 0 ? 0 : Math.min(1, written / total);
-          setProgress(82 + ratio * 6, `Writing ${latestPack.definition.name} pet: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
-        },
-      });
-      await verifyReadback(latestPack, 0, [latestPack], 88, replacementCommitted ? 94 : 99);
-      packVerified = true;
-      packDetail.textContent = transition.repair
-        ? `${latestPack.definition.name} physical pack bytes were repaired and verified by SHA-256. Firmware will activate them only for a matching durable ID or legacy packless first assignment; otherwise it will quarantine them.`
-        : `${latestPack.definition.name} installed with Kitsu in the same USB session and verified by SHA-256 readback.`;
-      append(
-        transition.repair
-          ? `${latestPack.definition.name} physical-pack repair passed exact readback; no species-reset authorization exists.`
-          : `${latestPack.definition.name} pet phase complete: dedicated companion slot read back exactly.`,
-      );
-
-      if (replacementCommitted) {
-        setProgress(94, "Target pack verified; writing COMMITTED in its separate sector");
-        await loader.writeFlash({
-          fileArray: [{
-            data: replacementCommitted.bytes,
-            address: replacementCommitted.record.offset,
-          }],
-          flashMode: "dio",
-          flashFreq: "80m",
-          flashSize: "8MB",
-          eraseAll: false,
-          compress: true,
-          reportProgress(_fileIndex, written, total) {
-            const ratio = total === 0 ? 0 : Math.min(1, written / total);
-            setProgress(94 + ratio * 3, `Writing COMMITTED: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`);
-          },
-        });
-        await verifyReadback(replacementCommitted, 0, [replacementCommitted], 97, 99);
-        replacementCommittedVerified = true;
-        append("Matching COMMITTED replacement record passed SHA-256 readback after the exact target pack. Firmware will require both records after the explicit reset.");
-      }
-    }
-
-    setProgress(99, "All selected readback hashes passed; resetting the Heltec once");
+    await verifyPreservedRegions(finalLayout, preserved);
+    completeVerified = true;
+    setProgress(99, "Recovery and preserved regions verified; resetting once");
     resetAttempted = true;
     await loader.after("hard_reset");
-    setProgress(100, "Install and SHA-256 readback complete");
-    append(
-      `Kitsu ${verifiedRelease.manifest.firmware_version}${latestPack
-        ? transition.repair
-          ? ` with ${latestPack.definition.name} physical-pack repair`
-          : ` and ${latestPack.definition.name}`
-        : ""} installed and read back successfully. `
-      + "The Heltec was reset once; releasing the serial port.",
-    );
+    setProgress(100, `Legacy recovery ${latest.manifest.firmware_version} installed`);
+    append(`Legacy recovery ${latest.manifest.firmware_version} installed. All seven write readbacks plus OTA metadata and custom pack verification passed.`);
     await closeTransport({ reset: false, announce: true });
   } catch (error) {
-    if (resetAttempted && coreVerified && packVerified && replacementCommittedVerified) {
-      setProgress(progress.value, "Installation verified; automatic reset could not be confirmed");
-      append(`Every selected region passed SHA-256 readback, but the final automatic reset could not be confirmed: ${errorMessage(error)}. Press RST once on the Heltec. No second automatic reset was attempted.`);
-    } else if (coreVerified && destructiveReplacement && !replacementPreparedVerified) {
-      setProgress(progress.value, "Replacement stopped before PREPARED was verified");
-      append(`The target companion slot was not started because PREPARED did not pass exact readback: ${errorMessage(error)}.`);
-    } else if (coreVerified && packRequested && !packVerified) {
-      setProgress(progress.value, `${selectedPackName} install stopped after the signed core passed`);
-      append(`Signed core and PREPARED are verified, but the ${selectedPackName} target pack failed closed: ${errorMessage(error)}. COMMITTED was not written.`);
-    } else if (coreVerified && destructiveReplacement && packVerified && !replacementCommittedVerified) {
-      setProgress(progress.value, "Replacement stopped before COMMITTED was verified");
-      append(`The target pack passed readback, but COMMITTED did not: ${errorMessage(error)}. The Heltec will remain in the ROM loader for transaction inspection and exact-target retry.`);
+    if (resetAttempted && completeVerified) {
+      setProgress(progress.value, "Recovery verified; automatic reset could not be confirmed");
+      append(`Every write and preserved region passed, but reset could not be confirmed: ${errorMessage(error)}. Press RST once.`);
+      await closeTransport({ reset: false, announce: true });
+    } else if (writeStarted) {
+      setProgress(progress.value, "Recovery stopped; Heltec left in ROM loader");
+      append(`Recovery stopped after writing began: ${errorMessage(error)}. The Heltec is left in the ROM loader for a clean retry; no automatic reset was attempted.`);
+      await closeTransport({ reset: false, announce: true });
     } else {
-      setProgress(progress.value, "Install stopped; no automatic retry was attempted");
-      append(`Install failed closed: ${errorMessage(error)}. Inspect the log and reconnect before retrying.`);
+      setProgress(progress.value, "Recovery stopped before writing");
+      append(`Recovery stopped before any write: ${errorMessage(error)}.`);
+      await closeTransport({ reset: true, announce: true });
     }
-    const holdInLoader = destructiveReplacement
-      && !replacementCommittedVerified
-      && !resetAttempted
-      && (replacementRetry || packWriteStarted);
-    if (holdInLoader) {
-      append("The Heltec is being left in the ROM loader so an intermediate unapproved species cannot boot. Reconnect to finish or restore the intended pack; firmware also quarantines any unapproved mismatch after a later power cycle.");
-    }
-    await closeTransport({ reset: !resetAttempted && !holdInLoader, announce: true });
   } finally {
     busy = false;
     updateControls();
   }
 }
 
-// Browsers may restore a previous form selection across reloads.  Firmware
-// reflashing must always start in preserve mode, never a remembered starter.
-packSelect.value = "preserve";
-unlockedPackInput.value = "";
+async function install() {
+  if (busy || !loader) return;
+  if (installedFlashLayout?.kind === "migrated") await installCurrent();
+  else if (installedFlashLayout?.kind === "legacy") await installLegacy();
+}
 
 if (serialSupported) {
-  browserDetail.textContent = "Web Serial is available in this secure context. Device access starts only after Connect Heltec is clicked.";
+  browserDetail.textContent = "Web Serial is available. Device access starts only after Connect Heltec is clicked.";
   connectButton.addEventListener("click", () => { void connect(); });
-  disconnectButton.addEventListener("click", () => {
-    const holdInLoader = replacementTransactionPending();
-    if (holdInLoader) {
-      append("Pending replacement detected; disconnecting without reset so PREPARED/COMMITTED can be inspected on the next connection.");
-    }
-    void closeTransport({ reset: !holdInLoader });
-  });
+  disconnectButton.addEventListener("click", () => { void closeTransport(); });
 } else {
   browserDetail.textContent = "Web Serial is unavailable. Use current desktop Chrome or Edge over HTTPS.";
   connectButton.disabled = true;
 }
 
 refreshButton.addEventListener("click", () => { void checkRelease(); });
-packSelect.addEventListener("change", () => {
-  verifiedPack = undefined;
-  unlockedPackInput.removeAttribute("aria-invalid");
-  if (packSelect.value === UNLOCKED_PACK_ID) {
-    packDetail.textContent = "Choose the unlocked .k868 file you downloaded. It stays on this device and must pass every local format and integrity check.";
-    append("Pet choice: waiting for a local unlocked .k868 file. Nothing has been accepted or written.");
-    updateControls();
-    return;
-  }
-  unlockedPackInput.value = "";
-  void checkSelectedPack();
-});
-unlockedPackInput.addEventListener("change", () => { void checkUnlockedPackFile(); });
 installButton.addEventListener("click", () => { void install(); });
-window.addEventListener("pageshow", (event) => {
-  if (!event.persisted) return;
-  packSelect.value = "preserve";
-  unlockedPackInput.value = "";
-  verifiedPack = undefined;
-  void checkSelectedPack();
-});
 window.addEventListener("pagehide", () => { void closeTransport({ reset: false, announce: false }); });
 void checkRelease();
