@@ -16,7 +16,7 @@
   <meta name="twitter:image" content="https://k32.run/assets/kitsu-k32-social-card-v1.png" />
   <link rel="icon" href="/assets/kitsu-app-icon.png" />
   <script src="/theme.js"></script>
-  <link rel="stylesheet" href="/styles.css?sha256=25f87e6c4422ebc67ad42244076efa84978407c9bc6f59e8c8015992cda12622" />
+  <link rel="stylesheet" href="/styles.css?sha256=7d9089897d63014c82479e09f9948a1cd240c4fde576d4771472d441e681409d" />
   <script type="module" src="/site.js?sha256=69efaec1187f485c3e0180253754a12835804cf1c2cba3b6f538ab34f2a63eda"></script>
   <script type="module" src="/firmware-release.js?sha256=85d7a70160f226b104c17fbe963f64525f9b58b46c7bfd395cdeed254dbfda91"></script>
   <title>K32 Kitsu - local-first radio companion</title>
@@ -91,7 +91,7 @@
     <section class="start-section section-shell" id="start">
       <div class="start-heading"><p class="eyebrow">From board to companion</p><h2>Set up once. Keep using it your way.</h2><div class="start-actions"><a class="button primary-button" href="#firmware">Get signed firmware <span aria-hidden="true">↓</span></a><a class="text-link" href="https://docs.k32.run/getting-started/">Read every setup step <span aria-hidden="true">↗</span></a></div></div>
       <div class="setup-path" aria-label="Getting started">
-        <article><strong>Prepare</strong><p>Public 0.20.5 starts from a board already prepared for the current layout. The one-time 0.20.2 to 0.20.3 migration remains a private, backed-up serial operation, not an owner download. Never run the historical browser installer on a migrated or unknown layout.</p></article>
+        <article><strong>Prepare</strong><p>Connect a stock new Heltec V3 to the web flasher for direct Kitsu 0.20.5 initialization. Boards already on the current layout receive the latest application only. The one-time upgrade for older Kitsu layouts remains separate.</p></article>
         <article><strong>Install</strong><p>Install the signed Android app below. Android 8 or newer is required.</p></article>
         <article><strong>Pair</strong><p>Compare the confirmation code on Android and Kitsu, accept only if they match, then follow the physical PRG prompts.</p></article>
         <article><strong>Live</strong><p>Care, history, messages, radio settings, and signed firmware updates remain available through the nearby connection.</p></article>
@@ -99,10 +99,10 @@
     </section>
 
     <section class="download-section" id="download">
-      <div class="download-copy"><p class="eyebrow">Verified local releases</p><h2>Install signed Android and firmware.</h2><p>Each release link appears only after its exact bytes, signed authority, identity, and platform contract pass local browser verification.</p><p class="release-contract">Kitsu Android 2.3.1 · version code 35 · Android 8.0 and newer</p><p><strong>Changing app tracks is a clean install.</strong> If you are moving from <code>app.kitsu.mobile</code>, a testing preview, or between direct-download and Play signing tracks, connect first and use <strong>Forget authorization</strong>. Then uninstall the old app, install the chosen track, and pair again. Direct and Play builds cannot update one another.</p><p>Firmware 0.20.5 is for an already migrated Heltec V3 board. Normal updates use the signed <code>.kitsu-fw</code> package through Kitsu Android 2.3.1 with A/B rollback handling.</p></div>
+      <div class="download-copy"><p class="eyebrow">Verified local releases</p><h2>Install signed Android and firmware.</h2><p>Each release link appears only after its exact bytes, signed authority, identity, and platform contract pass local browser verification.</p><p class="release-contract">Kitsu Android 2.3.1 · version code 35 · Android 8.0 and newer</p><p><strong>Changing app tracks is a clean install.</strong> If you are moving from <code>app.kitsu.mobile</code>, a testing preview, or between direct-download and Play signing tracks, connect first and use <strong>Forget authorization</strong>. Then uninstall the old app, install the chosen track, and pair again. Direct and Play builds cannot update one another.</p><p>Use the USB flasher for a stock new Heltec V3 or a firmware-only reinstall on the current layout. Android continues to provide signed A/B updates for paired boards.</p></div>
       <div class="download-cards">
         <div class="download-module"><div class="download-state" role="status" aria-live="polite"><span class="status" id="android-status">Checking signed Android release</span><h3 id="android-title">Kitsu Android</h3><p id="android-detail">Verifying the signed release manifest and local-first eligibility.</p></div><a id="android-download" class="download-action disabled" aria-disabled="true">Verifying release…</a><small id="android-digest">The link is enabled only after an eligible local-first manifest passes verification.</small><noscript><p class="noscript">JavaScript is required to verify the release signature before download.</p></noscript></div>
-        <div class="download-module" id="firmware"><div class="download-state" role="status" aria-live="polite"><span class="status" id="firmware-status">Checking signed firmware package</span><h3 id="firmware-title">Kitsu firmware 0.20.5</h3><p id="firmware-detail">Verifying the package signature, application image, and flash layout in this browser.</p></div><a id="firmware-download" class="download-action disabled" aria-disabled="true">Verifying package...</a><small id="firmware-digest">The download is offered only after these exact package bytes pass every check.</small><noscript><p class="noscript">JavaScript is required to verify the firmware package before download.</p></noscript></div>
+        <div class="download-module" id="firmware"><div class="download-state" role="status" aria-live="polite"><span class="status" id="firmware-status">Checking signed firmware package</span><h3 id="firmware-title">Kitsu firmware 0.20.5</h3><p id="firmware-detail">Verifying the package signature, application image, and flash layout in this browser.</p></div><a id="firmware-download" class="download-action disabled" aria-disabled="true">Verifying package...</a><a class="download-action flash-action" href="https://flash.k32.run/">Flash a Heltec over USB</a><small id="firmware-digest">The download is offered only after these exact package bytes pass every check.</small><noscript><p class="noscript">JavaScript is required to verify the release before download or USB installation.</p></noscript></div>
       </div>
     </section>
 
@@ -111,7 +111,7 @@
       <div class="resource-list">
         <a href="https://docs.k32.run"><span>Manual</span><strong>Learn Kitsu from first boot to daily use.</strong><i aria-hidden="true">↗</i></a>
         <a href="https://docs.k32.run/connectivity/"><span>Bluetooth</span><strong>Understand direct control and saved authorization.</strong><i aria-hidden="true">↗</i></a>
-        <a href="#firmware"><span>Firmware</span><strong>Get the verified signed A/B update package for a migrated board.</strong><i aria-hidden="true">↓</i></a>
+        <a href="https://flash.k32.run/"><span>Firmware</span><strong>Install the latest Kitsu firmware over USB.</strong><i aria-hidden="true">↗</i></a>
         <a href="https://github.com/pattalium/Kitsu"><span>Source</span><strong>Inspect the firmware, Android app, protocols, and release tooling.</strong><i aria-hidden="true">↗</i></a>
       </div>
     </section>

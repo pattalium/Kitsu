@@ -101,12 +101,11 @@ opens only the exact package route. If a future source snapshot deliberately
 sets the contract to `null`, it must contain no firmware package and the script
 creates no firmware route or probe.
 
-Public firmware 0.20.5 is only for a Heltec V3 board already migrated to the
-current layout. The one-time 0.20.2 to 0.20.3 transition is a private,
-double-backed-up, table-last serial procedure and is not an owner download.
-The historical seven-write browser installer must not be used on a migrated or
-unknown layout. After migration, normal releases use the verified signed
-`.kitsu-fw` package through Android with A/B rollback handling.
+The product page links the USB flasher for stock new Heltec V3 boards and
+current-layout firmware reinstalls. The flasher identifies the exact source
+layout before enabling a write, preserves the custom-pack region, and installs
+the same signed 0.20.5 application. Android remains available for normal signed
+`.kitsu-fw` A/B updates on paired boards.
 
 The support card is a plain outbound HTTPS link to `https://ko-fi.com/pattalium`.
 Support is voluntary and grants no app feature, content, badge, or other

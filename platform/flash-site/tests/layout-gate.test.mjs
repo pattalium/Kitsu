@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   classifyPartitionTableDigest,
   classifyPartitionTableSector,
+  HELTEC_FACTORY_PARTITION_TABLE_SHA256,
   inspectInstalledFlashLayout,
   MIGRATED_PARTITION_TABLE_SHA256,
   PARTITION_TABLE_IMAGE_BYTES,
@@ -18,6 +19,8 @@ const LEGACY_PARTITIONS_ZLIB_BASE64 =
   "eNpbFcDIxDCBgYEhgIEhr6yYAR2sCmBkYHgAZCgwMOSXJKYkliSiyTMIMDAA1TAYMyQWFBhg6mcQZGAwgckbYjG/iYEhHcgSYSguyExLK8aQd2BgqAayWBiyM0uKS+OT8/PyUOSZGRjqGUBuSM4vSk0pzS1A1v/69X8UYFohf2mDuabR+9ltcyrnLEn8PwpGwSgYBaNgFIyCUTAKRsEIAgCe7CoL";
 const MIGRATED_PARTITIONS_ZLIB_BASE64 =
   "eNpbFcDIxDCBAQhYGPLKihnQwaoARgaGCSwMDAoMDPkliSmJJYlo8gwCDAysQJYBQ2JBgQGmfgZBBgZTmLwhFvObGBjSgSwRhuKCzLS0Ygx5BwaGarD7sjNLikvjk/Pz8lDkmRkY6oEsRobk/KLUlNLcAmT9r1//RwF8eg97Vi+bPPd6H+tPaf3pK/6PglEwCkbBKBgFo2AUjIJRMIIAAFjiKeI=";
+const HELTEC_FACTORY_PARTITIONS_ZLIB_BASE64 =
+  "eJxbFcDIxDCBgYEhgIEhr6yYAR2sCmBkYHjAwMCgwMCQX5KYkliSiCbPIMDAwMjAwGDMkFhQYICpn0GQgcEEJm+IxfwmBoZ0BgYGCYbigsy0tGIMeWYGhnoGkB3J+UWpKaW5Bcjyr1//RwFudTumPZortdLiaPiXs398ov+PglEwCkbBKBgFo2AUjIJRMArgAAAj4kVe";
 
 function reviewedLegacyImage() {
   const image = new Uint8Array(inflateSync(Buffer.from(LEGACY_PARTITIONS_ZLIB_BASE64, "base64")));
@@ -27,6 +30,12 @@ function reviewedLegacyImage() {
 
 function reviewedMigratedImage() {
   const image = new Uint8Array(inflateSync(Buffer.from(MIGRATED_PARTITIONS_ZLIB_BASE64, "base64")));
+  assert.equal(image.byteLength, PARTITION_TABLE_IMAGE_BYTES);
+  return image;
+}
+
+function heltecFactoryImage() {
+  const image = new Uint8Array(inflateSync(Buffer.from(HELTEC_FACTORY_PARTITIONS_ZLIB_BASE64, "base64")));
   assert.equal(image.byteLength, PARTITION_TABLE_IMAGE_BYTES);
   return image;
 }
@@ -76,6 +85,21 @@ test("derives the migrated layout digest from the reviewed table bytes", async (
   await assert.rejects(
     requireLegacyFlashLayout({ async readFlash() { return sector.slice(); } }),
     /expanded-NVS layout.*legacy Web Serial writes are blocked/s,
+  );
+});
+
+test("recognizes the stock Heltec V3 factory partition table", async () => {
+  const sector = sectorWithImage(heltecFactoryImage());
+  assert.deepEqual(await classifyPartitionTableSector(sector), {
+    kind: "factory",
+    sha256: HELTEC_FACTORY_PARTITION_TABLE_SHA256,
+  });
+  assert.throws(
+    () => requireLegacyLayoutClassification({
+      kind: "factory",
+      sha256: HELTEC_FACTORY_PARTITION_TABLE_SHA256,
+    }),
+    /approved factory layout.*new-board initializer/i,
   );
 });
 

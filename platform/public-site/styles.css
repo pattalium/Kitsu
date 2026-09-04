@@ -326,6 +326,8 @@ h3 { margin-bottom: 0; font-size: clamp(1.12rem, 1.6vw, 1.38rem); line-height: 1
 .download-module p { color: var(--body); }
 .download-action { display: inline-flex; align-items: center; justify-content: center; min-height: 3.25rem; padding: 0.75rem 1rem; color: #fff9f3; background: var(--accent); border: 1px solid var(--accent); border-radius: 0.8rem; font-weight: 750; text-align: center; text-decoration: none; }
 .download-action:not(.disabled):hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.download-action.flash-action { margin-top: 0.75rem; color: var(--accent); background: transparent; }
+.download-action.flash-action:hover { color: #fff9f3; }
 .download-action.disabled { color: var(--muted); background: transparent; border: 1px dashed var(--line-strong); cursor: not-allowed; }
 .download-module small { margin-top: 1rem; color: var(--muted); font: 0.64rem/1.5 var(--mono); overflow-wrap: anywhere; }
 .noscript { color: var(--accent-strong) !important; font-size: 0.85rem; }

@@ -17,6 +17,7 @@ certificate runtime.
 - [Product and signed Android download](https://k32.run)
 - [Complete user manual](https://docs.k32.run)
 - [Signed firmware package and update guidance](https://k32.run/#firmware)
+- [USB firmware flasher](https://flash.k32.run)
 - [Public release-surface status](https://status.k32.run)
 - [Encounter and nearby-Kitsu enhancements](docs/enhancements.md)
 
@@ -25,9 +26,9 @@ Android release. Its firmware download card exposes only the exact accepted
 signed package; an unaccepted candidate is never presented as a public stable
 release.
 
-The historical seven-write Web Serial installer is only for its exact reviewed
-pre-0.20.3 source layout. It is not an update or recovery path for a migrated
-or unknown-layout board.
+The Web Serial installer initializes the exact stock Heltec V3 factory layout,
+updates the exact current Kitsu layout, and retains signed recovery for the
+exact legacy Kitsu layout. It blocks every other partition table.
 
 ## What is included
 
@@ -37,7 +38,7 @@ or unknown-layout board.
 | `platform/mobile/android/` | Direct-Bluetooth Android app for saved Kitsu selection, state, care, messages, MeshCore control, cleanup, and offline firmware import. |
 | `platform/public-site/` | Product website, policies, and signed Android release manifest. |
 | `platform/docs-site/` | User manual for pairing, controls, messages, updates, security, and recovery. |
-| `platform/flash-site/` | Immutable historical pre-0.20.3 Web Serial surface; never a current migration, update, or recovery path. |
+| `platform/flash-site/` | Signed Web Serial installer for stock new, current-layout, and exact legacy Kitsu boards. |
 | `platform/status-site/` | Reachability checks for the retained static distribution surfaces. |
 | `tools/package_kitsu_ble_firmware.mjs` | Strict offline `.kitsu-fw` assembler and ESP32-S3 image verifier. |
 
@@ -50,10 +51,10 @@ temporary audit is removed only when those services are retired.
 
 ## First use
 
-1. Confirm the Heltec is already prepared for the current 8 MiB dual-OTA
-   layout and runs the accepted 0.20.5 firmware. If it is still on 0.20.2 or
-   its layout is unknown, stop: that one-time transition is a private,
-   double-backed-up, physically supervised service procedure.
+1. Open the [USB flasher](https://flash.k32.run) in desktop Chrome or Edge. A
+   stock new Heltec V3 is initialized directly with the current layout and
+   accepted 0.20.5 firmware. A current-layout board receives an application-only
+   reinstall. Any unrecognized layout remains blocked.
 2. Install the production-signed Android APK from the product page.
 3. On Kitsu, hold PRG from Home, hold again while `CONNECT` is selected, then
    hold on `BLUETOOTH` to open the bounded `PAIR PHONE` window.
@@ -64,11 +65,10 @@ temporary audit is removed only when those services are retired.
 6. Connect directly over Bluetooth. Airplane mode is supported after
    Bluetooth is turned back on.
 
-Normal signed firmware updates are downloaded from the product page, imported
-as a `.kitsu-fw` file in Android, and transferred over the authenticated
-Bluetooth session to the inactive application slot. Transfer checkpoints,
-flash readback, SHA-256, ESP image validation, and bootloader rollback are
-enforced on the Heltec; no online service is involved.
+Normal signed firmware updates can be installed from the USB flasher or
+downloaded from the product page and transferred through Android to the
+inactive application slot. Flash readback, SHA-256, ESP image validation, and
+bootloader rollback are enforced on the Heltec.
 
 The complete procedure and troubleshooting steps are in the
 [Getting started guide](https://docs.k32.run/getting-started/).

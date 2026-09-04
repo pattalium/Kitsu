@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { CURRENT_FLASH_PLAN, parseCurrentOtaSelection } from "../src/current-release.js";
+import {
+  buildFactoryApplicationSlot,
+  buildFactoryOtaData,
+  FACTORY_INIT_PLAN,
+} from "../src/factory-init.js";
 
 function crc32ForSequence(sequence) {
   let value = 0;
@@ -50,5 +56,26 @@ test("a slot still pending boot verification cannot be overwritten", () => {
   assert.throws(
     () => parseCurrentOtaSelection(otaData([{ index: 0, sequence: 1, state: 1 }])),
     /pending verification.*boot it once/i,
+  );
+});
+
+test("new-board initialization builds exact OTA data and a cleared current application slot", () => {
+  const otaData = buildFactoryOtaData();
+  assert.equal(otaData.byteLength, CURRENT_FLASH_PLAN.otaDataBytes);
+  assert.equal(
+    createHash("sha256").update(otaData).digest("hex"),
+    FACTORY_INIT_PLAN.bootApp0Sha256,
+  );
+
+  const application = Uint8Array.from([0xe9, 0x01, 0x02, 0x03]);
+  const slot = buildFactoryApplicationSlot(application);
+  assert.equal(slot.byteLength, CURRENT_FLASH_PLAN.applicationSlotBytes);
+  assert.deepEqual(slot.subarray(0, application.byteLength), application);
+  assert.equal(slot.subarray(application.byteLength).every((byte) => byte === 0xff), true);
+  assert.throws(
+    () => buildFactoryApplicationSlot(new Uint8Array(
+      CURRENT_FLASH_PLAN.applicationSlotBytes - CURRENT_FLASH_PLAN.otaJournalBytes + 1,
+    )),
+    /overlaps the private OTA journal/,
   );
 });
