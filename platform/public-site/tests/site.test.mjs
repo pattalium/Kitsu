@@ -137,12 +137,11 @@ test("publishes a complete product surface with real destinations", async () => 
   assert.match(html, /Download Android/);
   assert.match(html, /https:\/\/docs\.k32\.run/);
   assert.match(html, /https:\/\/docs\.k32\.run\/connectivity\//);
-  assert.doesNotMatch(html, /https:\/\/flash\.k32\.run/);
+  assert.match(html, /https:\/\/flash\.k32\.run/);
   assert.match(html, /https:\/\/github\.com\/pattalium\/Kitsu/);
   assert.match(html, /does not need an account, gateway, or Internet connection/i);
-  assert.match(html, /Public 0\.20\.5 starts from a board already prepared for the current layout/i);
-  assert.match(html, /one-time 0\.20\.2 to 0\.20\.3 migration remains a private, backed-up serial operation, not an owner download/i);
-  assert.match(html, /Never run the historical browser installer on a migrated or unknown layout/i);
+  assert.match(html, /stock new Heltec V3 to the web flasher for direct Kitsu 0\.20\.5 initialization/i);
+  assert.match(html, /Boards already on the current layout receive the latest application only/i);
   assert.match(html, /id="firmware"/i);
   assert.match(html, /Checking signed firmware package/i);
   assert.match(html, /Verifying the package signature, application image, and flash layout/i);
@@ -188,17 +187,14 @@ test("source landing instructions match the local-only device controls", async (
   assert.match(readme, /has no Internet permission/i);
   assert.match(readme, /hold PRG from Home[\s\S]*CONNECT[\s\S]*BLUETOOTH[\s\S]*PAIR PHONE/i);
   assert.match(readme, /Pair this phone/);
-  assert.match(readme, /no online service is involved/i);
   assert.match(readme, /only the currently accepted, signed, local-first\s+Android release/i);
   assert.match(readme, /firmware download card exposes only the exact accepted\s+signed package/i);
-  assert.match(firstUse, /already prepared for the current 8 MiB dual-OTA\s+layout/i);
-  assert.match(firstUse, /0\.20\.2[\s\S]*private,[\s\S]*double-backed-up,[\s\S]*physically supervised/i);
-  assert.match(firstUse, /Normal signed firmware updates[\s\S]*\.kitsu-fw[\s\S]*Android/i);
-  assert.doesNotMatch(firstUse, /Web Serial|browser firmware installer|USB data cable|seven[- ]write|USB bootstrap/i);
-  assert.match(readme, /platform\/flash-site\/` \| Immutable historical pre-0\.20\.3 Web Serial surface/i);
+  assert.match(firstUse, /USB flasher[\s\S]*stock new Heltec V3[\s\S]*current layout/i);
+  assert.match(firstUse, /current-layout board receives an application-only\s+reinstall/i);
+  assert.match(readme, /platform\/flash-site\/` \| Signed Web Serial installer for stock new, current-layout, and exact legacy Kitsu boards/i);
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
-  assert.match(enhancements, /Only the exact accepted historical pre-0\.20\.3 Web Serial layout/i);
-  assert.match(enhancements, /Pack installation on migrated\/current-layout boards is not offered\s+yet/i);
+  assert.match(enhancements, /Web Serial firmware installer never writes companion packs/i);
+  assert.match(enhancements, /Pack\s+installation remains a separate device-authorized operation/i);
   assert.doesNotMatch(enhancements, /The Web Serial flasher can install an unlocked pack/i);
 });
 

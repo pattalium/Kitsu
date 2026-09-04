@@ -11,6 +11,11 @@ import {
   fetchVerifiedCurrentRelease,
   inspectCurrentOtaSelection,
 } from "./current-release.js";
+import {
+  FACTORY_INIT_PLAN,
+  fetchVerifiedFactoryPartitionTable,
+  prepareFactoryInitialization,
+} from "./factory-init.js";
 import "./styles.css";
 
 const LEGACY_OTA_DATA = Object.freeze({ offset: 0x00e000, bytes: 0x002000 });
@@ -39,6 +44,7 @@ let installedFlashLayout;
 let installedOtaSelection;
 let verifiedLegacyRelease;
 let verifiedCurrentRelease;
+let factoryInitializerReady = false;
 let busy = false;
 const serialSupported = "serial" in navigator && window.isSecureContext;
 
@@ -60,6 +66,10 @@ function setProgress(value, detail) {
 function releaseForInstalledLayout() {
   if (installedFlashLayout?.kind === "migrated") return verifiedCurrentRelease;
   if (installedFlashLayout?.kind === "legacy") return verifiedLegacyRelease;
+  if (installedFlashLayout?.kind === "factory"
+    && verifiedCurrentRelease && verifiedLegacyRelease && factoryInitializerReady) {
+    return verifiedCurrentRelease;
+  }
   return undefined;
 }
 
@@ -67,7 +77,7 @@ function updateControls() {
   const connected = Boolean(loader)
     && loader.chip?.CHIP_NAME === "ESP32-S3"
     && detectedFlashSize === FLASH_PLAN.flashSize
-    && ["legacy", "migrated"].includes(installedFlashLayout?.kind);
+    && ["factory", "legacy", "migrated"].includes(installedFlashLayout?.kind);
   const release = releaseForInstalledLayout();
   connectButton.disabled = !serialSupported || busy || Boolean(transport);
   disconnectButton.disabled = busy || !transport;
@@ -78,6 +88,8 @@ function updateControls() {
     installButton.textContent = `Install latest ${release.manifest.firmware_version}`;
   } else if (connected && installedFlashLayout.kind === "legacy" && release) {
     installButton.textContent = `Install legacy recovery ${release.manifest.firmware_version}`;
+  } else if (connected && installedFlashLayout.kind === "factory" && release) {
+    installButton.textContent = `Initialize with Kitsu ${release.manifest.firmware_version}`;
   } else {
     installButton.textContent = "Install unavailable";
   }
@@ -145,13 +157,18 @@ async function connect() {
 
     installedFlashLayout = await inspectInstalledFlashLayout(loader);
     if (installedFlashLayout.kind === "unknown") {
-      throw new Error(`partition-table check failed: ${installedFlashLayout.reason}`);
+      const digest = installedFlashLayout.sha256 ? `; SHA-256 ${installedFlashLayout.sha256}` : "";
+      throw new Error(`partition-table check failed: ${installedFlashLayout.reason}${digest}`);
     }
     if (installedFlashLayout.kind === "migrated") {
       installedOtaSelection = await inspectCurrentOtaSelection(loader);
       browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. Current Kitsu layout verified; ${installedOtaSelection.label} is selected for a firmware-only reinstall.`;
       deviceDetail.textContent = `The signed latest application will be written only to ${installedOtaSelection.label} at 0x${installedOtaSelection.offset.toString(16).padStart(6, "0")}. OTA metadata and the complete companion-pack region are hashed before and after.`;
       append(`Current layout verified. Boot selection: ${installedOtaSelection.label}, sequence ${installedOtaSelection.sequence ?? "initial"}, state ${installedOtaSelection.stateName}.`);
+    } else if (installedFlashLayout.kind === "factory") {
+      browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. The stock Heltec factory layout is verified for first-time Kitsu initialization.`;
+      deviceDetail.textContent = "This new-board path installs the current Kitsu layout and signed latest firmware in one pass. It resets stock firmware settings but never writes the custom companion-pack region.";
+      append(`Stock Heltec factory layout verified: ${installedFlashLayout.sha256}.`);
     } else {
       browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. Exact legacy Kitsu layout verified for the signed recovery release.`;
       deviceDetail.textContent = "This board still uses the legacy layout. The historical signed recovery remains available and keeps the companion-pack region byte-for-byte unchanged.";
@@ -175,12 +192,14 @@ async function checkRelease() {
   busy = true;
   verifiedLegacyRelease = undefined;
   verifiedCurrentRelease = undefined;
+  factoryInitializerReady = false;
   releaseDetail.textContent = "Verifying the latest signed firmware and the legacy recovery release…";
   updateControls();
   try {
-    const [currentResult, legacyResult] = await Promise.allSettled([
+    const [currentResult, legacyResult, factoryResult] = await Promise.allSettled([
       fetchVerifiedCurrentRelease(),
       fetchVerifiedRelease(),
+      fetchVerifiedFactoryPartitionTable(),
     ]);
     if (currentResult.status === "fulfilled") {
       verifiedCurrentRelease = currentResult.value;
@@ -194,11 +213,17 @@ async function checkRelease() {
     } else {
       append(`Legacy recovery unavailable: ${errorMessage(legacyResult.reason)}`);
     }
+    if (factoryResult.status === "fulfilled") {
+      factoryInitializerReady = true;
+      append("New-board initializer verified: the current partition table passed its exact hash check.");
+    } else {
+      append(`New-board initializer unavailable: ${errorMessage(factoryResult.reason)}`);
+    }
     if (!verifiedCurrentRelease && !verifiedLegacyRelease) {
       throw new Error("no signed firmware release passed verification");
     }
     releaseDetail.textContent = verifiedCurrentRelease
-      ? `Latest Kitsu ${verifiedCurrentRelease.manifest.firmware_version} is signed, byte-verified, and ready for current-layout Heltec V3 boards.${verifiedLegacyRelease ? ` Legacy recovery ${verifiedLegacyRelease.manifest.firmware_version} is also available.` : ""}`
+      ? `Latest Kitsu ${verifiedCurrentRelease.manifest.firmware_version} is signed and byte-verified.${verifiedLegacyRelease && factoryInitializerReady ? " Factory-new Heltec initialization is ready." : ""}${verifiedLegacyRelease ? ` Legacy recovery ${verifiedLegacyRelease.manifest.firmware_version} is also available.` : ""}`
       : `Latest firmware is unavailable. Legacy recovery ${verifiedLegacyRelease.manifest.firmware_version} is verified.`;
   } catch (error) {
     releaseDetail.textContent = "No installable firmware passed the signature, image, and hash checks.";
@@ -271,6 +296,71 @@ async function verifyArtifactReadback(artifact, start, end) {
     throw new Error(`${artifact.record.role} readback SHA-256 is wrong`);
   }
   append(`Readback verified: ${artifact.record.role} at 0x${artifact.record.offset.toString(16).padStart(6, "0")}.`);
+}
+
+async function factoryArtifact(role, offset, bytes) {
+  return Object.freeze({
+    record: Object.freeze({ role, offset, bytes: bytes.byteLength, sha256: await sha256Hex(bytes) }),
+    bytes,
+  });
+}
+
+async function buildFactoryArtifacts(initialization, bootloader) {
+  const slotSha256 = await sha256Hex(initialization.applicationSlot);
+  const slot = (role, offset) => Object.freeze({
+    record: Object.freeze({
+      role,
+      offset,
+      bytes: initialization.applicationSlot.byteLength,
+      sha256: slotSha256,
+    }),
+    bytes: initialization.applicationSlot,
+  });
+  return [
+    bootloader,
+    slot("latest_firmware_app1", CURRENT_FLASH_PLAN.app1Offset),
+    await factoryArtifact("factory_nvs_reset", FACTORY_INIT_PLAN.nvsOffset, initialization.nvs),
+    await factoryArtifact("factory_ota_selection", CURRENT_FLASH_PLAN.otaDataOffset, initialization.otaData),
+    await factoryArtifact("factory_lower_gap_clear", FACTORY_INIT_PLAN.lowerGapOffset, initialization.lowerGap),
+    slot("latest_firmware_app0", CURRENT_FLASH_PLAN.app0Offset),
+    await factoryArtifact("factory_upper_gap_clear", FACTORY_INIT_PLAN.upperGapOffset, initialization.upperGap),
+    await factoryArtifact(
+      "factory_connectivity_reset",
+      FACTORY_INIT_PLAN.connectivityOffset,
+      initialization.connectivity,
+    ),
+    await factoryArtifact("factory_coredump_reset", FACTORY_INIT_PLAN.coredumpOffset, initialization.coredump),
+  ];
+}
+
+async function writeFactoryArtifact(artifact, start, end) {
+  const midpoint = start + (end - start) * 0.55;
+  await loader.writeFlash({
+    fileArray: [{ data: artifact.bytes, address: artifact.record.offset }],
+    flashMode: "dio",
+    flashFreq: "80m",
+    flashSize: "8MB",
+    eraseAll: false,
+    compress: true,
+    reportProgress(_fileIndex, written, total) {
+      const ratio = total === 0 ? 0 : Math.min(1, written / total);
+      setProgress(
+        start + ratio * (midpoint - start),
+        `Writing ${artifact.record.role}: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`,
+      );
+    },
+  });
+  await verifyArtifactReadback(artifact, midpoint, end);
+}
+
+async function readFactoryPackDigest(start, end, label) {
+  return readRegionDigest(
+    CURRENT_FLASH_PLAN.companionPackOffset,
+    CURRENT_FLASH_PLAN.companionPackBytes,
+    label,
+    start,
+    end,
+  );
 }
 
 function sameOtaSelection(left, right) {
@@ -380,6 +470,128 @@ async function installCurrent() {
   }
 }
 
+async function installFactory() {
+  if (!verifiedCurrentRelease || !verifiedLegacyRelease || !factoryInitializerReady) return;
+  busy = true;
+  updateControls();
+  setProgress(0, "Rechecking the signed firmware and new-board initializer");
+  let writeStarted = false;
+  let completeVerified = false;
+  let resetAttempted = false;
+  try {
+    if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== CURRENT_FLASH_PLAN.flashSize) {
+      throw new Error("device identity check is no longer valid");
+    }
+    const [latest, legacy] = await Promise.all([
+      fetchVerifiedCurrentRelease(),
+      fetchVerifiedRelease(),
+    ]);
+    await reverifyArtifacts(legacy);
+    const bootloader = legacy.artifacts.find((artifact) => artifact.record.role === "bootloader");
+    if (!bootloader) throw new Error("signed Kitsu bootloader is unavailable");
+    const initialization = await prepareFactoryInitialization(latest.image);
+    const artifacts = await buildFactoryArtifacts(initialization, bootloader);
+    const partitionTable = await factoryArtifact(
+      "current_partition_table_commit_last",
+      0x008000,
+      initialization.partitionTable,
+    );
+    verifiedCurrentRelease = latest;
+    verifiedLegacyRelease = legacy;
+
+    const layout = await inspectInstalledFlashLayout(loader);
+    if (layout.kind !== "factory" || layout.sha256 !== installedFlashLayout.sha256) {
+      throw new Error("factory partition layout changed after connection; reconnect before installing");
+    }
+    const confirmed = window.confirm(
+      `Initialize this stock Heltec with signed Kitsu ${latest.manifest.firmware_version}?\n\n`
+      + "This replaces the stock firmware, partition layout, NVS settings, connectivity state, and coredump. "
+      + "It does not erase the whole chip and never writes the custom companion-pack region. "
+      + "That complete region is hashed before and after installation and must remain identical.",
+    );
+    if (!confirmed) {
+      append("New-board initialization cancelled. Nothing was written.");
+      return;
+    }
+
+    const finalFactoryLayout = await inspectInstalledFlashLayout(loader);
+    if (
+      finalFactoryLayout.kind !== "factory"
+      || finalFactoryLayout.sha256 !== FACTORY_INIT_PLAN.sourcePartitionSha256
+      || finalFactoryLayout.sha256 !== layout.sha256
+    ) {
+      throw new Error("factory layout changed before the first write; nothing was written");
+    }
+    const packBaseline = await readFactoryPackDigest(2, 10, "custom companion pack baseline");
+    append(`Custom companion-pack baseline captured: ${packBaseline}.`);
+    append(`Initializing the stock Heltec directly with signed Kitsu ${latest.manifest.firmware_version}; the partition table will be committed last.`);
+
+    writeStarted = true;
+    const totalBytes = artifacts.reduce((sum, artifact) => sum + artifact.record.bytes, 0);
+    let completedBytes = 0;
+    for (const artifact of artifacts) {
+      const start = 10 + (completedBytes / totalBytes) * 76;
+      completedBytes += artifact.record.bytes;
+      const end = 10 + (completedBytes / totalBytes) * 76;
+      await writeFactoryArtifact(artifact, start, end);
+    }
+
+    const precommitLayout = await inspectInstalledFlashLayout(loader);
+    if (precommitLayout.kind !== "factory" || precommitLayout.sha256 !== layout.sha256) {
+      throw new Error("factory partition table changed before its final commit");
+    }
+    const precommitPack = await readFactoryPackDigest(86, 90, "custom companion pack before commit");
+    if (precommitPack !== packBaseline) {
+      throw new Error("custom companion-pack bytes changed before partition-table commit");
+    }
+
+    append("All initialization writes passed readback. Committing the current partition table as the final flash mutation.");
+    await writeFactoryArtifact(partitionTable, 90, 95);
+    const migratedLayout = await inspectInstalledFlashLayout(loader);
+    if (
+      migratedLayout.kind !== "migrated"
+      || migratedLayout.sha256 !== FACTORY_INIT_PLAN.targetPartitionSha256
+    ) {
+      throw new Error("current partition table did not pass final verification");
+    }
+    const selection = await inspectCurrentOtaSelection(loader);
+    if (selection.label !== "app0" || selection.sequence !== 1) {
+      throw new Error("new-board OTA selection did not resolve to app0");
+    }
+    const finalPack = await readFactoryPackDigest(95, 99, "preserved custom companion pack");
+    if (finalPack !== packBaseline) {
+      throw new Error("custom companion-pack bytes changed during new-board initialization");
+    }
+
+    completeVerified = true;
+    installedFlashLayout = migratedLayout;
+    installedOtaSelection = selection;
+    setProgress(99, "Initialization verified; resetting once");
+    resetAttempted = true;
+    await loader.after("hard_reset");
+    setProgress(100, `Kitsu ${latest.manifest.firmware_version} initialized`);
+    append(`New Heltec initialized with Kitsu ${latest.manifest.firmware_version}. Both application slots, current layout, and custom-pack preservation passed readback.`);
+    await closeTransport({ reset: false, announce: true });
+  } catch (error) {
+    if (resetAttempted && completeVerified) {
+      setProgress(progress.value, "Initialization verified; automatic reset could not be confirmed");
+      append(`Initialization and preservation passed, but reset could not be confirmed: ${errorMessage(error)}. Press RST once.`);
+      await closeTransport({ reset: false, announce: true });
+    } else if (writeStarted) {
+      setProgress(progress.value, "Initialization stopped; Heltec left in ROM loader");
+      append(`New-board initialization stopped after writing began: ${errorMessage(error)}. Reconnect here and retry; no automatic reset was attempted.`);
+      await closeTransport({ reset: false, announce: true });
+    } else {
+      setProgress(progress.value, "Initialization stopped before writing");
+      append(`New-board initialization stopped before any write: ${errorMessage(error)}.`);
+      await closeTransport({ reset: true, announce: true });
+    }
+  } finally {
+    busy = false;
+    updateControls();
+  }
+}
+
 async function installLegacy() {
   if (!verifiedLegacyRelease) return;
   busy = true;
@@ -471,6 +683,7 @@ async function install() {
   if (busy || !loader) return;
   if (installedFlashLayout?.kind === "migrated") await installCurrent();
   else if (installedFlashLayout?.kind === "legacy") await installLegacy();
+  else if (installedFlashLayout?.kind === "factory") await installFactory();
 }
 
 if (serialSupported) {

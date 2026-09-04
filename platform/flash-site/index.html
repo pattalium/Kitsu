@@ -25,12 +25,12 @@
       <section class="hero">
         <p class="eyebrow">Heltec V3 · signed stable firmware</p>
         <h1>Install the latest Kitsu.</h1>
-        <p>Connect a Heltec WiFi LoRa 32 V3 over USB to install signed firmware 0.20.5. On a current-layout board, this page writes only the application slot selected by the bootloader. Your custom companion pack is never written and its complete flash region must match before and after installation.</p>
+        <p>Connect a Heltec WiFi LoRa 32 V3 over USB to install signed firmware 0.20.5. Current boards update only the application slot selected by the bootloader. A stock new Heltec is initialized directly with the current layout and latest firmware. Your custom companion pack is never written.</p>
       </section>
 
       <aside class="notice">
         <strong>Your companion stays yours.</strong>
-        <span>There is no companion selection or pack write in this installer. It does not erase the whole chip. Current-layout installs also leave the partition table, bootloader, NVS, OTA metadata, other app slot, journals, connectivity data, and coredump untouched.</span>
+        <span>There is no companion selection or pack write in this installer. It never erases the whole chip. Every path hashes the complete custom-pack region before and after and stops if one byte changes.</span>
       </aside>
 
       <section class="grid" aria-label="Flashing workflow">
@@ -51,8 +51,8 @@
         </article>
         <article>
           <span class="step">Device</span>
-          <h2>Install to the active slot</h2>
-          <p id="device-detail" aria-live="polite">Connect the Heltec so this page can verify its chip, 8&nbsp;MiB flash, exact partition layout, and selected application slot before enabling installation.</p>
+          <h2>Install Kitsu</h2>
+          <p id="device-detail" aria-live="polite">Connect the Heltec so this page can verify its chip, 8&nbsp;MiB flash, and exact current, legacy, or stock factory layout before enabling installation.</p>
           <button id="install" type="button" disabled>Install unavailable</button>
           <progress id="progress" max="100" value="0" aria-label="Install progress" hidden></progress>
           <small id="progress-detail" aria-live="polite"></small>
@@ -65,8 +65,8 @@
       </section>
 
       <aside class="notice">
-        <strong>Older layout detected?</strong>
-        <span>The same page recognizes the exact legacy partition layout and offers only its signed historical recovery. It still preserves OTA metadata and the complete custom companion-pack region. It does not silently migrate or write an unknown layout.</span>
+        <strong>New or older Heltec?</strong>
+        <span>The stock factory layout initializes directly to Kitsu 0.20.5. The exact legacy Kitsu layout retains its signed historical recovery. Any other layout stays blocked and its digest is shown.</span>
       </aside>
     </main>
     <footer><span>K32 · Kitsu</span><span>Signed stable channel · fail closed</span></footer>

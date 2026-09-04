@@ -253,12 +253,10 @@ The website owns the unlock catalogue and downloadable pet packs:
    to that hardware record; the same hardware may download it again later.
 4. The API returns the ordinary downloadable `.k868` file as a private,
    no-store response. There is no stable public pack URL.
-5. Only the exact accepted historical pre-0.20.3 Web Serial layout may install
-   an unlocked pack by itself or alongside its matching legacy core firmware.
-   That retained flow is not an installer for a migrated or unknown-layout
-   board. Pack installation on migrated/current-layout boards is not offered
-   yet; the public unlock page tells the owner to keep the verified file
-   private until a supported path exists.
+5. The Web Serial firmware installer never writes companion packs. Pack
+   installation remains a separate device-authorized operation; the public
+   unlock page tells the owner to keep the verified file private until that
+   path is available.
 
 The `.k868` file format does **not** change for this enhancement. Firmware
 continues to validate its existing structure and CRC. There is no encrypted,

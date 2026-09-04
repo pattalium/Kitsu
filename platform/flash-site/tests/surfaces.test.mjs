@@ -69,24 +69,26 @@ test("static product, manual, and USB flasher surfaces link safe destinations", 
   assert.match(product, /href="#firmware"/);
   assert.match(product, /Checking signed firmware package/);
   assert.match(product, /Verifying the package signature, application image, and flash layout/);
-  assert.doesNotMatch(product, /https:\/\/flash\.k32\.run/);
+  assert.match(product, /https:\/\/flash\.k32\.run/);
   assert.match(manual, /https:\/\/github\.com\/pattalium\/Kitsu/);
   assert.match(flasher, /Install the latest Kitsu/);
   assert.match(flasher, /signed firmware 0\.20\.5/i);
-  assert.match(flasher, /writes only the application slot selected by the bootloader/i);
+  assert.match(flasher, /Current boards update only the application slot selected by the bootloader/i);
+  assert.match(flasher, /stock new Heltec is initialized directly/i);
   assert.match(flasher, /custom companion pack is never written/i);
   assert.doesNotMatch(flasher, /href="[^"]+\.kitsu-fw/i);
   assert.match(webReadme, /immutable historical pre-0\.20\.3 Web Serial installer/i);
   assert.doesNotMatch(`${product}\n${manual}\n${flasher}`, /link pending|placeholder|app\.k32\.run/i);
 });
 
-test("flasher offers latest firmware without a companion-pack write surface", async () => {
-  const [html, theme, styles, app, currentRelease] = await Promise.all([
+test("flasher offers current and factory-new installs without a companion-pack write surface", async () => {
+  const [html, theme, styles, app, currentRelease, factoryInit] = await Promise.all([
     text("flash-site/index.html"),
     text("flash-site/src/theme.js"),
     text("flash-site/src/styles.css"),
     text("flash-site/src/app.js"),
     text("flash-site/src/current-release.js"),
+    text("flash-site/src/factory-init.js"),
   ]);
   for (const id of ["connect", "disconnect", "refresh", "device-detail", "install", "progress", "progress-detail", "log"]) {
     assert.match(html, new RegExp(`id="${id}"`), id);
@@ -102,6 +104,8 @@ test("flasher offers latest firmware without a companion-pack write surface", as
   assert.match(styles, /--display: Georgia/u);
   assert.doesNotMatch(`${html}\n${app}`, /pack-select|unlocked-pack|loadUnlockedPack|DESTRUCTIVE PET REPLACEMENT/u);
   assert.match(app, /inspectCurrentOtaSelection\(loader\)/u);
+  assert.match(app, /async function installFactory\(\)/u);
+  assert.match(app, /partition table will be committed last/u);
   assert.match(app, /fileArray: \[\{ data: artifact\.bytes, address: artifact\.record\.offset \}\]/u);
   assert.match(app, /custom companion-pack bytes changed during firmware install/u);
   assert.match(app, /eraseAll: false/u);
@@ -110,6 +114,8 @@ test("flasher offers latest firmware without a companion-pack write surface", as
   assert.match(currentRelease, /app1Offset: 0x350000/u);
   assert.match(currentRelease, /companionPackOffset: 0x670000/u);
   assert.match(currentRelease, /companionPackBytes: 0x140000/u);
+  assert.match(factoryInit, /sourcePartitionSha256: HELTEC_FACTORY_PARTITION_TABLE_SHA256/u);
+  assert.match(factoryInit, /targetPartitionSha256: "3337f0ec/u);
   assert.doesNotMatch(html, /class="step">\d/u);
 });
 

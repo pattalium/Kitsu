@@ -5,6 +5,17 @@ from desktop Chrome or Edge over HTTPS. Espressif's `esptool-js` runtime is
 bundled locally; the page does not load flashing code, firmware, manifests, or
 keys from a CDN.
 
+## Stock new Heltec
+
+The exact stock Heltec V3 partition table is a supported first-install source.
+The initializer verifies the signed 0.20.5 application, signed Kitsu
+bootloader, current partition table, and OTA selection bytes before writing.
+It resets stock NVS, connectivity, and coredump state, installs the application
+in both current A/B slots, reads every region back, and commits the current
+partition table last. It does not erase the whole chip or write the custom
+companion-pack region; that complete region must hash identically before and
+after initialization.
+
 ## Current Kitsu layout
 
 The site verifies the exact signed `0.20.5` `.kitsu-fw` package already shipped
@@ -30,8 +41,9 @@ remain bound by that release's signed manifest. The site no longer offers any
 companion selection or companion replacement path. OTA metadata and the full
 companion-pack region are also hashed before and after legacy recovery.
 
-Unknown, partial, or changed layouts fail closed before writing. A write or
-verification failure after flashing begins leaves the Heltec in its ROM loader
-for a clean retry instead of automatically booting an unverified result.
+Unknown, partial, or changed layouts fail closed before writing and show their
+partition-table digest. A write or verification failure after flashing begins
+leaves the Heltec in its ROM loader for a clean retry instead of automatically
+booting an unverified result.
 
 Run `npm ci` and then `npm run check`. Deploy only `dist/`.

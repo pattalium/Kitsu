@@ -5,6 +5,8 @@ export const PARTITION_TABLE_SECTOR_BYTES = 0x001000;
 export const PARTITION_TABLE_IMAGE_BYTES = 0x000c00;
 export const MIGRATED_PARTITION_TABLE_SHA256 =
   "3337f0ec25e653d8c0bf9534abeb147a7505f41b1c2e25b53bb6cc74d395b532";
+export const HELTEC_FACTORY_PARTITION_TABLE_SHA256 =
+  "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c";
 
 function fail(message) {
   throw new Error(message);
@@ -34,6 +36,9 @@ export function classifyPartitionTableDigest(sha256) {
   if (sha256 === MIGRATED_PARTITION_TABLE_SHA256) {
     return Object.freeze({ kind: "migrated", sha256 });
   }
+  if (sha256 === HELTEC_FACTORY_PARTITION_TABLE_SHA256) {
+    return Object.freeze({ kind: "factory", sha256 });
+  }
   return Object.freeze({ kind: "unknown", reason: "partition-table image is not an approved layout", sha256 });
 }
 
@@ -52,6 +57,9 @@ export function requireLegacyLayoutClassification(layout) {
       "this Heltec already uses the Kitsu 0.20.3 expanded-NVS layout; "
       + "legacy Web Serial writes are blocked—use Android's signed .kitsu-fw updater",
     );
+  }
+  if (layout?.kind === "factory") {
+    fail("this Heltec has the approved factory layout; use the new-board initializer");
   }
   fail(
     `partition-table safety gate rejected an unknown or partial layout (${layout?.reason ?? "invalid result"}); `
