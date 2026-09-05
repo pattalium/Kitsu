@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Install the latest signed Kitsu firmware on a Heltec WiFi LoRa 32 V3." />
+    <meta name="description" content="Install signed Kitsu firmware and a companion pack on a Heltec WiFi LoRa 32 V3." />
     <meta name="theme-color" content="#f3efe5" />
     <script type="module" src="/src/theme.js"></script>
     <script type="module" src="/src/app.js"></script>
@@ -25,12 +25,12 @@
       <section class="hero">
         <p class="eyebrow">Heltec V3 · signed stable firmware</p>
         <h1>Install the latest Kitsu.</h1>
-        <p>Connect a Heltec WiFi LoRa 32 V3 over USB to install signed firmware 0.20.5. Current boards update only the application slot selected by the bootloader. A stock new Heltec is initialized directly with the current layout and latest firmware. Your custom companion pack is never written.</p>
+        <p>Connect a Heltec WiFi LoRa 32 V3 over USB to install signed firmware 0.20.5. Choose Fox, Cat, Dog, or your own verified <code>.k868</code> pack for a new board. Firmware-only installs keep the existing companion unchanged.</p>
       </section>
 
       <aside class="notice">
-        <strong>Your companion stays yours.</strong>
-        <span>There is no companion selection or pack write in this installer. It never erases the whole chip. Every path hashes the complete custom-pack region before and after and stops if one byte changes.</span>
+        <strong>Your companion changes only when you choose it.</strong>
+        <span>Firmware and companion actions are separate on current boards. Firmware-only installs still hash the complete pack region before and after. A pack write is enabled only after you select a built-in pet or load a valid local <code>.k868</code> file and confirm the change.</span>
       </aside>
 
       <section class="grid" aria-label="Flashing workflow">
@@ -57,6 +57,29 @@
           <progress id="progress" max="100" value="0" aria-label="Install progress" hidden></progress>
           <small id="progress-detail" aria-live="polite"></small>
         </article>
+        <article>
+          <span class="step">Companion</span>
+          <h2>Choose your pet</h2>
+          <div class="companion-choice">
+            <p id="installed-pack-detail" aria-live="polite">Connect a current-layout Heltec to inspect its installed companion. On a stock board, your selected pack is installed as the starter during initialization.</p>
+            <div class="pack-choice">
+              <label for="pack-select">Companion pack</label>
+              <select id="pack-select" name="companion-pack" autocomplete="off" aria-describedby="pack-detail">
+                <option value="preserve" selected>Keep installed companion</option>
+                <option value="fox">Fox</option>
+                <option value="cat">Cat</option>
+                <option value="dog">Dog</option>
+                <option value="unlocked">Load my .k868 pack</option>
+              </select>
+              <div id="unlocked-pack-field" class="unlocked-pack-field" hidden>
+                <label for="unlocked-pack-file">Companion pack file</label>
+                <input id="unlocked-pack-file" name="unlocked-companion-pack" type="file" accept=".k868,application/octet-stream" autocomplete="off" aria-describedby="pack-detail" disabled />
+              </div>
+              <small id="pack-detail" aria-live="polite">The installed companion will be kept. Choose a pet only when you want to install or replace it.</small>
+            </div>
+          </div>
+          <button id="install-pack" type="button" disabled>Install companion unavailable</button>
+        </article>
       </section>
 
       <section class="console" aria-labelledby="console-title">
@@ -66,7 +89,7 @@
 
       <aside class="notice">
         <strong>New or older Heltec?</strong>
-        <span>The stock factory layout initializes directly to Kitsu 0.20.5. The exact legacy Kitsu layout retains its signed historical recovery. Any other layout stays blocked and its digest is shown.</span>
+        <span>A stock board can initialize directly to Kitsu 0.20.5 with the companion selected above. A current Kitsu board can install or replace only its companion without reflashing firmware. The exact legacy layout retains its signed recovery; unknown layouts remain blocked.</span>
       </aside>
     </main>
     <footer><span>K32 · Kitsu</span><span>Signed stable channel · fail closed</span></footer>

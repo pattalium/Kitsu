@@ -13,9 +13,10 @@ assert(files.includes("index.html"), "dist/index.html is missing");
 assert.equal(files.some((entry) => /(?:^|\/)node_modules(?:\/|$)/.test(entry)), false);
 assert.equal(files.some((entry) => /\.(?:map|bin|pem|key|aab|idsig|jks|keystore|p12|pfx)$/i.test(entry)), false);
 
-const [html, appSource, currentReleaseSource, factoryInitSource, legacyReleaseSource, layoutGateSource, packageJson] = await Promise.all([
+const [html, appSource, packsSource, currentReleaseSource, factoryInitSource, legacyReleaseSource, layoutGateSource, packageJson] = await Promise.all([
   readFile(path.join(dist, "index.html"), "utf8"),
   readFile(path.join(root, "src", "app.js"), "utf8"),
+  readFile(path.join(root, "src", "packs.js"), "utf8"),
   readFile(path.join(root, "src", "current-release.js"), "utf8"),
   readFile(path.join(root, "src", "factory-init.js"), "utf8"),
   readFile(path.join(root, "src", "release.js"), "utf8"),
@@ -27,7 +28,8 @@ assert.doesNotMatch(html, /https?:\/\/(?:unpkg|cdn\.jsdelivr|esm\.sh|cdnjs)/i);
 assert.match(html, /Install the latest Kitsu/);
 assert.match(html, /firmware 0\.20\.5/);
 assert.match(html, /id="device-detail"/);
-assert.doesNotMatch(html, /type=["']file["']|pack-select|Replace with (?:Cat|Fox|Dog)|unlocked \.k868/i);
+assert.match(html, /id="pack-select"/);
+assert.match(html, /type="file"[^>]+accept="\.k868,application\/octet-stream"/i);
 
 assert.match(appSource, /new ESPLoader/);
 assert.match(appSource, /inspectInstalledFlashLayout\(loader\)/);
@@ -45,7 +47,12 @@ assert.match(appSource, /custom companion-pack bytes changed during firmware ins
 assert.match(appSource, /OTA metadata changed during firmware install/);
 assert.match(appSource, /partition table changed during firmware install/);
 assert.match(appSource, /The page never performs a full-chip erase/);
-assert.doesNotMatch(appSource, /from "\.\/packs\.js"|latestPack|packSelect|\.eraseFlash\s*\(|\.eraseRegion\s*\(|eraseAll:\s*true/);
+assert.match(appSource, /async function installCompanion\(\)/);
+assert.match(appSource, /buildReplacementIntent\(finalTransition\.sourcePackId, target\)/);
+assert.match(appSource, /REPLACEMENT_TRANSACTION\.prepared\.offset/);
+assert.match(appSource, /REPLACEMENT_TRANSACTION\.committed\.offset/);
+assert.match(packsSource, /export async function loadUnlockedPack\(file\)/);
+assert.doesNotMatch(appSource, /\.eraseFlash\s*\(|\.eraseRegion\s*\(|eraseAll:\s*true/);
 
 const currentInstallStart = appSource.indexOf("async function installCurrent()");
 const currentConfirmation = appSource.indexOf("const confirmed = window.confirm(", currentInstallStart);
@@ -79,7 +86,17 @@ const firmwarePath = "downloads/kitsu-firmware-0.20.5-9b8652be49f3fbe0084b5cd7f3
 const layoutPath = "downloads/kitsu-current-partitions-3337f0ec25e653d8c0bf9534abeb147a7505f41b1c2e25b53bb6cc74d395b532.kitsu-layout";
 assert.deepEqual(files.filter((entry) => entry.endsWith(".kitsu-fw")), [firmwarePath]);
 assert.deepEqual(files.filter((entry) => entry.endsWith(".kitsu-layout")), [layoutPath]);
-assert.equal(files.some((entry) => entry.endsWith(".pet") || entry.endsWith(".k868")), false);
+assert.equal(files.some((entry) => entry.endsWith(".k868")), false);
+const packAssets = files.filter((entry) => entry.endsWith(".pet")).sort();
+assert.equal(packAssets.length, 3);
+const packHashes = (await Promise.all(packAssets.map(async (entry) => createHash("sha256")
+  .update(await readFile(path.join(dist, ...entry.split("/"))))
+  .digest("hex")))).sort();
+assert.deepEqual(packHashes, [
+  "8d19d6b8bc584d9aaee5a6867504fd23c1862c907bbeb1affd9611e35bf2a6d7",
+  "8652aad28816d52fca334766ebefb5c38aec1b09dcc72783414998d17a46e261",
+  "c868386770b6083dcd8f7c01ec7fe455faec476a96c724ab62f09770fdcdab38",
+].sort());
 const firmware = await readFile(path.join(dist, ...firmwarePath.split("/")));
 assert.equal(firmware.byteLength, 1_267_730);
 assert.equal(createHash("sha256").update(firmware).digest("hex"), "9b8652be49f3fbe0084b5cd7f374939b39df710b2cc7cffbaff58d98bdf312c9");

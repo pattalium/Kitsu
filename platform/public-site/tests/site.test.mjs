@@ -193,9 +193,8 @@ test("source landing instructions match the local-only device controls", async (
   assert.match(firstUse, /current-layout board receives an application-only\s+reinstall/i);
   assert.match(readme, /platform\/flash-site\/` \| Signed Web Serial installer for stock new, current-layout, and exact legacy Kitsu boards/i);
   assert.doesNotMatch(readme, /open `PHONE`|Connect to public gateway|owner sign-in|Configure Wi-Fi/i);
-  assert.match(enhancements, /Web Serial firmware installer never writes companion packs/i);
-  assert.match(enhancements, /Pack\s+installation remains a separate device-authorized operation/i);
-  assert.doesNotMatch(enhancements, /The Web Serial flasher can install an unlocked pack/i);
+  assert.match(enhancements, /Web Serial flasher accepts the downloaded `\.k868` file locally/i);
+  assert.match(enhancements, /separate\s+companion action/i);
 });
 
 test("fails closed outside the exact Android 2.3.1 production contract", async () => {
@@ -1350,9 +1349,7 @@ test("publishes an accessible, fail-closed local unlock surface", async () => {
   assert.match(html, /firmware verification record are sent only to the K32 API/);
   assert.match(html, /maxlength="20"/);
   assert.match(html, /placeholder="K8-XXXXX-XXXXX-XXXXX"/);
-  assert.match(html, /Installation on migrated 0\.20\.3 boards is not offered from this page yet/i);
-  assert.match(html, /href="\/#firmware">signed firmware guidance/);
-  assert.doesNotMatch(html, /https:\/\/flash\.k32\.run/i);
+  assert.match(html, /open the <a href="https:\/\/flash\.k32\.run">Kitsu flasher<\/a>/i);
 
   const cssDigest = html.match(/href="\/unlock\/unlock\.css\?sha256=([a-f0-9]{64})"/)?.[1];
   const scriptDigest = html.match(/src="\/unlock\/unlock\.js\?sha256=([a-f0-9]{64})"/)?.[1];

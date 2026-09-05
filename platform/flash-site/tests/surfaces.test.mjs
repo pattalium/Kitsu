@@ -73,15 +73,15 @@ test("static product, manual, and USB flasher surfaces link safe destinations", 
   assert.match(manual, /https:\/\/github\.com\/pattalium\/Kitsu/);
   assert.match(flasher, /Install the latest Kitsu/);
   assert.match(flasher, /signed firmware 0\.20\.5/i);
-  assert.match(flasher, /Current boards update only the application slot selected by the bootloader/i);
-  assert.match(flasher, /stock new Heltec is initialized directly/i);
-  assert.match(flasher, /custom companion pack is never written/i);
+  assert.match(flasher, /Firmware-only installs keep the existing companion unchanged/i);
+  assert.match(flasher, /stock board can initialize directly/i);
+  assert.match(flasher, /Load my \.k868 pack/i);
   assert.doesNotMatch(flasher, /href="[^"]+\.kitsu-fw/i);
   assert.match(webReadme, /immutable historical pre-0\.20\.3 Web Serial installer/i);
   assert.doesNotMatch(`${product}\n${manual}\n${flasher}`, /link pending|placeholder|app\.k32\.run/i);
 });
 
-test("flasher offers current and factory-new installs without a companion-pack write surface", async () => {
+test("flasher keeps firmware writes separate while offering verified starter and local companion packs", async () => {
   const [html, theme, styles, app, currentRelease, factoryInit] = await Promise.all([
     text("flash-site/index.html"),
     text("flash-site/src/theme.js"),
@@ -90,7 +90,7 @@ test("flasher offers current and factory-new installs without a companion-pack w
     text("flash-site/src/current-release.js"),
     text("flash-site/src/factory-init.js"),
   ]);
-  for (const id of ["connect", "disconnect", "refresh", "device-detail", "install", "progress", "progress-detail", "log"]) {
+  for (const id of ["connect", "disconnect", "refresh", "device-detail", "installed-pack-detail", "pack-select", "unlocked-pack-field", "unlocked-pack-file", "pack-detail", "install-pack", "install", "progress", "progress-detail", "log"]) {
     assert.match(html, new RegExp(`id="${id}"`), id);
   }
   assert.match(html, /type="button" data-theme-toggle/u);
@@ -102,14 +102,22 @@ test("flasher offers current and factory-new installs without a companion-pack w
   assert.match(styles, /--canvas: #f3efe5/u);
   assert.match(styles, /html\[data-theme="dark"\][\s\S]*--canvas: #12110f/u);
   assert.match(styles, /--display: Georgia/u);
-  assert.doesNotMatch(`${html}\n${app}`, /pack-select|unlocked-pack|loadUnlockedPack|DESTRUCTIVE PET REPLACEMENT/u);
+  assert.match(styles, /\.pack-choice select/u);
+  assert.match(styles, /\.unlocked-pack-field input/u);
+  assert.match(app, /loadUnlockedPack/u);
+  assert.match(app, /async function installCompanion\(\)/u);
+  assert.match(app, /companionPackTransition\(finalCurrent, target, finalTransaction\)/u);
+  assert.match(app, /buildReplacementIntent\(finalTransition\.sourcePackId, target\)/u);
+  assert.match(app, /REPLACEMENT_TRANSACTION\.prepared\.offset/u);
+  assert.match(app, /REPLACEMENT_TRANSACTION\.committed\.offset/u);
+  assert.match(app, /packRequested \? selectedPackForWrite\(\) : Promise\.resolve\(null\)/u);
   assert.match(app, /inspectCurrentOtaSelection\(loader\)/u);
   assert.match(app, /async function installFactory\(\)/u);
   assert.match(app, /partition table will be committed last/u);
   assert.match(app, /fileArray: \[\{ data: artifact\.bytes, address: artifact\.record\.offset \}\]/u);
   assert.match(app, /custom companion-pack bytes changed during firmware install/u);
   assert.match(app, /eraseAll: false/u);
-  assert.doesNotMatch(app, /from "\.\/packs\.js"|eraseAll:\s*true/u);
+  assert.doesNotMatch(app, /eraseAll:\s*true/u);
   assert.match(currentRelease, /app0Offset: 0x050000/u);
   assert.match(currentRelease, /app1Offset: 0x350000/u);
   assert.match(currentRelease, /companionPackOffset: 0x670000/u);

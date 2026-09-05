@@ -28,7 +28,8 @@ release.
 
 The Web Serial installer initializes the exact stock Heltec V3 factory layout,
 updates the exact current Kitsu layout, and retains signed recovery for the
-exact legacy Kitsu layout. It blocks every other partition table.
+exact legacy Kitsu layout. It also installs a selected built-in starter or a
+locally verified `.k868` companion pack. It blocks every other partition table.
 
 ## What is included
 
@@ -53,8 +54,10 @@ temporary audit is removed only when those services are retired.
 
 1. Open the [USB flasher](https://flash.k32.run) in desktop Chrome or Edge. A
    stock new Heltec V3 is initialized directly with the current layout and
-   accepted 0.20.5 firmware. A current-layout board receives an application-only
-   reinstall. Any unrecognized layout remains blocked.
+   accepted 0.20.5 firmware; choose its starter companion or load your own
+   `.k868` pack there. A current-layout board receives an application-only
+   reinstall unless you separately choose a companion action. Any unrecognized
+   layout remains blocked.
 2. Install the production-signed Android APK from the product page.
 3. On Kitsu, hold PRG from Home, hold again while `CONNECT` is selected, then
    hold on `BLUETOOTH` to open the bounded `PAIR PHONE` window.
