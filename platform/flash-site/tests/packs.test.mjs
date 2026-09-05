@@ -140,9 +140,14 @@ test("installed-pack inspection validates the current slot before replacement", 
   });
   assert.deepEqual(empty, { status: "empty", packId: 0, name: "No installed pet" });
 
-  await assert.rejects(
-    inspectInstalledPack({ async readFlash() { return new Uint8Array(64); } }),
-    /valid K868PK1 header/,
+  assert.deepEqual(
+    await inspectInstalledPack({ async readFlash() { return new Uint8Array(64); } }),
+    {
+      status: "invalid",
+      packId: null,
+      name: "Unreadable companion pack",
+      reason: "installed companion slot does not contain a valid K868PK1 header",
+    },
   );
 });
 

@@ -337,7 +337,12 @@ export async function inspectInstalledPack(loader) {
     return Object.freeze({ status: "empty", packId: 0, name: "No installed pet" });
   }
   if (K868_MAGIC.some((value, index) => header[index] !== value)) {
-    fail("installed companion slot does not contain a valid K868PK1 header");
+    return Object.freeze({
+      status: "invalid",
+      packId: null,
+      name: "Unreadable companion pack",
+      reason: "installed companion slot does not contain a valid K868PK1 header",
+    });
   }
   const totalBytes = new DataView(
     header.buffer,
@@ -345,13 +350,28 @@ export async function inspectInstalledPack(loader) {
     header.byteLength,
   ).getUint32(0x0c, true);
   if (totalBytes < K868_FORMAT.headerBytes || totalBytes > PACK_SLOT.bytes) {
-    fail("installed companion declares an unsafe length");
+    return Object.freeze({
+      status: "invalid",
+      packId: null,
+      name: "Unreadable companion pack",
+      reason: "installed companion declares an unsafe length",
+    });
   }
   const bytes = await loader.readFlash(PACK_SLOT.offset, totalBytes);
   if (!(bytes instanceof Uint8Array) || bytes.byteLength !== totalBytes) {
     fail("installed companion readback has an unexpected length");
   }
-  const metadata = validateUnlockedPackBytes(bytes);
+  let metadata;
+  try {
+    metadata = validateUnlockedPackBytes(bytes);
+  } catch (error) {
+    return Object.freeze({
+      status: "invalid",
+      packId: null,
+      name: "Unreadable companion pack",
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
   return Object.freeze({
     status: "valid",
     name: metadata.displayName,

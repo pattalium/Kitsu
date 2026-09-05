@@ -253,10 +253,9 @@ The website owns the unlock catalogue and downloadable pet packs:
    to that hardware record; the same hardware may download it again later.
 4. The API returns the ordinary downloadable `.k868` file as a private,
    no-store response. There is no stable public pack URL.
-5. The Web Serial firmware installer never writes companion packs. Pack
-   installation remains a separate device-authorized operation; the public
-   unlock page tells the owner to keep the verified file private until that
-   path is available.
+5. The Web Serial flasher accepts the downloaded `.k868` file locally on a
+   current-layout device. It validates the pack before enabling the separate
+   companion action and requires explicit confirmation before replacement.
 
 The `.k868` file format does **not** change for this enhancement. Firmware
 continues to validate its existing structure and CRC. There is no encrypted,

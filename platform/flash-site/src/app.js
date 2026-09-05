@@ -16,6 +16,18 @@ import {
   fetchVerifiedFactoryPartitionTable,
   prepareFactoryInitialization,
 } from "./factory-init.js";
+import {
+  buildReplacementIntent,
+  companionPackTransition,
+  fetchOfficialPack,
+  inspectInstalledPack,
+  inspectReplacementTransaction,
+  loadUnlockedPack,
+  PACK_SLOT,
+  REPLACEMENT_TRANSACTION,
+  reverifyPack,
+  UNLOCKED_PACK_ID,
+} from "./packs.js";
 import "./styles.css";
 
 const LEGACY_OTA_DATA = Object.freeze({ offset: 0x00e000, bytes: 0x002000 });
@@ -27,10 +39,16 @@ const COMPANION_PACK = Object.freeze({
 const connectButton = document.querySelector("#connect");
 const disconnectButton = document.querySelector("#disconnect");
 const installButton = document.querySelector("#install");
+const installPackButton = document.querySelector("#install-pack");
 const refreshButton = document.querySelector("#refresh");
 const browserDetail = document.querySelector("#browser-detail");
 const releaseDetail = document.querySelector("#release-detail");
 const deviceDetail = document.querySelector("#device-detail");
+const installedPackDetail = document.querySelector("#installed-pack-detail");
+const packSelect = document.querySelector("#pack-select");
+const unlockedPackField = document.querySelector("#unlocked-pack-field");
+const unlockedPackInput = document.querySelector("#unlocked-pack-file");
+const packDetail = document.querySelector("#pack-detail");
 const progress = document.querySelector("#progress");
 const progressDetail = document.querySelector("#progress-detail");
 const log = document.querySelector("#log");
@@ -42,8 +60,12 @@ let detectedChip;
 let detectedFlashSize;
 let installedFlashLayout;
 let installedOtaSelection;
+let installedPack;
+let replacementTransaction;
+let replacementTransactionError;
 let verifiedLegacyRelease;
 let verifiedCurrentRelease;
+let verifiedPack;
 let factoryInitializerReady = false;
 let busy = false;
 const serialSupported = "serial" in navigator && window.isSecureContext;
@@ -63,6 +85,56 @@ function setProgress(value, detail) {
   progressDetail.textContent = detail;
 }
 
+function packMatchesSelection(packId, pack = verifiedPack) {
+  if (packId === "preserve") return true;
+  if (packId === UNLOCKED_PACK_ID) {
+    return pack?.definition.id === UNLOCKED_PACK_ID
+      && pack.definition.source === "unlocked_file";
+  }
+  return pack?.definition.id === packId && pack.definition.source !== "unlocked_file";
+}
+
+function selectedPackName() {
+  return packSelect.value === "preserve" ? null : verifiedPack?.definition.name;
+}
+
+function packIntegrityDescription(pack) {
+  return pack.definition.source === "unlocked_file"
+    ? "format, animation bounds, CRC32, and SHA-256 verified locally"
+    : "built-in pack and SHA-256 verified";
+}
+
+function describeInstalledPack() {
+  if (installedFlashLayout?.kind === "factory") {
+    installedPackDetail.textContent = selectedPackName()
+      ? `${selectedPackName()} will be installed as this board's starter companion during initialization.`
+      : "Choose Fox, Cat, Dog, or your own .k868 pack to install a starter during initialization. Keep installed companion leaves the region untouched.";
+    return;
+  }
+  if (installedFlashLayout?.kind === "legacy") {
+    installedPackDetail.textContent = "This legacy layout preserves its companion. Install the current layout before changing packs.";
+    return;
+  }
+  if (installedFlashLayout?.kind !== "migrated") {
+    installedPackDetail.textContent = "Connect a current-layout Heltec to inspect its installed companion. On a stock board, your selected pack is installed as the starter during initialization.";
+    return;
+  }
+  if (replacementTransactionError) {
+    installedPackDetail.textContent = `Companion changes are blocked: ${replacementTransactionError}`;
+    return;
+  }
+  const pending = ["prepared", "committed"].includes(replacementTransaction?.status)
+    ? " An interrupted replacement is waiting for the same target pack to be selected and retried."
+    : "";
+  if (installedPack?.status === "valid") {
+    installedPackDetail.textContent = `Installed companion: ${installedPack.name}, revision ${installedPack.revision}.${pending}`;
+  } else if (installedPack?.status === "empty") {
+    installedPackDetail.textContent = `No companion is installed yet. Choose a starter below.${pending}`;
+  } else {
+    installedPackDetail.textContent = `The companion slot needs repair before it can load a pet.${pending}`;
+  }
+}
+
 function releaseForInstalledLayout() {
   if (installedFlashLayout?.kind === "migrated") return verifiedCurrentRelease;
   if (installedFlashLayout?.kind === "legacy") return verifiedLegacyRelease;
@@ -79,20 +151,43 @@ function updateControls() {
     && detectedFlashSize === FLASH_PLAN.flashSize
     && ["factory", "legacy", "migrated"].includes(installedFlashLayout?.kind);
   const release = releaseForInstalledLayout();
+  const selectedPackReady = packMatchesSelection(packSelect.value);
   connectButton.disabled = !serialSupported || busy || Boolean(transport);
   disconnectButton.disabled = busy || !transport;
   refreshButton.disabled = busy;
-  installButton.disabled = busy || !connected || !release;
+  packSelect.disabled = busy;
+  const unlockedSelected = packSelect.value === UNLOCKED_PACK_ID;
+  unlockedPackField.hidden = !unlockedSelected;
+  unlockedPackInput.disabled = busy || !unlockedSelected;
+  installButton.disabled = busy || !connected || !release
+    || (installedFlashLayout?.kind === "factory" && !selectedPackReady);
+  installPackButton.disabled = busy
+    || !connected
+    || installedFlashLayout?.kind !== "migrated"
+    || packSelect.value === "preserve"
+    || !selectedPackReady
+    || Boolean(replacementTransactionError);
   if (busy) installButton.textContent = "Install in progress";
   else if (connected && installedFlashLayout.kind === "migrated" && release) {
     installButton.textContent = `Install latest ${release.manifest.firmware_version}`;
   } else if (connected && installedFlashLayout.kind === "legacy" && release) {
     installButton.textContent = `Install legacy recovery ${release.manifest.firmware_version}`;
   } else if (connected && installedFlashLayout.kind === "factory" && release) {
-    installButton.textContent = `Initialize with Kitsu ${release.manifest.firmware_version}`;
+    installButton.textContent = selectedPackName()
+      ? `Initialize Kitsu ${release.manifest.firmware_version} + ${selectedPackName()}`
+      : `Initialize with Kitsu ${release.manifest.firmware_version}`;
   } else {
     installButton.textContent = "Install unavailable";
   }
+  if (busy) installPackButton.textContent = "Companion action in progress";
+  else if (connected && installedFlashLayout?.kind === "factory" && selectedPackName()) {
+    installPackButton.textContent = `Starter selected: ${selectedPackName()}`;
+  } else if (connected && installedFlashLayout?.kind === "migrated" && selectedPackName()) {
+    installPackButton.textContent = `Install ${selectedPackName()}`;
+  } else {
+    installPackButton.textContent = "Install companion unavailable";
+  }
+  describeInstalledPack();
 }
 
 async function closeTransport({ reset = true, announce = true } = {}) {
@@ -105,6 +200,9 @@ async function closeTransport({ reset = true, announce = true } = {}) {
   detectedFlashSize = undefined;
   installedFlashLayout = undefined;
   installedOtaSelection = undefined;
+  installedPack = undefined;
+  replacementTransaction = undefined;
+  replacementTransactionError = undefined;
   updateControls();
   if (!activeTransport) return;
   if (reset && activeLoader) {
@@ -143,6 +241,9 @@ async function connect() {
       detectedFlashSize = undefined;
       installedFlashLayout = undefined;
       installedOtaSelection = undefined;
+      installedPack = undefined;
+      replacementTransaction = undefined;
+      replacementTransactionError = undefined;
       updateControls();
     });
     loader = new ESPLoader({ transport, baudrate: 460800, debugLogging: false });
@@ -162,19 +263,38 @@ async function connect() {
     }
     if (installedFlashLayout.kind === "migrated") {
       installedOtaSelection = await inspectCurrentOtaSelection(loader);
+      installedPack = await inspectInstalledPack(loader);
+      try {
+        replacementTransaction = await inspectReplacementTransaction(loader);
+      } catch (error) {
+        replacementTransaction = undefined;
+        replacementTransactionError = errorMessage(error);
+      }
       browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. Current Kitsu layout verified; ${installedOtaSelection.label} is selected for a firmware-only reinstall.`;
       deviceDetail.textContent = `The signed latest application will be written only to ${installedOtaSelection.label} at 0x${installedOtaSelection.offset.toString(16).padStart(6, "0")}. OTA metadata and the complete companion-pack region are hashed before and after.`;
       append(`Current layout verified. Boot selection: ${installedOtaSelection.label}, sequence ${installedOtaSelection.sequence ?? "initial"}, state ${installedOtaSelection.stateName}.`);
+      if (installedPack.status === "valid") {
+        append(`Installed companion verified: ${installedPack.name}, revision ${installedPack.revision}, SHA-256 ${installedPack.sha256}.`);
+      } else if (installedPack.status === "empty") {
+        append("Companion slot is empty; a starter pack can be installed.");
+      } else {
+        append(`Companion slot needs repair: ${installedPack.reason}.`);
+      }
+      if (replacementTransactionError) {
+        append(`Companion replacement gate closed: ${replacementTransactionError}`);
+      } else if (["prepared", "committed"].includes(replacementTransaction.status)) {
+        append("An interrupted companion replacement was found. Only the exact saved target pack can continue it.");
+      }
     } else if (installedFlashLayout.kind === "factory") {
       browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. The stock Heltec factory layout is verified for first-time Kitsu initialization.`;
-      deviceDetail.textContent = "This new-board path installs the current Kitsu layout and signed latest firmware in one pass. It resets stock firmware settings but never writes the custom companion-pack region.";
+      deviceDetail.textContent = "This new-board path installs the current Kitsu layout and signed latest firmware in one pass. Choose a starter companion below, or keep the pack region untouched.";
       append(`Stock Heltec factory layout verified: ${installedFlashLayout.sha256}.`);
     } else {
       browserDetail.textContent = `${detectedChip} with ${detectedFlashSize} flash. Exact legacy Kitsu layout verified for the signed recovery release.`;
       deviceDetail.textContent = "This board still uses the legacy layout. The historical signed recovery remains available and keeps the companion-pack region byte-for-byte unchanged.";
       append(`Legacy layout verified: ${installedFlashLayout.sha256}.`);
     }
-    append("Custom pack protection is active: this page has no companion-pack write path.");
+    append("Firmware protection is active: firmware-only installs preserve the complete companion-pack region. Companion writes require a separate explicit selection and confirmation.");
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
       append("Port selection was cancelled. Nothing was written.");
@@ -186,6 +306,62 @@ async function connect() {
     busy = false;
     updateControls();
   }
+}
+
+async function loadSelectedPack({ allowMissingFile = false } = {}) {
+  const packId = packSelect.value;
+  verifiedPack = undefined;
+  if (packId === "preserve") {
+    packDetail.textContent = "The installed companion will be kept. Choose a pet only when you want to install or replace it.";
+    return null;
+  }
+  if (packId === UNLOCKED_PACK_ID && !unlockedPackInput.files?.[0]) {
+    packDetail.textContent = "Choose a .k868 companion pack from this computer. It is read locally and must pass every format and integrity check.";
+    if (allowMissingFile) return null;
+  }
+  const pack = packId === UNLOCKED_PACK_ID
+    ? await loadUnlockedPack(unlockedPackInput.files?.[0])
+    : await fetchOfficialPack(packId);
+  verifiedPack = pack;
+  packDetail.textContent = `${pack.definition.name} is ready: ${packIntegrityDescription(pack)}.`;
+  return pack;
+}
+
+async function checkSelectedPack() {
+  busy = true;
+  updateControls();
+  try {
+    unlockedPackInput.removeAttribute("aria-invalid");
+    const pack = await loadSelectedPack();
+    if (pack) {
+      append(`Companion verified: ${pack.definition.name}, revision ${pack.definition.revision}, ${pack.record.bytes.toLocaleString()} bytes.`);
+    } else {
+      append("Companion selection: keep the installed pack; no companion write is enabled.");
+    }
+  } catch (error) {
+    verifiedPack = undefined;
+    if (packSelect.value === UNLOCKED_PACK_ID) {
+      unlockedPackInput.setAttribute("aria-invalid", "true");
+    }
+    packDetail.textContent = `Companion rejected: ${errorMessage(error)}`;
+    append(`Companion gate closed: ${errorMessage(error)}.`);
+  } finally {
+    busy = false;
+    updateControls();
+  }
+}
+
+async function selectedPackForWrite() {
+  if (!packMatchesSelection(packSelect.value) || packSelect.value === "preserve") {
+    throw new Error("choose and verify a companion pack first");
+  }
+  if (packSelect.value === UNLOCKED_PACK_ID) {
+    await reverifyPack(verifiedPack);
+    return verifiedPack;
+  }
+  const current = await fetchOfficialPack(packSelect.value);
+  verifiedPack = current;
+  return current;
 }
 
 async function checkRelease() {
@@ -296,6 +472,186 @@ async function verifyArtifactReadback(artifact, start, end) {
     throw new Error(`${artifact.record.role} readback SHA-256 is wrong`);
   }
   append(`Readback verified: ${artifact.record.role} at 0x${artifact.record.offset.toString(16).padStart(6, "0")}.`);
+}
+
+async function writeCompanionArtifact(artifact, start, end) {
+  const midpoint = start + (end - start) * 0.58;
+  await loader.writeFlash({
+    fileArray: [{ data: artifact.bytes, address: artifact.record.offset }],
+    flashMode: "keep",
+    flashFreq: "keep",
+    flashSize: "keep",
+    eraseAll: false,
+    compress: true,
+    reportProgress(_fileIndex, written, total) {
+      const ratio = total === 0 ? 0 : Math.min(1, written / total);
+      setProgress(
+        start + ratio * (midpoint - start),
+        `Writing ${artifact.record.role}: ${written.toLocaleString()} / ${total.toLocaleString()} transfer bytes`,
+      );
+    },
+  });
+  await verifyArtifactReadback(artifact, midpoint, end);
+}
+
+async function replacementArtifact(role, offset, bytes) {
+  return Object.freeze({
+    record: Object.freeze({ role, offset, bytes: bytes.byteLength, sha256: await sha256Hex(bytes) }),
+    bytes,
+  });
+}
+
+function installedPackMatches(pack, expected) {
+  return pack?.status === "valid"
+    && pack.packId === expected.definition.packId
+    && pack.revision === expected.definition.revision
+    && pack.bytes === expected.record.bytes
+    && pack.sha256 === expected.record.sha256;
+}
+
+function sameTransition(left, right) {
+  return left.destructive === right.destructive
+    && left.repair === right.repair
+    && left.retry === right.retry
+    && left.sourcePackId === right.sourcePackId;
+}
+
+async function installCompanion() {
+  if (busy || !loader || packSelect.value === "preserve" || !packMatchesSelection(packSelect.value)) return;
+  const selectedId = packSelect.value;
+  const selected = verifiedPack;
+  busy = true;
+  updateControls();
+  setProgress(0, "Rechecking the selected companion and device");
+  let writeStarted = false;
+  let completeVerified = false;
+  let resetAttempted = false;
+  let targetName = selected.definition.name;
+  try {
+    if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== CURRENT_FLASH_PLAN.flashSize) {
+      throw new Error("device identity check is no longer valid");
+    }
+    if (selectedId !== packSelect.value || selected !== verifiedPack) {
+      throw new Error("companion selection changed; choose it again");
+    }
+    const target = await selectedPackForWrite();
+    await reverifyPack(target);
+    targetName = target.definition.name;
+    const layout = await inspectInstalledFlashLayout(loader);
+    if (layout.kind !== "migrated" || layout.sha256 !== installedFlashLayout.sha256) {
+      throw new Error("current partition layout changed after connection; reconnect before installing the companion");
+    }
+    const current = await inspectInstalledPack(loader);
+    const transaction = await inspectReplacementTransaction(loader);
+    const transition = companionPackTransition(current, target, transaction);
+
+    let title;
+    let consequence;
+    if (transition.retry) {
+      title = `Finish installing ${targetName}?`;
+      consequence = "An earlier replacement was interrupted. This retries only the exact pack saved in that replacement record.";
+    } else if (transition.destructive) {
+      title = `Replace ${current.name} with ${targetName}?`;
+      consequence = "Changing to a different companion resets that pet's care and bond progress on the next boot.";
+    } else if (transition.repair) {
+      title = `Repair the companion slot with ${targetName}?`;
+      consequence = "The current slot is unreadable. This replaces only its companion bytes.";
+    } else if (current.status === "empty") {
+      title = `Install ${targetName} as the starter companion?`;
+      consequence = "This is the first companion assignment and does not erase firmware or settings.";
+    } else {
+      title = `Update the installed ${targetName} pack?`;
+      consequence = "The companion identity stays the same, so its existing care and bond progress is retained.";
+    }
+    const confirmed = window.confirm(
+      `${title}\n\n${consequence} `
+      + `Only the verified pack at 0x${PACK_SLOT.offset.toString(16)}${transition.destructive || transition.retry ? " and its two fixed replacement-record sectors" : ""} will be written and read back. `
+      + "Firmware, partition table, NVS, OTA data, private journals, and the other flash regions are not written.",
+    );
+    if (!confirmed) {
+      append("Companion install cancelled. Nothing was written.");
+      return;
+    }
+
+    const finalLayout = await inspectInstalledFlashLayout(loader);
+    if (finalLayout.kind !== "migrated" || finalLayout.sha256 !== layout.sha256) {
+      throw new Error("partition layout changed before the first companion write; nothing was written");
+    }
+    const finalCurrent = await inspectInstalledPack(loader);
+    const finalTransaction = await inspectReplacementTransaction(loader);
+    const finalTransition = companionPackTransition(finalCurrent, target, finalTransaction);
+    if (!sameTransition(transition, finalTransition)) {
+      throw new Error("installed companion state changed before the first write; reconnect and review it again");
+    }
+
+    let intent;
+    if (finalTransition.destructive) {
+      intent = finalTransition.retry
+        ? finalTransaction.preparedBytes
+        : buildReplacementIntent(finalTransition.sourcePackId, target);
+      if (!finalTransition.retry) {
+        const prepared = await replacementArtifact(
+          "companion_replacement_prepared",
+          REPLACEMENT_TRANSACTION.prepared.offset,
+          intent,
+        );
+        append(`Authorizing the one-time replacement from ${finalCurrent.name} to ${targetName}.`);
+        writeStarted = true;
+        await writeCompanionArtifact(prepared, 4, 24);
+      } else {
+        append(`Retrying the exact interrupted ${targetName} replacement.`);
+      }
+    }
+
+    writeStarted = true;
+    await writeCompanionArtifact(target, finalTransition.destructive ? 24 : 8, finalTransition.destructive ? 78 : 92);
+    const installedTarget = await inspectInstalledPack(loader);
+    if (!installedPackMatches(installedTarget, target)) {
+      throw new Error("installed companion does not match the selected pack after readback");
+    }
+
+    if (finalTransition.destructive) {
+      const committed = await replacementArtifact(
+        "companion_replacement_committed",
+        REPLACEMENT_TRANSACTION.committed.offset,
+        intent,
+      );
+      await writeCompanionArtifact(committed, 78, 96);
+      const completeTransaction = await inspectReplacementTransaction(loader);
+      if (completeTransaction.status !== "committed") {
+        throw new Error("companion replacement commit did not verify");
+      }
+    }
+    const postLayout = await inspectInstalledFlashLayout(loader);
+    if (postLayout.kind !== "migrated" || postLayout.sha256 !== finalLayout.sha256) {
+      throw new Error("partition table changed during companion installation");
+    }
+
+    completeVerified = true;
+    setProgress(99, `${targetName} verified; resetting once`);
+    resetAttempted = true;
+    await loader.after("hard_reset");
+    setProgress(100, `${targetName} installed`);
+    append(`${targetName} installed and read back exactly. The Heltec was reset once to load it.`);
+    await closeTransport({ reset: false, announce: true });
+  } catch (error) {
+    if (resetAttempted && completeVerified) {
+      setProgress(progress.value, "Companion verified; automatic reset could not be confirmed");
+      append(`${targetName} passed readback, but reset could not be confirmed: ${errorMessage(error)}. Press RST once.`);
+      await closeTransport({ reset: false, announce: true });
+    } else if (writeStarted) {
+      setProgress(progress.value, "Companion install stopped; Heltec left in ROM loader");
+      append(`Companion install stopped after writing began: ${errorMessage(error)}. Reconnect and select the same pack to retry; no automatic reset was attempted.`);
+      await closeTransport({ reset: false, announce: true });
+    } else {
+      setProgress(progress.value, "Companion install stopped before writing");
+      append(`Companion install stopped before any write: ${errorMessage(error)}.`);
+      await closeTransport({ reset: true, announce: true });
+    }
+  } finally {
+    busy = false;
+    updateControls();
+  }
 }
 
 async function factoryArtifact(role, offset, bytes) {
@@ -472,6 +828,10 @@ async function installCurrent() {
 
 async function installFactory() {
   if (!verifiedCurrentRelease || !verifiedLegacyRelease || !factoryInitializerReady) return;
+  const selectedPackId = packSelect.value;
+  const packRequested = selectedPackId !== "preserve";
+  const selectedPack = verifiedPack;
+  if (packRequested && !packMatchesSelection(selectedPackId, selectedPack)) return;
   busy = true;
   updateControls();
   setProgress(0, "Rechecking the signed firmware and new-board initializer");
@@ -482,11 +842,16 @@ async function installFactory() {
     if (loader.chip?.CHIP_NAME !== "ESP32-S3" || detectedFlashSize !== CURRENT_FLASH_PLAN.flashSize) {
       throw new Error("device identity check is no longer valid");
     }
-    const [latest, legacy] = await Promise.all([
+    if (selectedPackId !== packSelect.value || selectedPack !== verifiedPack) {
+      throw new Error("companion selection changed; choose it again");
+    }
+    const [latest, legacy, starterPack] = await Promise.all([
       fetchVerifiedCurrentRelease(),
       fetchVerifiedRelease(),
+      packRequested ? selectedPackForWrite() : Promise.resolve(null),
     ]);
     await reverifyArtifacts(legacy);
+    if (starterPack) await reverifyPack(starterPack);
     const bootloader = legacy.artifacts.find((artifact) => artifact.record.role === "bootloader");
     if (!bootloader) throw new Error("signed Kitsu bootloader is unavailable");
     const initialization = await prepareFactoryInitialization(latest.image);
@@ -504,10 +869,12 @@ async function installFactory() {
       throw new Error("factory partition layout changed after connection; reconnect before installing");
     }
     const confirmed = window.confirm(
-      `Initialize this stock Heltec with signed Kitsu ${latest.manifest.firmware_version}?\n\n`
+      `Initialize this stock Heltec with signed Kitsu ${latest.manifest.firmware_version}${starterPack ? ` and ${starterPack.definition.name}` : ""}?\n\n`
       + "This replaces the stock firmware, partition layout, NVS settings, connectivity state, and coredump. "
-      + "It does not erase the whole chip and never writes the custom companion-pack region. "
-      + "That complete region is hashed before and after installation and must remain identical.",
+      + (starterPack
+        ? `The verified ${starterPack.definition.name} pack will be written only to the dedicated companion region and loaded as the starter. `
+        : "The companion-pack region will not be written. ")
+      + "It does not erase the whole chip. Every selected region is read back before the partition table is committed last.",
     );
     if (!confirmed) {
       append("New-board initialization cancelled. Nothing was written.");
@@ -524,25 +891,41 @@ async function installFactory() {
     }
     const packBaseline = await readFactoryPackDigest(2, 10, "custom companion pack baseline");
     append(`Custom companion-pack baseline captured: ${packBaseline}.`);
-    append(`Initializing the stock Heltec directly with signed Kitsu ${latest.manifest.firmware_version}; the partition table will be committed last.`);
+    append(`Initializing the stock Heltec directly with signed Kitsu ${latest.manifest.firmware_version}${starterPack ? ` and ${starterPack.definition.name}` : ""}; the partition table will be committed last.`);
 
     writeStarted = true;
     const totalBytes = artifacts.reduce((sum, artifact) => sum + artifact.record.bytes, 0);
     let completedBytes = 0;
     for (const artifact of artifacts) {
-      const start = 10 + (completedBytes / totalBytes) * 76;
+      const start = 10 + (completedBytes / totalBytes) * (starterPack ? 64 : 76);
       completedBytes += artifact.record.bytes;
-      const end = 10 + (completedBytes / totalBytes) * 76;
+      const end = 10 + (completedBytes / totalBytes) * (starterPack ? 64 : 76);
       await writeFactoryArtifact(artifact, start, end);
+    }
+
+    if (starterPack) {
+      append(`All core initialization writes passed. Writing ${starterPack.definition.name} to the dedicated companion region.`);
+      await writeCompanionArtifact(starterPack, 74, 88);
+      const installedStarter = await inspectInstalledPack(loader);
+      if (!installedPackMatches(installedStarter, starterPack)) {
+        throw new Error("starter companion did not match the selected pack after readback");
+      }
     }
 
     const precommitLayout = await inspectInstalledFlashLayout(loader);
     if (precommitLayout.kind !== "factory" || precommitLayout.sha256 !== layout.sha256) {
       throw new Error("factory partition table changed before its final commit");
     }
-    const precommitPack = await readFactoryPackDigest(86, 90, "custom companion pack before commit");
-    if (precommitPack !== packBaseline) {
-      throw new Error("custom companion-pack bytes changed before partition-table commit");
+    if (starterPack) {
+      const precommitStarter = await inspectInstalledPack(loader);
+      if (!installedPackMatches(precommitStarter, starterPack)) {
+        throw new Error("starter companion changed before partition-table commit");
+      }
+    } else {
+      const precommitPack = await readFactoryPackDigest(86, 90, "custom companion pack before commit");
+      if (precommitPack !== packBaseline) {
+        throw new Error("custom companion-pack bytes changed before partition-table commit");
+      }
     }
 
     append("All initialization writes passed readback. Committing the current partition table as the final flash mutation.");
@@ -558,9 +941,16 @@ async function installFactory() {
     if (selection.label !== "app0" || selection.sequence !== 1) {
       throw new Error("new-board OTA selection did not resolve to app0");
     }
-    const finalPack = await readFactoryPackDigest(95, 99, "preserved custom companion pack");
-    if (finalPack !== packBaseline) {
-      throw new Error("custom companion-pack bytes changed during new-board initialization");
+    if (starterPack) {
+      const finalStarter = await inspectInstalledPack(loader);
+      if (!installedPackMatches(finalStarter, starterPack)) {
+        throw new Error("starter companion changed during new-board initialization");
+      }
+    } else {
+      const finalPack = await readFactoryPackDigest(95, 99, "preserved custom companion pack");
+      if (finalPack !== packBaseline) {
+        throw new Error("custom companion-pack bytes changed during new-board initialization");
+      }
     }
 
     completeVerified = true;
@@ -570,7 +960,7 @@ async function installFactory() {
     resetAttempted = true;
     await loader.after("hard_reset");
     setProgress(100, `Kitsu ${latest.manifest.firmware_version} initialized`);
-    append(`New Heltec initialized with Kitsu ${latest.manifest.firmware_version}. Both application slots, current layout, and custom-pack preservation passed readback.`);
+    append(`New Heltec initialized with Kitsu ${latest.manifest.firmware_version}${starterPack ? ` and starter ${starterPack.definition.name}` : ""}. Both application slots, current layout, and ${starterPack ? "starter companion" : "custom-pack preservation"} passed readback.`);
     await closeTransport({ reset: false, announce: true });
   } catch (error) {
     if (resetAttempted && completeVerified) {
@@ -696,6 +1086,24 @@ if (serialSupported) {
 }
 
 refreshButton.addEventListener("click", () => { void checkRelease(); });
+packSelect.addEventListener("change", () => {
+  verifiedPack = undefined;
+  unlockedPackInput.removeAttribute("aria-invalid");
+  if (packSelect.value === UNLOCKED_PACK_ID) {
+    unlockedPackInput.value = "";
+    packDetail.textContent = "Choose a .k868 companion pack from this computer. It is read locally and must pass every format and integrity check.";
+    append("Companion selection: waiting for a local .k868 file. Nothing has been accepted or written.");
+    updateControls();
+    return;
+  }
+  unlockedPackInput.value = "";
+  void checkSelectedPack();
+});
+unlockedPackInput.addEventListener("change", () => {
+  verifiedPack = undefined;
+  void checkSelectedPack();
+});
 installButton.addEventListener("click", () => { void install(); });
+installPackButton.addEventListener("click", () => { void installCompanion(); });
 window.addEventListener("pagehide", () => { void closeTransport({ reset: false, announce: false }); });
 void checkRelease();

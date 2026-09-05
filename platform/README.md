@@ -11,8 +11,9 @@ session.
 - `mobile/android/` — direct-Bluetooth Android application.
 - `public-site/` — product information plus signed Android and firmware downloads.
 - `docs-site/` — the complete local-first user manual.
-- `flash-site/` — immutable historical pre-0.20.3 Web Serial surface; never a
-  current migration, update, or recovery path.
+- `flash-site/` — signed Web Serial installer for factory-new, current, and
+  exact legacy layouts, with explicit built-in or local `.k868` companion
+  installation.
 - `status-site/` — reachability checks for the current static release surfaces
   and the explicitly historical USB origin.
 
